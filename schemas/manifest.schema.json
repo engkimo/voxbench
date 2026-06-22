@@ -1,0 +1,219 @@
+{
+  "$defs": {
+    "IoContract": {
+      "additionalProperties": false,
+      "properties": {
+        "accepts": {
+          "additionalProperties": true,
+          "title": "Accepts",
+          "type": "object"
+        },
+        "mode": {
+          "enum": [
+            "passthrough",
+            "rate_changing",
+            "format_changing"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "produces": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Produces"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "IoContract",
+      "type": "object"
+    },
+    "OverridePermission": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "float",
+            "boolean",
+            "object",
+            "array"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "type"
+      ],
+      "title": "OverridePermission",
+      "type": "object"
+    },
+    "ProviderCaps": {
+      "additionalProperties": false,
+      "properties": {
+        "input_rate": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Rate"
+        },
+        "output_rate": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Rate"
+        },
+        "supported_codecs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supported Codecs",
+          "type": "array"
+        },
+        "turn_taking_owners": {
+          "items": {
+            "enum": [
+              "server_vad",
+              "client_vad",
+              "semantic",
+              "external"
+            ],
+            "type": "string"
+          },
+          "title": "Turn Taking Owners",
+          "type": "array"
+        }
+      },
+      "title": "ProviderCaps",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed_overrides": {
+      "items": {
+        "$ref": "#/$defs/OverridePermission"
+      },
+      "title": "Allowed Overrides",
+      "type": "array"
+    },
+    "invariants_applicable": {
+      "items": {
+        "enum": [
+          "duration_preserving",
+          "level_preserving",
+          "isochronous"
+        ],
+        "type": "string"
+      },
+      "title": "Invariants Applicable",
+      "type": "array"
+    },
+    "invariants_enforced": {
+      "items": {
+        "enum": [
+          "duration_preserving",
+          "level_preserving",
+          "isochronous"
+        ],
+        "type": "string"
+      },
+      "title": "Invariants Enforced",
+      "type": "array"
+    },
+    "io": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IoContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "kind": {
+      "enum": [
+        "engine",
+        "provider",
+        "processor"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "lossy_expected": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Lossy Expected",
+      "type": "array"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "param_schema": {
+      "additionalProperties": true,
+      "title": "Param Schema",
+      "type": "object"
+    },
+    "provider_caps": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProviderCaps"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "requires_host_capability": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Requires Host Capability",
+      "type": "array"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "name",
+    "version"
+  ],
+  "title": "CapabilityManifest",
+  "type": "object"
+}

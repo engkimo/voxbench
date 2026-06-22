@@ -1,0 +1,500 @@
+{
+  "$defs": {
+    "AiConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "system_prompt_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt Ref"
+        },
+        "tools": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tools",
+          "type": "array"
+        }
+      },
+      "required": [
+        "provider",
+        "model"
+      ],
+      "title": "AiConfig",
+      "type": "object"
+    },
+    "ConfigMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "additionalProperties": true,
+          "title": "Labels",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "ConfigMeta",
+      "type": "object"
+    },
+    "DetectorConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "plugin": {
+          "title": "Plugin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin"
+      ],
+      "title": "DetectorConfig",
+      "type": "object"
+    },
+    "EngineConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "EngineConfig",
+      "type": "object"
+    },
+    "IoContract": {
+      "additionalProperties": false,
+      "properties": {
+        "accepts": {
+          "additionalProperties": true,
+          "title": "Accepts",
+          "type": "object"
+        },
+        "mode": {
+          "enum": [
+            "passthrough",
+            "rate_changing",
+            "format_changing"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "produces": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Produces"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "IoContract",
+      "type": "object"
+    },
+    "JitterBufferConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_ms": {
+          "title": "Max Ms",
+          "type": "integer"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "max_ms"
+      ],
+      "title": "JitterBufferConfig",
+      "type": "object"
+    },
+    "MediaConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "pipeline": {
+          "items": {
+            "$ref": "#/$defs/PipelineStage"
+          },
+          "title": "Pipeline",
+          "type": "array"
+        }
+      },
+      "required": [
+        "pipeline"
+      ],
+      "title": "MediaConfig",
+      "type": "object"
+    },
+    "ObservabilityConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "cross_session": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cross Session",
+          "type": "array"
+        },
+        "host_metrics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Host Metrics",
+          "type": "array"
+        },
+        "record_audio": {
+          "default": false,
+          "title": "Record Audio",
+          "type": "boolean"
+        },
+        "signal_metrics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Signal Metrics",
+          "type": "array"
+        },
+        "stage_taps": {
+          "default": false,
+          "title": "Stage Taps",
+          "type": "boolean"
+        },
+        "trace_sample": {
+          "default": 0.0,
+          "title": "Trace Sample",
+          "type": "number"
+        }
+      },
+      "title": "ObservabilityConfig",
+      "type": "object"
+    },
+    "OverrideValue": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        }
+      },
+      "required": [
+        "target",
+        "value"
+      ],
+      "title": "OverrideValue",
+      "type": "object"
+    },
+    "PipelineStage": {
+      "additionalProperties": false,
+      "properties": {
+        "host_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Host Capabilities",
+          "type": "array"
+        },
+        "invariants_applicable": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "duration_preserving",
+                  "level_preserving",
+                  "isochronous"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invariants Applicable"
+        },
+        "invariants_enforced": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "duration_preserving",
+                  "level_preserving",
+                  "isochronous"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invariants Enforced"
+        },
+        "io": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IoContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lossy_expected": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lossy Expected"
+        },
+        "overrides": {
+          "items": {
+            "$ref": "#/$defs/OverrideValue"
+          },
+          "title": "Overrides",
+          "type": "array"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "plugin": {
+          "title": "Plugin",
+          "type": "string"
+        },
+        "requires_host_capability": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requires Host Capability"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "plugin"
+      ],
+      "title": "PipelineStage",
+      "type": "object"
+    },
+    "TransportConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "title": "Codec",
+          "type": "string"
+        },
+        "jitter_buffer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JitterBufferConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ptime_ms": {
+          "title": "Ptime Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "ptime_ms"
+      ],
+      "title": "TransportConfig",
+      "type": "object"
+    },
+    "TurnTakingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "barge_in": {
+          "default": false,
+          "title": "Barge In",
+          "type": "boolean"
+        },
+        "detector": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DetectorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "owner": {
+          "enum": [
+            "server_vad",
+            "client_vad",
+            "semantic",
+            "external"
+          ],
+          "title": "Owner",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner"
+      ],
+      "title": "TurnTakingConfig",
+      "type": "object"
+    },
+    "VoiceSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "ai": {
+          "$ref": "#/$defs/AiConfig"
+        },
+        "engine": {
+          "$ref": "#/$defs/EngineConfig"
+        },
+        "media": {
+          "$ref": "#/$defs/MediaConfig"
+        },
+        "observability": {
+          "$ref": "#/$defs/ObservabilityConfig"
+        },
+        "transport": {
+          "$ref": "#/$defs/TransportConfig"
+        },
+        "turn_taking": {
+          "$ref": "#/$defs/TurnTakingConfig"
+        }
+      },
+      "required": [
+        "engine",
+        "transport",
+        "media",
+        "turn_taking",
+        "ai"
+      ],
+      "title": "VoiceSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "voxbench/v1",
+      "title": "Apiversion",
+      "type": "string"
+    },
+    "kind": {
+      "const": "VoiceConfig",
+      "title": "Kind",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/ConfigMeta"
+    },
+    "spec": {
+      "$ref": "#/$defs/VoiceSpec"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "meta",
+    "spec"
+  ],
+  "title": "VoiceConfig",
+  "type": "object"
+}
