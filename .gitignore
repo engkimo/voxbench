@@ -3,6 +3,7 @@
 .ruff_cache/
 .serena/
 .venv/
+artifacts/
 __pycache__/
 *.py[cod]
 dist/

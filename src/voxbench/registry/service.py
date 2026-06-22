@@ -69,6 +69,7 @@ class RegistryService:
 
         self._validate_cross_fields(config)
         resolved = config.model_dump(mode="json", exclude_none=True)
+        self._materialize_manifest_defaults(resolved)
         return ResolvedConfig(
             name=config.meta.name,
             resolved=resolved,
@@ -196,6 +197,22 @@ class RegistryService:
             raise ConfigValidationError(
                 f"{label} params do not match param_schema: {exc.message}"
             ) from exc
+
+    def _materialize_manifest_defaults(self, resolved: dict[str, Any]) -> None:
+        for stage in resolved["spec"]["media"]["pipeline"]:
+            manifest = self._manifest("processor", stage["plugin"])
+            if "io" not in stage and manifest.io is not None:
+                stage["io"] = manifest.io.model_dump(mode="json", exclude_none=True)
+            for field_name in (
+                "invariants_enforced",
+                "invariants_applicable",
+                "lossy_expected",
+                "requires_host_capability",
+            ):
+                if field_name not in stage:
+                    value = getattr(manifest, field_name)
+                    if value:
+                        stage[field_name] = list(value)
 
     def _manifest(self, kind: str, name: str) -> CapabilityManifest:
         try:

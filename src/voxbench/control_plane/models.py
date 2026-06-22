@@ -57,3 +57,53 @@ class Config(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     labels: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
+
+class Run(TimestampMixin, Base):
+    __tablename__ = "runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    experiment_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    arm_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    config_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    scenario_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conversation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(255), nullable=False)
+    engine: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Recording(TimestampMixin, Base):
+    __tablename__ = "recordings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    stage: Mapped[str] = mapped_column(String(255), nullable=False)
+    uri: Mapped[str] = mapped_column(Text, nullable=False)
+    format: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    duration_ms: Mapped[float] = mapped_column(nullable=False)
+
+
+class Span(TimestampMixin, Base):
+    __tablename__ = "spans"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    trace_id: Mapped[str] = mapped_column(Text, nullable=False)
+    span_id: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    start_ns: Mapped[int] = mapped_column(nullable=False)
+    end_ns: Mapped[int] = mapped_column(nullable=False)
+    attrs: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
