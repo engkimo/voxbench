@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "voxbench"
+version = "0.1.0"
+description = "Schema and registry foundation for AI voice pipeline degradation experiments."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "VoxBench contributors" }]
+dependencies = [
+  "alembic>=1.18.0",
+  "jsonschema>=4.25.0",
+  "pydantic>=2.12.0",
+  "sqlalchemy>=2.0.0",
+  "typer>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.0",
+  "ruff>=0.14.0",
+]
+
+[project.scripts]
+voxbench = "voxbench.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voxbench"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
