@@ -59,3 +59,17 @@ def test_post_runs_creates_run_recordings_and_spans(tmp_path: Path) -> None:
     assert get_response.status_code == 200
     assert get_response.json()["run_id"] == body["run_id"]
 
+
+def test_post_runs_with_default_relative_artifact_root() -> None:
+    app = create_app()
+    client = TestClient(app)
+    payload = {
+        "config_name": "baseline",
+        "configs": [load_json(ROOT / "examples/configs/valid-baseline.json")],
+        "manifests": [load_json(path) for path in MANIFESTS],
+    }
+
+    response = client.post("/runs", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["recordings"][0]["uri"].startswith("file://")

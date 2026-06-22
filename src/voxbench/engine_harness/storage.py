@@ -24,7 +24,7 @@ class LocalRecordingSink:
     """Filesystem-backed sink used by tests and local development."""
 
     def __init__(self, root: Path) -> None:
-        self.root = root
+        self.root = root.resolve()
 
     def write_stage_wav(
         self,
