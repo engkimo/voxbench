@@ -3,15 +3,18 @@
 VoxBench is an early OSS implementation of the schema and registry foundation
 described in `DESIGN.md`.
 
-Phase 0 only includes:
+Implemented so far:
 
 - config and capability manifest JSON Schemas
 - SQLAlchemy models and an Alembic initial migration for `plugins` and `configs`
 - overlay resolution, deterministic resolved-config hashing, and static manifest validation
 - example manifests/configs and acceptance tests
+- a Phase 1 `POST /runs` vertical slice that issues a `run_id`, passes a resolved
+  config to the engine harness boundary, writes per-stage WAV tap artifacts, and
+  stores OpenTelemetry spans with `voxbench.run_id`
 
-Phase 0 intentionally does not build or call an engine harness, PipeCat pipeline,
-Gemini, Asterisk, SIP/RTP, telemetry ingest, or a web UI.
+This implementation intentionally does not include the Phase 2 verification engine,
+Synthetic Caller, timeline UI, live monitoring, or scale profile.
 
 ## Install for development
 
@@ -57,10 +60,50 @@ resolved = service.resolve_config("baseline")
 print(resolved.hash)
 ```
 
+## Run the Phase 1 API slice
+
+Start the control-plane API:
+
+```bash
+uvicorn voxbench.control_plane.app:app --reload
+```
+
+Post a single run with the example config and manifests:
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+import httpx
+
+root = Path(".")
+manifest_paths = [
+    "examples/manifests/engine/asterisk.json",
+    "examples/manifests/provider/gemini.json",
+    "examples/manifests/processor/resampler.json",
+    "examples/manifests/processor/agc.json",
+    "examples/manifests/processor/limiter.json",
+    "examples/manifests/processor/serializer.json",
+]
+payload = {
+    "config_name": "baseline",
+    "configs": [json.loads((root / "examples/configs/valid-baseline.json").read_text())],
+    "manifests": [json.loads((root / path).read_text()) for path in manifest_paths],
+    "call_id": "sip-call-id-example",
+}
+response = httpx.post("http://127.0.0.1:8000/runs", json=payload, timeout=10)
+response.raise_for_status()
+print(json.dumps(response.json(), indent=2))
+PY
+```
+
+The response includes `run_id`, `conversation_id`, recording artifact URIs, and spans.
+Local development stores WAV tap artifacts under `artifacts/recordings/`.
+
 ## Verification
 
 ```bash
 ruff check .
 pytest
 ```
-

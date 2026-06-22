@@ -15,10 +15,15 @@
 - パイプライン位置の host capability は、config stage の `host_capabilities` で宣言する保守的な解釈にした。manifest の `requires_host_capability` がその集合に含まれない場合は hard-fail。
 - 隣接 stage の IO 契約は、manifest または stage override の `io.produces` と次 stage の `io.accepts` の共通キーを比較する。
 - provider の `supported_codecs` が manifest にある場合は `transport.codec` と照合して hard-fail する。
+- Phase 1 では Pipecat の `Pipeline([...])` 境界だけを adapter として用意し、Gemini/Asterisk の実 adapter API は未確認のため実装しない。
+- StageTap artifact は local filesystem sink で保存する。MinIO は storage sink 境界の後続実装として残す。
+- `POST /runs` は in-memory repository で run/recordings/spans を保持する縦切りにした。DB model/migration は同じ保存対象に合わせて追加済み。
 
 ## 未解決論点
 
 - turn_taking 検証の hard-fail/warn の最終線引き。
 - host capability を stage config の `host_capabilities` として表すか、registry 側の配置メタデータに分離するか。
-- StageTap やステージ別参照音声生成は Phase 2 以降の対象であり、Phase 0 では未実装。
-- PipeCat API は Phase 1 以降の対象であり、Phase 0 では呼び出しもラップ実装も行わない。
+- Asterisk chan_websocket と Gemini Live の Pipecat adapter API 確認後、plugin adapter を実接続に差し替える。
+- MinIO SDK を使う storage sink の接続設定、bucket 作成方針、失敗時 retry 方針。
+- StageTap の実 artifact 保存は Phase 1 で local sink として実装済み。ステージ別参照音声生成は Phase 2 以降の対象。
+- Pipecat は Phase 1 で `Pipeline([...])` の adapter 境界のみ確認・実装済み。実 Asterisk/Gemini 接続は未実装。
