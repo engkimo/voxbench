@@ -1,0 +1,64 @@
+{
+  "apiVersion": "voxbench/v1",
+  "kind": "VoiceConfig",
+  "meta": {
+    "name": "invalid-double-vad",
+    "version": "1.0.0"
+  },
+  "spec": {
+    "engine": {
+      "kind": "asterisk",
+      "params": {
+        "websocket_url": "ws://asterisk.example.invalid/media",
+        "media_profile": "8khz-mulaw-20ms"
+      }
+    },
+    "transport": {
+      "codec": "pcm16",
+      "ptime_ms": 20
+    },
+    "media": {
+      "pipeline": [
+        {
+          "type": "resampler",
+          "plugin": "soxr-stream",
+          "params": { "input_rate": 24000, "output_rate": 8000, "quality": "high" },
+          "host_capabilities": ["cadence_pacing"]
+        },
+        {
+          "type": "agc",
+          "plugin": "rms-target",
+          "params": { "target_rms": 3000, "max_gain": 8.0, "noise_floor": 200 }
+        },
+        {
+          "type": "limiter",
+          "plugin": "peak-limiter",
+          "params": { "ceiling": 0.7 }
+        },
+        {
+          "type": "serializer",
+          "plugin": "asterisk-ws",
+          "params": { "encoding": "mulaw", "ptime_ms": 20 },
+          "host_capabilities": ["cadence_pacing", "output_buffering"]
+        }
+      ]
+    },
+    "turn_taking": {
+      "owner": "server_vad",
+      "detector": {
+        "plugin": "silero-vad",
+        "params": { "silence_ms": 600, "threshold": 0.5 }
+      },
+      "barge_in": true
+    },
+    "ai": {
+      "provider": "gemini",
+      "model": "gemini-live-example",
+      "params": {
+        "api_key_ref": "secret://gemini",
+        "response_modalities": ["audio"]
+      }
+    }
+  }
+}
+

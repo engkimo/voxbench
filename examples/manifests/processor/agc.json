@@ -1,0 +1,27 @@
+{
+  "kind": "processor",
+  "name": "rms-target",
+  "version": "1.0.0",
+  "param_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "target_rms": { "type": "integer" },
+      "max_gain": { "type": "number" },
+      "noise_floor": { "type": "integer" }
+    },
+    "required": ["target_rms", "max_gain", "noise_floor"]
+  },
+  "io": {
+    "mode": "passthrough",
+    "accepts": { "encoding": "pcm16", "rate": 8000, "channels": 1 },
+    "produces": { "encoding": "pcm16", "rate": 8000, "channels": 1 }
+  },
+  "invariants_enforced": [],
+  "invariants_applicable": ["level_preserving"],
+  "lossy_expected": [],
+  "requires_host_capability": [],
+  "allowed_overrides": []
+}
+

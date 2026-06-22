@@ -1,0 +1,26 @@
+{
+  "kind": "processor",
+  "name": "asterisk-ws",
+  "version": "1.0.0",
+  "param_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "encoding": { "type": "string" },
+      "ptime_ms": { "type": "integer" }
+    },
+    "required": ["encoding", "ptime_ms"]
+  },
+  "io": {
+    "mode": "format_changing",
+    "accepts": { "encoding": "pcm16", "rate": 8000, "channels": 1 },
+    "produces": { "encoding": "mulaw", "rate": 8000, "channels": 1 }
+  },
+  "invariants_enforced": ["isochronous"],
+  "invariants_applicable": ["duration_preserving", "isochronous"],
+  "lossy_expected": ["bandwidth_limit"],
+  "requires_host_capability": ["cadence_pacing", "output_buffering"],
+  "allowed_overrides": []
+}
+

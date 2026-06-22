@@ -1,0 +1,32 @@
+{
+  "kind": "processor",
+  "name": "soxr-stream",
+  "version": "1.0.0",
+  "param_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "input_rate": { "type": "integer" },
+      "output_rate": { "type": "integer" },
+      "quality": { "type": "string" }
+    },
+    "required": ["input_rate", "output_rate", "quality"]
+  },
+  "io": {
+    "mode": "rate_changing",
+    "accepts": { "encoding": "pcm16", "rate": 24000, "channels": 1 },
+    "produces": { "encoding": "pcm16", "rate": 8000, "channels": 1 }
+  },
+  "invariants_enforced": ["duration_preserving"],
+  "invariants_applicable": ["duration_preserving", "isochronous"],
+  "lossy_expected": [],
+  "requires_host_capability": ["cadence_pacing"],
+  "allowed_overrides": [
+    {
+      "target": "pipecat.audio.resamplers.soxr_stream_resampler.CLEAR_STREAM_AFTER_SECS",
+      "type": "float"
+    }
+  ]
+}
+

@@ -1,0 +1,25 @@
+{
+  "kind": "processor",
+  "name": "peak-limiter",
+  "version": "1.0.0",
+  "param_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ceiling": { "type": "number" }
+    },
+    "required": ["ceiling"]
+  },
+  "io": {
+    "mode": "passthrough",
+    "accepts": { "encoding": "pcm16", "rate": 8000, "channels": 1 },
+    "produces": { "encoding": "pcm16", "rate": 8000, "channels": 1 }
+  },
+  "invariants_enforced": ["level_preserving"],
+  "invariants_applicable": ["level_preserving"],
+  "lossy_expected": [],
+  "requires_host_capability": [],
+  "allowed_overrides": []
+}
+

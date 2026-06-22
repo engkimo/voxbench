@@ -1,0 +1,25 @@
+{
+  "kind": "provider",
+  "name": "gemini",
+  "version": "1.0.0",
+  "param_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "api_key_ref": { "type": "string" },
+      "response_modalities": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
+    },
+    "required": ["api_key_ref", "response_modalities"]
+  },
+  "provider_caps": {
+    "turn_taking_owners": ["server_vad", "client_vad"],
+    "supported_codecs": ["pcm16"],
+    "input_rate": 16000,
+    "output_rate": 24000
+  }
+}
+

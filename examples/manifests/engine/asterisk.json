@@ -1,0 +1,16 @@
+{
+  "kind": "engine",
+  "name": "asterisk",
+  "version": "1.0.0",
+  "param_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "websocket_url": { "type": "string" },
+      "media_profile": { "type": "string" }
+    },
+    "required": ["websocket_url", "media_profile"]
+  }
+}
+
