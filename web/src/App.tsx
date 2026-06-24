@@ -131,7 +131,11 @@ export function App() {
             <LaneStatus title="RTP" icon={<Waves size={17} />} count={timeline.lanes.rtp_quality.length} />
             <LaneStatus title="Turns" icon={<Headphones size={17} />} count={timeline.lanes.turns.length} />
             <LaneStatus title="Host" icon={<Server size={17} />} count={timeline.lanes.host.length} />
-            <Recordings recordings={timeline.lanes.recordings} />
+            <Recordings
+              apiBase={apiBase}
+              recordings={timeline.lanes.recordings}
+              runId={timeline.run_id}
+            />
           </aside>
         </section>
       ) : null}
@@ -232,7 +236,16 @@ function LaneStatus({ title, icon, count }: { title: string; icon: React.ReactNo
   )
 }
 
-function Recordings({ recordings }: { recordings: TimelineRecording[] }) {
+function Recordings({
+  apiBase,
+  recordings,
+  runId,
+}: {
+  apiBase: string
+  recordings: TimelineRecording[]
+  runId: string
+}) {
+  const base = apiBase.replace(/\/$/, '')
   return (
     <section className="recordings">
       <div className="sectionHeader compact">
@@ -240,12 +253,18 @@ function Recordings({ recordings }: { recordings: TimelineRecording[] }) {
         <h2>Recordings</h2>
       </div>
       <div className="recordingList">
-        {recordings.map((recording) => (
-          <a key={recording.stage} href={recording.uri} className="recordingItem">
-            <strong>{recording.stage}</strong>
-            <span>{formatNumber(recording.duration_ms)} ms</span>
-          </a>
-        ))}
+        {recordings.map((recording) => {
+          const src = `${base}/runs/${encodeURIComponent(runId)}/recordings/${encodeURIComponent(recording.stage)}/audio`
+          return (
+            <div key={recording.stage} className="recordingItem">
+              <div className="recordingMeta">
+                <strong>{recording.stage}</strong>
+                <span>{formatNumber(recording.duration_ms)} ms</span>
+              </div>
+              <audio controls preload="none" src={src} />
+            </div>
+          )
+        })}
       </div>
     </section>
   )

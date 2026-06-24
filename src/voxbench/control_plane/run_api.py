@@ -4,9 +4,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
 from voxbench.engine_harness.harness import EngineHarness
@@ -317,6 +319,35 @@ def create_runs_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
         return stored.to_timeline()
 
+    @router.get("/runs/{run_id}/recordings/{stage}/audio")
+    async def get_run_recording_audio(
+        run_id: str,
+        stage: str,
+        api_state: RunApiStateDependency,
+    ) -> FileResponse:
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+
+        recording = next(
+            (recording for recording in stored.recordings if recording.stage == stage),
+            None,
+        )
+        if recording is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown recording stage '{stage}' for run '{run_id}'",
+            )
+
+        path = _local_recording_path(recording.uri)
+        if path is None or not path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"recording audio is not available locally for stage '{stage}'",
+            )
+
+        return FileResponse(path, media_type="audio/wav")
+
     @router.get("/runs/{run_id}/metrics", response_model=list[MetricResponse])
     async def get_run_metrics(
         run_id: str,
@@ -332,3 +363,10 @@ def create_runs_router() -> APIRouter:
 
 def _relative_seconds(ts: datetime, t0: datetime) -> float:
     return max(0.0, (ts - t0).total_seconds())
+
+
+def _local_recording_path(uri: str) -> Path | None:
+    parsed = urlparse(uri)
+    if parsed.scheme != "file":
+        return None
+    return Path(unquote(parsed.path))

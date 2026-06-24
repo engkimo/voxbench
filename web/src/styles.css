@@ -364,28 +364,38 @@ a {
 }
 
 .recordingItem {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 9px;
+  background: #f8fafc;
+}
+
+.recordingMeta {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  border: 1px solid #dde4eb;
-  border-radius: 7px;
-  padding: 9px;
-  text-decoration: none;
-  background: #f8fafc;
 }
 
-.recordingItem strong,
-.recordingItem span {
+.recordingMeta strong,
+.recordingMeta span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.recordingItem span {
+.recordingMeta span {
   color: #657384;
   font-size: 12px;
+}
+
+.recordingItem audio {
+  width: 100%;
+  height: 34px;
 }
 
 @media (max-width: 980px) {
@@ -415,7 +425,7 @@ a {
   }
 
   .stageHeader,
-  .recordingItem {
+  .recordingMeta {
     align-items: stretch;
     flex-direction: column;
   }

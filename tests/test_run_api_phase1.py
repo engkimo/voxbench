@@ -118,6 +118,29 @@ def test_get_run_timeline_groups_stage_metrics_and_recordings(tmp_path: Path) ->
     assert all(metric["ts"] >= 0 for metric in serializer_stage["metrics"])
 
 
+def test_get_run_recording_audio_streams_stage_wav(tmp_path: Path) -> None:
+    app = create_app(artifact_root=tmp_path / "recordings")
+    client = TestClient(app)
+    payload = {
+        "config_name": "baseline",
+        "configs": [load_json(ROOT / "examples/configs/valid-baseline.json")],
+        "manifests": [load_json(path) for path in MANIFESTS],
+    }
+
+    response = client.post("/runs", json=payload)
+    assert response.status_code == 200
+    run = response.json()
+
+    audio_response = client.get(f"/runs/{run['run_id']}/recordings/resampler/audio")
+
+    assert audio_response.status_code == 200
+    assert audio_response.headers["content-type"].startswith("audio/wav")
+    assert audio_response.content.startswith(b"RIFF")
+
+    missing_response = client.get(f"/runs/{run['run_id']}/recordings/not-a-stage/audio")
+    assert missing_response.status_code == 404
+
+
 def _stage_lane(timeline: dict[str, object], stage_name: str) -> dict[str, object]:
     stages = timeline["lanes"]["stages"]
     for stage in stages:
