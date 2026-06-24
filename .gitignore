@@ -6,6 +6,7 @@
 artifacts/
 __pycache__/
 *.py[cod]
+node_modules/
 dist/
 build/
 *.egg-info/
