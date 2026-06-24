@@ -1,4 +1,4 @@
-"""SQLAlchemy models for Phase 0 registry tables."""
+"""SQLAlchemy models for control-plane tables."""
 
 from __future__ import annotations
 
@@ -6,7 +6,16 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -107,3 +116,35 @@ class Span(TimestampMixin, Base):
     start_ns: Mapped[int] = mapped_column(nullable=False)
     end_ns: Mapped[int] = mapped_column(nullable=False)
     attrs: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+
+
+class Verification(TimestampMixin, Base):
+    __tablename__ = "verifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    stage: Mapped[str] = mapped_column(String(255), nullable=False)
+    invariant: Mapped[str] = mapped_column(String(64), nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    observed: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    expected: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class Metric(Base):
+    __tablename__ = "metrics"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    stage: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    value: Mapped[float] = mapped_column(nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

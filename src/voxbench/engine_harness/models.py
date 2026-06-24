@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 
@@ -33,9 +34,17 @@ class SpanArtifact:
 
 
 @dataclass(frozen=True)
+class MetricArtifact:
+    stage: str | None
+    name: str
+    value: float
+    ts: datetime
+
+
+@dataclass(frozen=True)
 class HarnessResult:
     run_id: str
     conversation_id: str
     recordings: list[RecordingArtifact]
     spans: list[SpanArtifact]
-
+    metrics: list[MetricArtifact]
