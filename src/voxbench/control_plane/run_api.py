@@ -59,6 +59,49 @@ class MetricResponse(BaseModel):
     ts: datetime
 
 
+class TimelineMetricPoint(BaseModel):
+    ts: float
+    name: str
+    value: float
+
+
+class TimelineViolation(BaseModel):
+    invariant: str
+    passed: bool
+    detail: str
+    observed: dict[str, Any]
+    expected: dict[str, Any]
+
+
+class TimelineStageLane(BaseModel):
+    stage: str
+    metrics: list[TimelineMetricPoint]
+    violations: list[TimelineViolation]
+
+
+class TimelineRecording(BaseModel):
+    stage: str
+    uri: str
+    format: dict[str, Any]
+    duration_ms: float
+
+
+class TimelineLanes(BaseModel):
+    sip_ladder: list[dict[str, Any]]
+    rtp_quality: list[dict[str, Any]]
+    stages: list[TimelineStageLane]
+    turns: list[dict[str, Any]]
+    host: list[dict[str, Any]]
+    recordings: list[TimelineRecording]
+
+
+class TimelineResponse(BaseModel):
+    run_id: str
+    t0: datetime
+    config_hash: str
+    lanes: TimelineLanes
+
+
 class RunResponse(BaseModel):
     run_id: str
     config_hash: str
@@ -106,6 +149,61 @@ class StoredRun:
                 VerificationResponse(**verification.__dict__)
                 for verification in self.verifications
             ],
+        )
+
+    def to_timeline(self) -> TimelineResponse:
+        stage_names = [
+            stage["type"]
+            for stage in self.resolved_config["spec"]["media"]["pipeline"]
+        ]
+        metrics_by_stage = {
+            stage: [
+                TimelineMetricPoint(
+                    ts=_relative_seconds(metric.ts, self.started_at),
+                    name=metric.name,
+                    value=metric.value,
+                )
+                for metric in self.metrics
+                if metric.stage == stage
+            ]
+            for stage in stage_names
+        }
+        violations_by_stage = {
+            stage: [
+                TimelineViolation(
+                    invariant=verification.invariant,
+                    passed=verification.passed,
+                    detail=verification.detail,
+                    observed=verification.observed,
+                    expected=verification.expected,
+                )
+                for verification in self.verifications
+                if verification.stage == stage and not verification.passed
+            ]
+            for stage in stage_names
+        }
+        return TimelineResponse(
+            run_id=self.run_id,
+            t0=self.started_at,
+            config_hash=self.config_hash,
+            lanes=TimelineLanes(
+                sip_ladder=[],
+                rtp_quality=[],
+                stages=[
+                    TimelineStageLane(
+                        stage=stage,
+                        metrics=metrics_by_stage[stage],
+                        violations=violations_by_stage[stage],
+                    )
+                    for stage in stage_names
+                ],
+                turns=[],
+                host=[],
+                recordings=[
+                    TimelineRecording(**recording.__dict__)
+                    for recording in self.recordings
+                ],
+            ),
         )
 
 
@@ -209,6 +307,16 @@ def create_runs_router() -> APIRouter:
             for verification in stored.verifications
         ]
 
+    @router.get("/runs/{run_id}/timeline", response_model=TimelineResponse)
+    async def get_run_timeline(
+        run_id: str,
+        api_state: RunApiStateDependency,
+    ) -> TimelineResponse:
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        return stored.to_timeline()
+
     @router.get("/runs/{run_id}/metrics", response_model=list[MetricResponse])
     async def get_run_metrics(
         run_id: str,
@@ -220,3 +328,7 @@ def create_runs_router() -> APIRouter:
         return [MetricResponse(**metric.__dict__) for metric in stored.metrics]
 
     return router
+
+
+def _relative_seconds(ts: datetime, t0: datetime) -> float:
+    return max(0.0, (ts - t0).total_seconds())
