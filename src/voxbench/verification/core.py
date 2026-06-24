@@ -17,6 +17,7 @@ DEFAULT_DURATION_TOLERANCE_RATIO = 0.02
 DEFAULT_LEVEL_TOLERANCE_DB = 3.0
 DEFAULT_FRAME_RATIO_TOLERANCE = 0.02
 DEFAULT_CADENCE_JITTER_TOLERANCE_RATIO = 0.25
+LOSSY_EXPECTED_INVARIANT_EXCEPTIONS = {"bandwidth_limit": {"level_preserving"}}
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,16 @@ def verify_recordings(
                 previous = current
                 continue
             for invariant in signal_invariants:
+                lossy_reasons = _lossy_expected_reasons(stage, invariant)
+                if lossy_reasons:
+                    results.append(
+                        _verify_lossy_expected_exception(
+                            stage=current.stage,
+                            invariant=invariant,
+                            lossy_reasons=lossy_reasons,
+                        )
+                    )
+                    continue
                 if invariant == "duration_preserving":
                     result = _verify_duration(
                         stage=current.stage,
@@ -108,6 +119,34 @@ def verify_recordings(
             previous = current
 
     return results
+
+
+def _lossy_expected_reasons(stage: dict[str, Any], invariant: str) -> list[str]:
+    reasons = []
+    for reason in stage.get("lossy_expected", []):
+        exempted = LOSSY_EXPECTED_INVARIANT_EXCEPTIONS.get(reason, set())
+        if invariant in exempted:
+            reasons.append(reason)
+    return reasons
+
+
+def _verify_lossy_expected_exception(
+    *,
+    stage: str,
+    invariant: str,
+    lossy_reasons: list[str],
+) -> VerificationResult:
+    return VerificationResult(
+        stage=stage,
+        invariant=invariant,
+        passed=True,
+        observed={"lossy_expected": lossy_reasons},
+        expected={"comparison": "suppressed_for_expected_loss"},
+        detail=(
+            f"{invariant} comparison suppressed because lossy_expected declares "
+            f"{', '.join(lossy_reasons)}"
+        ),
+    )
 
 
 def _try_read_wav_stats(recording: RecordingArtifact) -> WavStats | None:

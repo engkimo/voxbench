@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 from voxbench.registry.service import RegistryService, load_json
@@ -121,12 +122,38 @@ def test_synthetic_artifacts_trigger_isochronous_failure(tmp_path: Path) -> None
     assert result.observed["frames_out_in_ratio"] == 0.14
 
 
+def test_synthetic_artifacts_respect_lossy_expected_level_exception(tmp_path: Path) -> None:
+    resolved = _resolved_baseline()
+    serializer = _stage(resolved, "serializer")
+    serializer["invariants_applicable"] = [
+        *serializer["invariants_applicable"],
+        "level_preserving",
+    ]
+
+    artifacts = generate_synthetic_artifacts(
+        resolved_config=resolved,
+        output_root=tmp_path,
+        audio_spec=_audio_spec(),
+        degradations={"serializer": SyntheticStageDegradation(level_scale=0.2)},
+    )
+    results = verify_recordings(
+        resolved_config=resolved,
+        recordings=artifacts.recordings,
+        metrics=artifacts.metrics,
+    )
+
+    result = _only(results, stage="serializer", invariant="level_preserving")
+    assert result.passed is True
+    assert result.observed["lossy_expected"] == ["bandwidth_limit"]
+    assert result.expected["comparison"] == "suppressed_for_expected_loss"
+
+
 def _resolved_baseline() -> dict[str, object]:
     service = RegistryService()
     for manifest in MANIFESTS:
         service.register_manifest(load_json(manifest))
     service.register_config(load_json(ROOT / "examples/configs/valid-baseline.json"))
-    return service.resolve_config("baseline").resolved
+    return deepcopy(service.resolve_config("baseline").resolved)
 
 
 def _audio_spec() -> SyntheticAudioSpec:
@@ -147,3 +174,11 @@ def _only(results, *, stage: str, invariant: str):
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def _stage(resolved: dict[str, object], stage_name: str) -> dict[str, object]:
+    stages = resolved["spec"]["media"]["pipeline"]
+    for stage in stages:
+        if stage["type"] == stage_name:
+            return stage
+    raise AssertionError(f"unknown stage: {stage_name}")
