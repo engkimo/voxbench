@@ -48,6 +48,7 @@ export function App() {
   const [draftCompareRunId, setDraftCompareRunId] = useState('')
   const [runId, setRunId] = useState('')
   const [compareRunId, setCompareRunId] = useState('')
+  const [selectedStageName, setSelectedStageName] = useState<string | null>(null)
 
   const timelineQuery = useQuery({
     queryKey: ['timeline', apiBase, runId],
@@ -87,6 +88,12 @@ export function App() {
         0,
       ) ?? 0,
     [compareTimeline],
+  )
+  const selectedStage =
+    timeline?.lanes.stages.find((stage) => stage.stage === selectedStageName) ??
+    timeline?.lanes.stages[0]
+  const selectedRecording = timeline?.lanes.recordings.find(
+    (recording) => recording.stage === selectedStage?.stage,
   )
 
   return (
@@ -198,7 +205,12 @@ export function App() {
             ) : null}
             <div className="stageStack">
               {timeline.lanes.stages.map((stage) => (
-                <StageLane key={stage.stage} stage={stage} />
+                <StageLane
+                  key={stage.stage}
+                  onSelect={() => setSelectedStageName(stage.stage)}
+                  selected={stage.stage === selectedStage?.stage}
+                  stage={stage}
+                />
               ))}
             </div>
           </div>
@@ -223,6 +235,14 @@ export function App() {
               primaryRunId={runId}
               runs={runsQuery.data ?? []}
             />
+            {selectedStage ? (
+              <StageDetail
+                apiBase={apiBase}
+                recording={selectedRecording}
+                runId={timeline.run_id}
+                stage={selectedStage}
+              />
+            ) : null}
             <Recordings
               apiBase={apiBase}
               recordings={timeline.lanes.recordings}
@@ -374,10 +394,29 @@ function ComparisonTable({
   )
 }
 
-function StageLane({ stage }: { stage: TimelineStageLane }) {
+function StageLane({
+  onSelect,
+  selected,
+  stage,
+}: {
+  onSelect: () => void
+  selected: boolean
+  stage: TimelineStageLane
+}) {
   const failed = stage.violations.length > 0
   return (
-    <article className={`stageLane ${failed ? 'failed' : 'passed'}`}>
+    <article
+      className={`stageLane ${failed ? 'failed' : 'passed'} ${selected ? 'selected' : ''}`}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect()
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
       <div className="stageHeader">
         <div>
           <h3>{stage.stage}</h3>
@@ -400,6 +439,76 @@ function StageLane({ stage }: { stage: TimelineStageLane }) {
         </div>
       ) : null}
     </article>
+  )
+}
+
+function StageDetail({
+  apiBase,
+  recording,
+  runId,
+  stage,
+}: {
+  apiBase: string
+  recording?: TimelineRecording
+  runId: string
+  stage: TimelineStageLane
+}) {
+  const base = apiBase.replace(/\/$/, '')
+  const audioSrc = recording
+    ? `${base}/runs/${encodeURIComponent(runId)}/recordings/${encodeURIComponent(recording.stage)}/audio`
+    : null
+
+  return (
+    <section className="stageDetail">
+      <div className="sectionHeader compact">
+        <Activity size={17} />
+        <h2>Stage detail</h2>
+      </div>
+      <div className="detailTitle">
+        <strong>{stage.stage}</strong>
+        <span>{stage.violations.length} violations</span>
+      </div>
+      <div className="detailMetrics">
+        {stage.metrics.map((metric) => (
+          <div className="detailMetric" key={`${metric.name}-${metric.ts}`}>
+            <span>{metric.name}</span>
+            <strong>{formatNumber(metric.value)}</strong>
+          </div>
+        ))}
+        {stage.metrics.length === 0 ? <div className="emptyInline">No metrics</div> : null}
+      </div>
+      {stage.violations.length > 0 ? (
+        <div className="detailViolations">
+          {stage.violations.map((violation) => (
+            <article className="detailViolation" key={violation.invariant}>
+              <strong>{violation.invariant}</strong>
+              <span>{violation.detail}</span>
+              <JsonBlock label="Observed" value={violation.observed} />
+              <JsonBlock label="Expected" value={violation.expected} />
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="emptyInline">No failed verifications</div>
+      )}
+      {audioSrc ? (
+        <div className="detailAudio">
+          <strong>Recording</strong>
+          <audio controls preload="none" src={audioSrc} />
+        </div>
+      ) : (
+        <div className="emptyInline">No recording for this stage</div>
+      )}
+    </section>
+  )
+}
+
+function JsonBlock({ label, value }: { label: string; value: Record<string, unknown> }) {
+  return (
+    <details className="jsonBlock">
+      <summary>{label}</summary>
+      <pre>{JSON.stringify(value, null, 2)}</pre>
+    </details>
   )
 }
 

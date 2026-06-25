@@ -277,6 +277,8 @@ a {
   border-radius: 8px;
   padding: 12px;
   background: #ffffff;
+  cursor: pointer;
+  outline: none;
 }
 
 .stageLane.passed {
@@ -285,6 +287,15 @@ a {
 
 .stageLane.failed {
   border-left-color: #c84b52;
+}
+
+.stageLane.selected {
+  border-color: #1f6f78;
+  box-shadow: 0 0 0 2px rgba(31, 111, 120, 0.14);
+}
+
+.stageLane:focus-visible {
+  box-shadow: 0 0 0 3px rgba(31, 111, 120, 0.24);
 }
 
 .stageHeader {
@@ -392,7 +403,8 @@ a {
 
 .laneStatus,
 .recordings,
-.recentRuns {
+.recentRuns,
+.stageDetail {
   border: 1px solid #d0d8e1;
   border-radius: 8px;
   padding: 12px;
@@ -481,6 +493,120 @@ a {
   background: #ffffff;
   font-size: 12px;
   font-weight: 800;
+}
+
+.stageDetail {
+  display: grid;
+  gap: 10px;
+}
+
+.detailTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.detailTitle strong,
+.detailTitle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailTitle span {
+  color: #657384;
+  font-size: 12px;
+}
+
+.detailMetrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.detailMetric {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.detailMetric span,
+.detailMetric strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailMetric span {
+  color: #657384;
+  font-size: 11px;
+}
+
+.detailMetric strong {
+  color: #17202c;
+  font-size: 13px;
+}
+
+.detailViolations {
+  display: grid;
+  gap: 8px;
+}
+
+.detailViolation {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #e0a2a2;
+  border-radius: 7px;
+  padding: 9px;
+  color: #8e2f35;
+  background: #fff4f4;
+}
+
+.detailViolation span {
+  font-size: 13px;
+}
+
+.jsonBlock {
+  border: 1px solid #e8baba;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.jsonBlock summary {
+  cursor: pointer;
+  padding: 7px 8px;
+  color: #6c3438;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.jsonBlock pre {
+  overflow-x: auto;
+  margin: 0;
+  padding: 8px;
+  border-top: 1px solid #e8baba;
+  color: #334050;
+  font-size: 11px;
+}
+
+.detailAudio {
+  display: grid;
+  gap: 7px;
+}
+
+.detailAudio strong {
+  font-size: 13px;
+}
+
+.detailAudio audio {
+  width: 100%;
+  height: 34px;
 }
 
 .recordingItem {
