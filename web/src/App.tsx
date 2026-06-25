@@ -35,20 +35,29 @@ async function fetchTimeline(apiBase: string, runId: string): Promise<TimelineRe
 export function App() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE)
   const [draftRunId, setDraftRunId] = useState('')
+  const [draftCompareRunId, setDraftCompareRunId] = useState('')
   const [runId, setRunId] = useState('')
+  const [compareRunId, setCompareRunId] = useState('')
 
   const timelineQuery = useQuery({
     queryKey: ['timeline', apiBase, runId],
     queryFn: () => fetchTimeline(apiBase, runId),
     enabled: runId.trim().length > 0,
   })
+  const compareTimelineQuery = useQuery({
+    queryKey: ['timeline-compare', apiBase, compareRunId],
+    queryFn: () => fetchTimeline(apiBase, compareRunId),
+    enabled: compareRunId.trim().length > 0,
+  })
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setRunId(draftRunId.trim())
+    setCompareRunId(draftCompareRunId.trim())
   }
 
   const timeline = timelineQuery.data
+  const compareTimeline = compareTimelineQuery.data
   const failedCount = useMemo(
     () =>
       timeline?.lanes.stages.reduce(
@@ -57,13 +66,24 @@ export function App() {
       ) ?? 0,
     [timeline],
   )
+  const compareFailedCount = useMemo(
+    () =>
+      compareTimeline?.lanes.stages.reduce(
+        (count, stage) => count + stage.violations.length,
+        0,
+      ) ?? 0,
+    [compareTimeline],
+  )
 
   return (
     <main className="appShell">
       <header className="topBar">
         <div>
           <h1>VoxBench</h1>
-          <p>{timeline ? shortHash(timeline.config_hash) : 'timeline inspector'}</p>
+          <p>
+            {timeline ? shortHash(timeline.config_hash) : 'timeline inspector'}
+            {compareTimeline ? ` vs ${shortHash(compareTimeline.config_hash)}` : ''}
+          </p>
         </div>
         <form className="runForm" onSubmit={submit}>
           <label>
@@ -75,11 +95,19 @@ export function App() {
             />
           </label>
           <label>
-            Run
+            Primary
             <input
               value={draftRunId}
               onChange={(event) => setDraftRunId(event.target.value)}
               placeholder="run_id"
+            />
+          </label>
+          <label>
+            Compare
+            <input
+              value={draftCompareRunId}
+              onChange={(event) => setDraftCompareRunId(event.target.value)}
+              placeholder="optional run_id"
             />
           </label>
           <button type="submit" title="Fetch timeline">
@@ -89,7 +117,12 @@ export function App() {
           <button
             type="button"
             title="Refresh"
-            onClick={() => void timelineQuery.refetch()}
+            onClick={() => {
+              void timelineQuery.refetch()
+              if (compareRunId) {
+                void compareTimelineQuery.refetch()
+              }
+            }}
             disabled={!runId}
           >
             <RefreshCw size={17} />
@@ -99,17 +132,23 @@ export function App() {
 
       <section className="summaryGrid">
         <SummaryTile icon={<Database size={18} />} label="Run" value={timeline?.run_id ?? '-'} />
-        <SummaryTile icon={<Clock3 size={18} />} label="t0" value={formatDate(timeline?.t0)} />
+        <SummaryTile icon={<Database size={18} />} label="Compare" value={compareTimeline?.run_id ?? '-'} />
         <SummaryTile icon={<AlertTriangle size={18} />} label="Violations" value={failedCount} />
         <SummaryTile
-          icon={<Headphones size={18} />}
-          label="Recordings"
-          value={timeline?.lanes.recordings.length ?? 0}
+          icon={<Clock3 size={18} />}
+          label="Compare Fails"
+          value={compareTimeline ? compareFailedCount : '-'}
         />
       </section>
 
       {timelineQuery.isPending && runId ? <StatusPanel state="loading" /> : null}
       {timelineQuery.isError ? <StatusPanel state="error" detail={timelineQuery.error.message} /> : null}
+      {compareTimelineQuery.isPending && compareRunId ? (
+        <StatusPanel state="loading" detail="Fetching comparison" />
+      ) : null}
+      {compareTimelineQuery.isError ? (
+        <StatusPanel state="error" detail={`Compare: ${compareTimelineQuery.error.message}`} />
+      ) : null}
       {!runId ? <StatusPanel state="idle" /> : null}
 
       {timeline ? (
@@ -119,6 +158,9 @@ export function App() {
               <Activity size={18} />
               <h2>Stages</h2>
             </div>
+            {compareTimeline ? (
+              <ComparisonTable primary={timeline} compare={compareTimeline} />
+            ) : null}
             <div className="stageStack">
               {timeline.lanes.stages.map((stage) => (
                 <StageLane key={stage.stage} stage={stage} />
@@ -164,7 +206,7 @@ function SummaryTile({
 function StatusPanel({ state, detail }: { state: 'idle' | 'loading' | 'error'; detail?: string }) {
   const copy = {
     idle: ['Ready', 'Enter a run_id'],
-    loading: ['Loading', 'Fetching timeline'],
+    loading: ['Loading', detail ?? 'Fetching timeline'],
     error: ['Error', detail ?? 'Request failed'],
   }[state]
 
@@ -174,6 +216,48 @@ function StatusPanel({ state, detail }: { state: 'idle' | 'loading' | 'error'; d
       <div>
         <strong>{copy[0]}</strong>
         <span>{copy[1]}</span>
+      </div>
+    </section>
+  )
+}
+
+function ComparisonTable({
+  primary,
+  compare,
+}: {
+  primary: TimelineResponse
+  compare: TimelineResponse
+}) {
+  const compareStages = stageMap(compare)
+  return (
+    <section className="comparisonPanel">
+      <div className="comparisonHeader">
+        <div>
+          <h3>Run comparison</h3>
+          <span>
+            {shortHash(primary.config_hash)} vs {shortHash(compare.config_hash)}
+          </span>
+        </div>
+        <span>{compare.lanes.recordings.length} compare recordings</span>
+      </div>
+      <div className="comparisonTable" role="table">
+        <div className="comparisonRow header" role="row">
+          <span>Stage</span>
+          <span>Primary</span>
+          <span>Compare</span>
+          <span>Metric deltas</span>
+        </div>
+        {primary.lanes.stages.map((stage) => {
+          const compareStage = compareStages.get(stage.stage)
+          return (
+            <div className="comparisonRow" key={stage.stage} role="row">
+              <strong>{stage.stage}</strong>
+              <span>{stage.violations.length} fail</span>
+              <span>{compareStage ? `${compareStage.violations.length} fail` : 'missing'}</span>
+              <span>{compareStage ? metricDeltas(stage, compareStage) : '-'}</span>
+            </div>
+          )
+        })}
       </div>
     </section>
   )
@@ -285,4 +369,27 @@ function formatDate(value?: string) {
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(3)
+}
+
+function stageMap(timeline: TimelineResponse) {
+  return new Map(timeline.lanes.stages.map((stage) => [stage.stage, stage]))
+}
+
+function metricDeltas(primary: TimelineStageLane, compare: TimelineStageLane) {
+  const compareMetrics = new Map(compare.metrics.map((metric) => [metric.name, metric.value]))
+  const deltas = primary.metrics
+    .filter((metric) => compareMetrics.has(metric.name))
+    .slice(0, 3)
+    .map((metric) => {
+      const delta = (compareMetrics.get(metric.name) ?? 0) - metric.value
+      return `${metric.name} ${formatSigned(delta)}`
+    })
+
+  return deltas.length > 0 ? deltas.join(', ') : 'no shared metrics'
+}
+
+function formatSigned(value: number) {
+  if (value === 0) return '0'
+  const formatted = Number.isInteger(value) ? String(Math.abs(value)) : Math.abs(value).toFixed(3)
+  return `${value > 0 ? '+' : '-'}${formatted}`
 }

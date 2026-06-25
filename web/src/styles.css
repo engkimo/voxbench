@@ -75,7 +75,7 @@ a {
 
 .runForm {
   display: grid;
-  grid-template-columns: minmax(150px, 220px) minmax(220px, 360px) auto auto;
+  grid-template-columns: minmax(130px, 190px) minmax(200px, 330px) minmax(200px, 330px) auto auto;
   align-items: end;
   gap: 10px;
 }
@@ -207,6 +207,68 @@ a {
 .stageStack {
   display: grid;
   gap: 10px;
+}
+
+.comparisonPanel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  border: 1px solid #cbd7df;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.comparisonHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.comparisonHeader h3 {
+  margin: 0;
+  color: #17202c;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.comparisonHeader span {
+  color: #657384;
+  font-size: 12px;
+}
+
+.comparisonTable {
+  display: grid;
+  gap: 1px;
+  overflow-x: auto;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  background: #dde4eb;
+}
+
+.comparisonRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(80px, 0.5fr) minmax(80px, 0.5fr) minmax(240px, 2fr);
+  gap: 10px;
+  min-width: 620px;
+  padding: 9px;
+  color: #334050;
+  background: #ffffff;
+}
+
+.comparisonRow.header {
+  color: #536272;
+  font-size: 12px;
+  font-weight: 800;
+  background: #f4f7fa;
+}
+
+.comparisonRow strong,
+.comparisonRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stageLane {
