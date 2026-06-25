@@ -118,6 +118,18 @@ class RunResponse(BaseModel):
     verifications: list[VerificationResponse]
 
 
+class RunSummaryResponse(BaseModel):
+    run_id: str
+    config_hash: str
+    provider: str
+    engine: str
+    status: str
+    started_at: datetime
+    ended_at: datetime
+    recording_count: int
+    violation_count: int
+
+
 @dataclass
 class StoredRun:
     run_id: str
@@ -151,6 +163,21 @@ class StoredRun:
                 VerificationResponse(**verification.__dict__)
                 for verification in self.verifications
             ],
+        )
+
+    def to_summary(self) -> RunSummaryResponse:
+        return RunSummaryResponse(
+            run_id=self.run_id,
+            config_hash=self.config_hash,
+            provider=self.provider,
+            engine=self.engine,
+            status=self.status,
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+            recording_count=len(self.recordings),
+            violation_count=sum(
+                1 for verification in self.verifications if not verification.passed
+            ),
         )
 
     def to_timeline(self) -> TimelineResponse:
@@ -219,6 +246,9 @@ class InMemoryRunRepository:
     def get(self, run_id: str) -> StoredRun | None:
         return self.runs.get(run_id)
 
+    def list_recent(self) -> list[StoredRun]:
+        return sorted(self.runs.values(), key=lambda run: run.started_at, reverse=True)
+
 
 @dataclass
 class RunApiState:
@@ -285,6 +315,10 @@ def create_runs_router() -> APIRouter:
         )
         api_state.repository.save(stored)
         return stored.to_response()
+
+    @router.get("/runs", response_model=list[RunSummaryResponse])
+    async def list_runs(api_state: RunApiStateDependency) -> list[RunSummaryResponse]:
+        return [run.to_summary() for run in api_state.repository.list_recent()]
 
     @router.get("/runs/{run_id}", response_model=RunResponse)
     async def get_run(

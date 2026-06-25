@@ -75,6 +75,30 @@ def test_post_runs_with_default_relative_artifact_root() -> None:
     assert response.json()["recordings"][0]["uri"].startswith("file://")
 
 
+def test_get_runs_lists_recent_run_summaries(tmp_path: Path) -> None:
+    app = create_app(artifact_root=tmp_path / "recordings")
+    client = TestClient(app)
+    payload = {
+        "config_name": "baseline",
+        "configs": [load_json(ROOT / "examples/configs/valid-baseline.json")],
+        "manifests": [load_json(path) for path in MANIFESTS],
+    }
+
+    first = client.post("/runs", json=payload).json()
+    second = client.post("/runs", json=payload).json()
+
+    response = client.get("/runs")
+
+    assert response.status_code == 200
+    summaries = response.json()
+    assert [summary["run_id"] for summary in summaries] == [second["run_id"], first["run_id"]]
+    assert summaries[0]["config_hash"] == second["config_hash"]
+    assert summaries[0]["recording_count"] == 4
+    assert summaries[0]["violation_count"] == 0
+    assert summaries[0]["provider"] == "gemini"
+    assert summaries[0]["engine"] == "asterisk"
+
+
 def test_get_run_timeline_groups_stage_metrics_and_recordings(tmp_path: Path) -> None:
     app = create_app(artifact_root=tmp_path / "recordings")
     client = TestClient(app)

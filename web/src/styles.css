@@ -391,11 +391,16 @@ a {
 }
 
 .laneStatus,
-.recordings {
+.recordings,
+.recentRuns {
   border: 1px solid #d0d8e1;
   border-radius: 8px;
   padding: 12px;
   background: #ffffff;
+}
+
+.recentRunsWide {
+  margin-bottom: 18px;
 }
 
 .laneStatus {
@@ -423,6 +428,59 @@ a {
 .recordingList {
   display: grid;
   gap: 8px;
+}
+
+.recentRunList {
+  display: grid;
+  gap: 8px;
+}
+
+.recentRunItem {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 9px;
+  background: #f8fafc;
+}
+
+.recentRunMeta {
+  display: grid;
+  grid-template-columns: minmax(70px, 0.7fr) minmax(110px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recentRunMeta strong,
+.recentRunMeta span,
+.recentRunMeta em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recentRunMeta span,
+.recentRunMeta em {
+  color: #657384;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.recentRunActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.recentRunActions button {
+  min-height: 30px;
+  border-color: #b9c5d1;
+  color: #1f6f78;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .recordingItem {
@@ -490,5 +548,9 @@ a {
   .recordingMeta {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .recentRunMeta {
+    grid-template-columns: 1fr;
   }
 }

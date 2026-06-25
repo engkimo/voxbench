@@ -19,6 +19,7 @@ import type {
   TimelineRecording,
   TimelineResponse,
   TimelineStageLane,
+  RunSummary,
 } from './types'
 
 const DEFAULT_API_BASE = '/api'
@@ -26,6 +27,15 @@ const DEFAULT_API_BASE = '/api'
 async function fetchTimeline(apiBase: string, runId: string): Promise<TimelineResponse> {
   const base = apiBase.replace(/\/$/, '')
   const response = await fetch(`${base}/runs/${encodeURIComponent(runId)}/timeline`)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function fetchRuns(apiBase: string): Promise<RunSummary[]> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/runs`)
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
@@ -48,6 +58,10 @@ export function App() {
     queryKey: ['timeline-compare', apiBase, compareRunId],
     queryFn: () => fetchTimeline(apiBase, compareRunId),
     enabled: compareRunId.trim().length > 0,
+  })
+  const runsQuery = useQuery({
+    queryKey: ['runs', apiBase],
+    queryFn: () => fetchRuns(apiBase),
   })
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -119,6 +133,7 @@ export function App() {
             title="Refresh"
             onClick={() => {
               void timelineQuery.refetch()
+              void runsQuery.refetch()
               if (compareRunId) {
                 void compareTimelineQuery.refetch()
               }
@@ -151,6 +166,26 @@ export function App() {
       ) : null}
       {!runId ? <StatusPanel state="idle" /> : null}
 
+      {!timeline ? (
+        <div className="recentRunsWide">
+          <RecentRuns
+            compareRunId={compareRunId}
+            isError={runsQuery.isError}
+            isLoading={runsQuery.isPending}
+            onUseCompare={(id) => {
+              setDraftCompareRunId(id)
+              setCompareRunId(id)
+            }}
+            onUsePrimary={(id) => {
+              setDraftRunId(id)
+              setRunId(id)
+            }}
+            primaryRunId={runId}
+            runs={runsQuery.data ?? []}
+          />
+        </div>
+      ) : null}
+
       {timeline ? (
         <section className="timelineGrid">
           <div className="timelineMain">
@@ -173,6 +208,21 @@ export function App() {
             <LaneStatus title="RTP" icon={<Waves size={17} />} count={timeline.lanes.rtp_quality.length} />
             <LaneStatus title="Turns" icon={<Headphones size={17} />} count={timeline.lanes.turns.length} />
             <LaneStatus title="Host" icon={<Server size={17} />} count={timeline.lanes.host.length} />
+            <RecentRuns
+              compareRunId={compareRunId}
+              isError={runsQuery.isError}
+              isLoading={runsQuery.isPending}
+              onUseCompare={(id) => {
+                setDraftCompareRunId(id)
+                setCompareRunId(id)
+              }}
+              onUsePrimary={(id) => {
+                setDraftRunId(id)
+                setRunId(id)
+              }}
+              primaryRunId={runId}
+              runs={runsQuery.data ?? []}
+            />
             <Recordings
               apiBase={apiBase}
               recordings={timeline.lanes.recordings}
@@ -182,6 +232,67 @@ export function App() {
         </section>
       ) : null}
     </main>
+  )
+}
+
+function RecentRuns({
+  compareRunId,
+  isError,
+  isLoading,
+  onUseCompare,
+  onUsePrimary,
+  primaryRunId,
+  runs,
+}: {
+  compareRunId: string
+  isError: boolean
+  isLoading: boolean
+  onUseCompare: (id: string) => void
+  onUsePrimary: (id: string) => void
+  primaryRunId: string
+  runs: RunSummary[]
+}) {
+  return (
+    <section className="recentRuns">
+      <div className="sectionHeader compact">
+        <Database size={17} />
+        <h2>Recent runs</h2>
+      </div>
+      {isLoading ? <div className="emptyInline">Loading runs</div> : null}
+      {isError ? <div className="emptyInline">Run list unavailable</div> : null}
+      {!isLoading && !isError && runs.length === 0 ? (
+        <div className="emptyInline">No runs in this process</div>
+      ) : null}
+      <div className="recentRunList">
+        {runs.map((run) => (
+          <article key={run.run_id} className="recentRunItem">
+            <div className="recentRunMeta">
+              <strong>{shortId(run.run_id)}</strong>
+              <span>{shortHash(run.config_hash)}</span>
+              <em>
+                {run.recording_count} rec / {run.violation_count} fail
+              </em>
+            </div>
+            <div className="recentRunActions">
+              <button
+                type="button"
+                onClick={() => onUsePrimary(run.run_id)}
+                disabled={run.run_id === primaryRunId}
+              >
+                Primary
+              </button>
+              <button
+                type="button"
+                onClick={() => onUseCompare(run.run_id)}
+                disabled={run.run_id === compareRunId}
+              >
+                Compare
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -356,6 +467,10 @@ function Recordings({
 
 function shortHash(hash: string) {
   return hash.slice(0, 12)
+}
+
+function shortId(id: string) {
+  return id.slice(0, 8)
 }
 
 function formatDate(value?: string) {

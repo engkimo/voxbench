@@ -38,3 +38,15 @@ export type TimelineResponse = {
     recordings: TimelineRecording[]
   }
 }
+
+export type RunSummary = {
+  run_id: string
+  config_hash: string
+  provider: string
+  engine: string
+  status: string
+  started_at: string
+  ended_at: string
+  recording_count: number
+  violation_count: number
+}
