@@ -600,8 +600,47 @@ a {
   gap: 7px;
 }
 
-.detailAudio strong {
+.detailAudio > strong {
   font-size: 13px;
+}
+
+.detailAudio.compare {
+  gap: 9px;
+}
+
+.recordingWaveform {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.recordingWaveformHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  min-width: 0;
+}
+
+.recordingWaveformHeader strong,
+.recordingWaveformHeader span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recordingWaveformHeader strong {
+  color: #26323f;
+  font-size: 12px;
+}
+
+.recordingWaveformHeader span {
+  color: #657384;
+  font-size: 12px;
 }
 
 .waveformPlayer {

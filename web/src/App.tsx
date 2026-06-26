@@ -98,6 +98,12 @@ export function App() {
   const selectedRecording = timeline?.lanes.recordings.find(
     (recording) => recording.stage === selectedStage?.stage,
   )
+  const selectedCompareStage = compareTimeline?.lanes.stages.find(
+    (stage) => stage.stage === selectedStage?.stage,
+  )
+  const selectedCompareRecording = compareTimeline?.lanes.recordings.find(
+    (recording) => recording.stage === selectedStage?.stage,
+  )
 
   return (
     <main className="appShell">
@@ -241,6 +247,9 @@ export function App() {
             {selectedStage ? (
               <StageDetail
                 apiBase={apiBase}
+                compareRecording={selectedCompareRecording}
+                compareRunId={compareTimeline?.run_id}
+                compareStage={selectedCompareStage}
                 recording={selectedRecording}
                 runId={timeline.run_id}
                 stage={selectedStage}
@@ -447,11 +456,17 @@ function StageLane({
 
 function StageDetail({
   apiBase,
+  compareRecording,
+  compareRunId,
+  compareStage,
   recording,
   runId,
   stage,
 }: {
   apiBase: string
+  compareRecording?: TimelineRecording
+  compareRunId?: string
+  compareStage?: TimelineStageLane
   recording?: TimelineRecording
   runId: string
   stage: TimelineStageLane
@@ -460,6 +475,11 @@ function StageDetail({
   const audioSrc = recording
     ? `${base}/runs/${encodeURIComponent(runId)}/recordings/${encodeURIComponent(recording.stage)}/audio`
     : null
+  const compareAudioSrc =
+    compareRecording && compareRunId
+      ? `${base}/runs/${encodeURIComponent(compareRunId)}/recordings/${encodeURIComponent(compareRecording.stage)}/audio`
+      : null
+  const hasCompare = compareRunId !== undefined
 
   return (
     <section className="stageDetail">
@@ -469,7 +489,10 @@ function StageDetail({
       </div>
       <div className="detailTitle">
         <strong>{stage.stage}</strong>
-        <span>{stage.violations.length} violations</span>
+        <span>
+          {stage.violations.length} fail primary
+          {compareStage ? ` / ${compareStage.violations.length} fail compare` : ''}
+        </span>
       </div>
       <div className="detailMetrics">
         {stage.metrics.map((metric) => (
@@ -494,15 +517,42 @@ function StageDetail({
       ) : (
         <div className="emptyInline">No failed verifications</div>
       )}
-      {audioSrc ? (
-        <div className="detailAudio">
-          <strong>Recording</strong>
-          <WaveformPlayer src={audioSrc} />
-        </div>
-      ) : (
-        <div className="emptyInline">No recording for this stage</div>
-      )}
+      <div className={hasCompare ? 'detailAudio compare' : 'detailAudio'}>
+        <strong>Recording</strong>
+        <RecordingWaveform
+          durationMs={recording?.duration_ms}
+          label="Primary"
+          src={audioSrc}
+        />
+        {hasCompare ? (
+          <RecordingWaveform
+            durationMs={compareRecording?.duration_ms}
+            label="Compare"
+            src={compareAudioSrc}
+          />
+        ) : null}
+      </div>
     </section>
+  )
+}
+
+function RecordingWaveform({
+  durationMs,
+  label,
+  src,
+}: {
+  durationMs?: number
+  label: string
+  src: string | null
+}) {
+  return (
+    <div className="recordingWaveform">
+      <div className="recordingWaveformHeader">
+        <strong>{label}</strong>
+        <span>{durationMs !== undefined ? `${formatNumber(durationMs)} ms` : 'missing'}</span>
+      </div>
+      {src ? <WaveformPlayer src={src} /> : <div className="emptyInline">No recording</div>}
+    </div>
   )
 }
 
