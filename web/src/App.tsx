@@ -6,13 +6,16 @@ import {
   Clock3,
   Database,
   Headphones,
+  Pause,
+  Play,
   RefreshCw,
   Search,
   Server,
   Signal,
   Waves,
 } from 'lucide-react'
-import { FormEvent, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import WaveSurfer from 'wavesurfer.js'
 
 import type {
   TimelineMetricPoint,
@@ -494,12 +497,82 @@ function StageDetail({
       {audioSrc ? (
         <div className="detailAudio">
           <strong>Recording</strong>
-          <audio controls preload="none" src={audioSrc} />
+          <WaveformPlayer src={audioSrc} />
         </div>
       ) : (
         <div className="emptyInline">No recording for this stage</div>
       )}
     </section>
+  )
+}
+
+function WaveformPlayer({ src }: { src: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const waveRef = useRef<WaveSurfer | null>(null)
+  const [isReady, setIsReady] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!containerRef.current) {
+      return
+    }
+
+    setIsReady(false)
+    setIsPlaying(false)
+    setLoadError(null)
+
+    const wave = WaveSurfer.create({
+      container: containerRef.current,
+      cursorColor: '#c84b52',
+      height: 76,
+      normalize: true,
+      progressColor: '#1f6f78',
+      url: src,
+      waveColor: '#9eb5c1',
+      barGap: 1,
+      barWidth: 2,
+    })
+
+    waveRef.current = wave
+    wave.on('ready', () => setIsReady(true))
+    wave.on('play', () => setIsPlaying(true))
+    wave.on('pause', () => setIsPlaying(false))
+    wave.on('finish', () => setIsPlaying(false))
+    wave.on('error', () => {
+      setIsReady(false)
+      setIsPlaying(false)
+      setLoadError('Waveform unavailable')
+    })
+
+    return () => {
+      wave.destroy()
+      if (waveRef.current === wave) {
+        waveRef.current = null
+      }
+    }
+  }, [src])
+
+  return (
+    <div className="waveformPlayer">
+      <div className="waveformSurface" ref={containerRef} aria-label="Recording waveform" />
+      <div className="waveformControls">
+        <button
+          className="waveformButton"
+          disabled={!isReady}
+          onClick={() => {
+            void waveRef.current?.playPause()
+          }}
+          title={isPlaying ? 'Pause recording' : 'Play recording'}
+          type="button"
+        >
+          {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+          {isPlaying ? 'Pause' : 'Play'}
+        </button>
+        <span>{loadError ?? (isReady ? 'Waveform ready' : 'Loading waveform')}</span>
+      </div>
+      <audio className="nativeAudio" controls preload="none" src={src} />
+    </div>
   )
 }
 

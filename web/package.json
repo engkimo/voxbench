@@ -12,7 +12,8 @@
     "@tanstack/react-query": "^5.90.12",
     "lucide-react": "^0.562.0",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "wavesurfer.js": "^7.12.8"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

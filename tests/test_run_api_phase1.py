@@ -48,6 +48,8 @@ def test_post_runs_creates_run_recordings_and_spans(tmp_path: Path) -> None:
         path = Path(recording["uri"].removeprefix("file://"))
         assert path.exists()
         assert path.read_bytes().startswith(b"RIFF")
+        assert path.stat().st_size > 44
+        assert recording["duration_ms"] > 0
 
     run_spans = [span for span in body["spans"] if span["name"] == "voxbench.run"]
     assert len(run_spans) == 1

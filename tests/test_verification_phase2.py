@@ -108,7 +108,7 @@ def test_verifier_fails_isochronous_cadence_metrics() -> None:
     assert cadence_result.observed["frames_out_in_ratio"] == 0.14
 
 
-def test_run_metrics_and_verifications_endpoints_exist_for_phase1_empty_recordings(
+def test_run_metrics_and_verifications_endpoints_include_stage_tap_recording_checks(
     tmp_path: Path,
 ) -> None:
     app = create_app(artifact_root=tmp_path / "recordings")
@@ -134,6 +134,7 @@ def test_run_metrics_and_verifications_endpoints_exist_for_phase1_empty_recordin
         for verification in body["verifications"]
     } == {
         ("resampler", "isochronous", True),
+        ("serializer", "duration_preserving", True),
         ("serializer", "isochronous", True),
     }
 

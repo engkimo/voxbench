@@ -42,6 +42,7 @@ class EngineHarness:
                 conversation_id=conversation_id,
             ),
         ):
+            recording_duration_ms = _nominal_recording_duration_ms(resolved_config)
             for stage in build_stage_plan(resolved_config):
                 with self.tracer.tracer.start_as_current_span(
                     f"stage.tap.{stage.stage}",
@@ -60,6 +61,7 @@ class EngineHarness:
                             run_id=run_id,
                             stage=stage.stage,
                             audio_format=stage.format,
+                            duration_ms=recording_duration_ms,
                         )
                     )
                     metrics.extend(_nominal_cadence_metrics(resolved_config, stage.stage))
@@ -71,6 +73,17 @@ class EngineHarness:
             spans=self.tracer.finished_spans(),
             metrics=metrics,
         )
+
+
+def _nominal_recording_duration_ms(resolved_config: dict[str, Any]) -> float:
+    transport = resolved_config.get("spec", {}).get("transport", {})
+    if not isinstance(transport, dict):
+        return 0.0
+
+    ptime_ms = transport.get("ptime_ms")
+    if isinstance(ptime_ms, int | float) and ptime_ms > 0:
+        return float(ptime_ms)
+    return 0.0
 
 
 def _nominal_cadence_metrics(
