@@ -14,7 +14,7 @@ import {
   Signal,
   Waves,
 } from 'lucide-react'
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 
 import type {
@@ -480,6 +480,20 @@ function StageDetail({
       ? `${base}/runs/${encodeURIComponent(compareRunId)}/recordings/${encodeURIComponent(compareRecording.stage)}/audio`
       : null
   const hasCompare = compareRunId !== undefined
+  const [activePlayerId, setActivePlayerId] = useState<string | null>(null)
+  const primaryPlayerId = `${runId}:${stage.stage}:primary`
+  const comparePlayerId = compareRunId ? `${compareRunId}:${stage.stage}:compare` : null
+
+  const activatePlayer = useCallback((playerId: string) => {
+    setActivePlayerId(playerId)
+  }, [])
+  const deactivatePlayer = useCallback((playerId: string) => {
+    setActivePlayerId((current) => (current === playerId ? null : current))
+  }, [])
+
+  useEffect(() => {
+    setActivePlayerId(null)
+  }, [compareRunId, runId, stage.stage])
 
   return (
     <section className="stageDetail">
@@ -520,14 +534,22 @@ function StageDetail({
       <div className={hasCompare ? 'detailAudio compare' : 'detailAudio'}>
         <strong>Recording</strong>
         <RecordingWaveform
+          activePlayerId={activePlayerId}
           durationMs={recording?.duration_ms}
           label="Primary"
+          onActivate={activatePlayer}
+          onDeactivate={deactivatePlayer}
+          playerId={primaryPlayerId}
           src={audioSrc}
         />
-        {hasCompare ? (
+        {hasCompare && comparePlayerId ? (
           <RecordingWaveform
+            activePlayerId={activePlayerId}
             durationMs={compareRecording?.duration_ms}
             label="Compare"
+            onActivate={activatePlayer}
+            onDeactivate={deactivatePlayer}
+            playerId={comparePlayerId}
             src={compareAudioSrc}
           />
         ) : null}
@@ -537,26 +559,58 @@ function StageDetail({
 }
 
 function RecordingWaveform({
+  activePlayerId,
   durationMs,
   label,
+  onActivate,
+  onDeactivate,
+  playerId,
   src,
 }: {
+  activePlayerId: string | null
   durationMs?: number
   label: string
+  onActivate: (playerId: string) => void
+  onDeactivate: (playerId: string) => void
+  playerId: string
   src: string | null
 }) {
+  const isActive = activePlayerId === playerId
+
   return (
-    <div className="recordingWaveform">
+    <div className={isActive ? 'recordingWaveform active' : 'recordingWaveform'}>
       <div className="recordingWaveformHeader">
         <strong>{label}</strong>
         <span>{durationMs !== undefined ? `${formatNumber(durationMs)} ms` : 'missing'}</span>
       </div>
-      {src ? <WaveformPlayer src={src} /> : <div className="emptyInline">No recording</div>}
+      {src ? (
+        <WaveformPlayer
+          activePlayerId={activePlayerId}
+          onActivate={onActivate}
+          onDeactivate={onDeactivate}
+          playerId={playerId}
+          src={src}
+        />
+      ) : (
+        <div className="emptyInline">No recording</div>
+      )}
     </div>
   )
 }
 
-function WaveformPlayer({ src }: { src: string }) {
+function WaveformPlayer({
+  activePlayerId,
+  onActivate,
+  onDeactivate,
+  playerId,
+  src,
+}: {
+  activePlayerId: string | null
+  onActivate: (playerId: string) => void
+  onDeactivate: (playerId: string) => void
+  playerId: string
+  src: string
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const waveRef = useRef<WaveSurfer | null>(null)
   const [isReady, setIsReady] = useState(false)
@@ -586,12 +640,22 @@ function WaveformPlayer({ src }: { src: string }) {
 
     waveRef.current = wave
     wave.on('ready', () => setIsReady(true))
-    wave.on('play', () => setIsPlaying(true))
-    wave.on('pause', () => setIsPlaying(false))
-    wave.on('finish', () => setIsPlaying(false))
+    wave.on('play', () => {
+      setIsPlaying(true)
+      onActivate(playerId)
+    })
+    wave.on('pause', () => {
+      setIsPlaying(false)
+      onDeactivate(playerId)
+    })
+    wave.on('finish', () => {
+      setIsPlaying(false)
+      onDeactivate(playerId)
+    })
     wave.on('error', () => {
       setIsReady(false)
       setIsPlaying(false)
+      onDeactivate(playerId)
       setLoadError('Waveform unavailable')
     })
 
@@ -601,7 +665,13 @@ function WaveformPlayer({ src }: { src: string }) {
         waveRef.current = null
       }
     }
-  }, [src])
+  }, [onActivate, onDeactivate, playerId, src])
+
+  useEffect(() => {
+    if (activePlayerId !== playerId && isPlaying) {
+      waveRef.current?.pause()
+    }
+  }, [activePlayerId, isPlaying, playerId])
 
   return (
     <div className="waveformPlayer">
@@ -611,6 +681,9 @@ function WaveformPlayer({ src }: { src: string }) {
           className="waveformButton"
           disabled={!isReady}
           onClick={() => {
+            if (!isPlaying) {
+              onActivate(playerId)
+            }
             void waveRef.current?.playPause()
           }}
           title={isPlaying ? 'Pause recording' : 'Play recording'}

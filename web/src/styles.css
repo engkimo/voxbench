@@ -618,6 +618,11 @@ a {
   background: #f8fafc;
 }
 
+.recordingWaveform.active {
+  border-color: #7aa9b4;
+  background: #f1f8fa;
+}
+
 .recordingWaveformHeader {
   display: flex;
   align-items: center;
