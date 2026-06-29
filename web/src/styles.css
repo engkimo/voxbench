@@ -340,6 +340,59 @@ a {
   background: #ffe3e3;
 }
 
+.compareBadge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  margin: -2px 0 10px;
+  border: 1px solid #d7e1e8;
+  border-radius: 7px;
+  padding: 7px 9px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.compareBadge strong,
+.compareBadge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compareBadge strong {
+  color: #4a5a67;
+}
+
+.compareBadge span {
+  color: #596775;
+  font-weight: 800;
+}
+
+.compareBadge.improved {
+  border-color: #b9dcc8;
+  background: #f0faf4;
+}
+
+.compareBadge.improved span {
+  color: #176444;
+}
+
+.compareBadge.regressed {
+  border-color: #e6b5b5;
+  background: #fff4f4;
+}
+
+.compareBadge.regressed span {
+  color: #8e2f35;
+}
+
+.compareBadge.missing {
+  border-color: #d6dce4;
+  background: #f7f9fb;
+}
+
 .metricStrip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

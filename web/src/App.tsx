@@ -97,15 +97,17 @@ export function App() {
       ) ?? 0,
     [compareTimeline],
   )
+  const compareStages = useMemo(
+    () => (compareTimeline ? stageMap(compareTimeline) : null),
+    [compareTimeline],
+  )
   const selectedStage =
     timeline?.lanes.stages.find((stage) => stage.stage === selectedStageName) ??
     timeline?.lanes.stages[0]
   const selectedRecording = timeline?.lanes.recordings.find(
     (recording) => recording.stage === selectedStage?.stage,
   )
-  const selectedCompareStage = compareTimeline?.lanes.stages.find(
-    (stage) => stage.stage === selectedStage?.stage,
-  )
+  const selectedCompareStage = selectedStage ? compareStages?.get(selectedStage.stage) : undefined
   const selectedCompareRecording = compareTimeline?.lanes.recordings.find(
     (recording) => recording.stage === selectedStage?.stage,
   )
@@ -220,6 +222,8 @@ export function App() {
             <div className="stageStack">
               {timeline.lanes.stages.map((stage) => (
                 <StageLane
+                  compareEnabled={compareTimeline !== undefined}
+                  compareStage={compareStages?.get(stage.stage)}
                   key={stage.stage}
                   onSelect={() => setSelectedStageName(stage.stage)}
                   selected={stage.stage === selectedStage?.stage}
@@ -412,15 +416,24 @@ function ComparisonTable({
 }
 
 function StageLane({
+  compareEnabled,
+  compareStage,
   onSelect,
   selected,
   stage,
 }: {
+  compareEnabled: boolean
+  compareStage?: TimelineStageLane
   onSelect: () => void
   selected: boolean
   stage: TimelineStageLane
 }) {
   const failed = stage.violations.length > 0
+  const compareBadge = compareStage
+    ? compareStageBadge(stage, compareStage)
+    : compareEnabled
+      ? { label: 'missing stage', tone: 'missing' }
+      : null
   return (
     <article
       className={`stageLane ${failed ? 'failed' : 'passed'} ${selected ? 'selected' : ''}`}
@@ -444,6 +457,12 @@ function StageLane({
           {failed ? `${stage.violations.length} fail` : 'pass'}
         </span>
       </div>
+      {compareBadge ? (
+        <div className={`compareBadge ${compareBadge.tone}`}>
+          <strong>Compare</strong>
+          <span>{compareBadge.label}</span>
+        </div>
+      ) : null}
       <MetricStrip metrics={stage.metrics} />
       {failed ? (
         <div className="violations">
@@ -911,6 +930,21 @@ function formatNumber(value: number) {
 
 function stageMap(timeline: TimelineResponse) {
   return new Map(timeline.lanes.stages.map((stage) => [stage.stage, stage]))
+}
+
+function compareStageBadge(primary: TimelineStageLane, compare: TimelineStageLane) {
+  const delta = compare.violations.length - primary.violations.length
+  if (delta < 0) {
+    return { label: `${Math.abs(delta)} fewer ${failWord(delta)}`, tone: 'improved' }
+  }
+  if (delta > 0) {
+    return { label: `${delta} more ${failWord(delta)}`, tone: 'regressed' }
+  }
+  return { label: 'same failure count', tone: 'even' }
+}
+
+function failWord(value: number) {
+  return Math.abs(value) === 1 ? 'fail' : 'fails'
 }
 
 function metricDeltas(primary: TimelineStageLane, compare: TimelineStageLane) {
