@@ -22,6 +22,7 @@ import type {
   TimelineRecording,
   TimelineResponse,
   TimelineStageLane,
+  TimelineViolation,
   RunSummary,
 } from './types'
 
@@ -508,29 +509,26 @@ function StageDetail({
           {compareStage ? ` / ${compareStage.violations.length} fail compare` : ''}
         </span>
       </div>
-      <div className="detailMetrics">
-        {stage.metrics.map((metric) => (
-          <div className="detailMetric" key={`${metric.name}-${metric.ts}`}>
-            <span>{metric.name}</span>
-            <strong>{formatNumber(metric.value)}</strong>
-          </div>
-        ))}
-        {stage.metrics.length === 0 ? <div className="emptyInline">No metrics</div> : null}
+      <div className={hasCompare ? 'detailCompareGrid' : 'detailCompareGrid single'}>
+        <MetricPanel label="Primary metrics" metrics={stage.metrics} />
+        {hasCompare ? (
+          compareStage ? (
+            <MetricPanel label="Compare metrics" metrics={compareStage.metrics} />
+          ) : (
+            <MissingComparePanel label="Compare metrics" />
+          )
+        ) : null}
       </div>
-      {stage.violations.length > 0 ? (
-        <div className="detailViolations">
-          {stage.violations.map((violation) => (
-            <article className="detailViolation" key={violation.invariant}>
-              <strong>{violation.invariant}</strong>
-              <span>{violation.detail}</span>
-              <JsonBlock label="Observed" value={violation.observed} />
-              <JsonBlock label="Expected" value={violation.expected} />
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="emptyInline">No failed verifications</div>
-      )}
+      <div className={hasCompare ? 'detailCompareGrid' : 'detailCompareGrid single'}>
+        <VerificationPanel label="Primary checks" violations={stage.violations} />
+        {hasCompare ? (
+          compareStage ? (
+            <VerificationPanel label="Compare checks" violations={compareStage.violations} />
+          ) : (
+            <MissingComparePanel label="Compare checks" />
+          )
+        ) : null}
+      </div>
       <div className={hasCompare ? 'detailAudio compare' : 'detailAudio'}>
         <strong>Recording</strong>
         <RecordingWaveform
@@ -555,6 +553,75 @@ function StageDetail({
         ) : null}
       </div>
     </section>
+  )
+}
+
+function MetricPanel({
+  label,
+  metrics,
+}: {
+  label: string
+  metrics: TimelineMetricPoint[]
+}) {
+  return (
+    <div className="detailPanel">
+      <div className="detailPanelHeader">
+        <strong>{label}</strong>
+        <span>{metrics.length}</span>
+      </div>
+      <div className="detailMetrics">
+        {metrics.map((metric) => (
+          <div className="detailMetric" key={`${label}-${metric.name}-${metric.ts}`}>
+            <span>{metric.name}</span>
+            <strong>{formatNumber(metric.value)}</strong>
+          </div>
+        ))}
+        {metrics.length === 0 ? <div className="emptyInline">No metrics</div> : null}
+      </div>
+    </div>
+  )
+}
+
+function VerificationPanel({
+  label,
+  violations,
+}: {
+  label: string
+  violations: TimelineViolation[]
+}) {
+  return (
+    <div className="detailPanel">
+      <div className="detailPanelHeader">
+        <strong>{label}</strong>
+        <span>{violations.length} fail</span>
+      </div>
+      {violations.length > 0 ? (
+        <div className="detailViolations">
+          {violations.map((violation) => (
+            <article className="detailViolation" key={`${label}-${violation.invariant}`}>
+              <strong>{violation.invariant}</strong>
+              <span>{violation.detail}</span>
+              <JsonBlock label="Observed" value={violation.observed} />
+              <JsonBlock label="Expected" value={violation.expected} />
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="emptyInline">No failed verifications</div>
+      )}
+    </div>
+  )
+}
+
+function MissingComparePanel({ label }: { label: string }) {
+  return (
+    <div className="detailPanel">
+      <div className="detailPanelHeader">
+        <strong>{label}</strong>
+        <span>missing</span>
+      </div>
+      <div className="emptyInline">No matching compare stage</div>
+    </div>
   )
 }
 

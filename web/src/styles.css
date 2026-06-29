@@ -520,6 +520,47 @@ a {
   font-size: 12px;
 }
 
+.detailCompareGrid {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.detailPanel {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.detailPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  min-width: 0;
+}
+
+.detailPanelHeader strong,
+.detailPanelHeader span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailPanelHeader strong {
+  color: #26323f;
+  font-size: 12px;
+}
+
+.detailPanelHeader span {
+  color: #657384;
+  font-size: 12px;
+}
+
 .detailMetrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
