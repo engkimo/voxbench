@@ -393,6 +393,46 @@ a {
   background: #f7f9fb;
 }
 
+.metricDeltaStrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 6px;
+  min-width: 0;
+  margin: -2px 0 10px;
+}
+
+.metricDeltaStrip span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #d7e1e8;
+  border-radius: 7px;
+  padding: 6px 8px;
+  color: #4f5f6e;
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.metricDeltaStrip strong {
+  overflow: hidden;
+  color: #657384;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metricDeltaStrip .up {
+  border-color: #d8caa6;
+  background: #fffaf0;
+}
+
+.metricDeltaStrip .down {
+  border-color: #bfd8e1;
+  background: #f1f8fa;
+}
+
 .metricStrip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));

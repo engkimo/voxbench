@@ -434,6 +434,7 @@ function StageLane({
     : compareEnabled
       ? { label: 'missing stage', tone: 'missing' }
       : null
+  const deltaChips = compareStage ? metricDeltaChips(stage, compareStage) : []
   return (
     <article
       className={`stageLane ${failed ? 'failed' : 'passed'} ${selected ? 'selected' : ''}`}
@@ -461,6 +462,16 @@ function StageLane({
         <div className={`compareBadge ${compareBadge.tone}`}>
           <strong>Compare</strong>
           <span>{compareBadge.label}</span>
+        </div>
+      ) : null}
+      {deltaChips.length > 0 ? (
+        <div className="metricDeltaStrip">
+          {deltaChips.map((delta) => (
+            <span className={delta.tone} key={delta.name}>
+              <strong>{delta.name}</strong>
+              {formatSigned(delta.value)}
+            </span>
+          ))}
         </div>
       ) : null}
       <MetricStrip metrics={stage.metrics} />
@@ -948,16 +959,27 @@ function failWord(value: number) {
 }
 
 function metricDeltas(primary: TimelineStageLane, compare: TimelineStageLane) {
-  const compareMetrics = new Map(compare.metrics.map((metric) => [metric.name, metric.value]))
-  const deltas = primary.metrics
-    .filter((metric) => compareMetrics.has(metric.name))
+  const deltas = metricDeltaChips(primary, compare)
     .slice(0, 3)
-    .map((metric) => {
-      const delta = (compareMetrics.get(metric.name) ?? 0) - metric.value
-      return `${metric.name} ${formatSigned(delta)}`
-    })
+    .map((metric) => `${metric.name} ${formatSigned(metric.value)}`)
 
   return deltas.length > 0 ? deltas.join(', ') : 'no shared metrics'
+}
+
+function metricDeltaChips(primary: TimelineStageLane, compare: TimelineStageLane) {
+  const compareMetrics = new Map(compare.metrics.map((metric) => [metric.name, metric.value]))
+  return primary.metrics
+    .filter((metric) => compareMetrics.has(metric.name))
+    .map((metric) => {
+      const value = (compareMetrics.get(metric.name) ?? 0) - metric.value
+      return {
+        name: metric.name,
+        tone: value === 0 ? 'even' : value > 0 ? 'up' : 'down',
+        value,
+      }
+    })
+    .sort((left, right) => Math.abs(right.value) - Math.abs(left.value))
+    .slice(0, 3)
 }
 
 function formatSigned(value: number) {
