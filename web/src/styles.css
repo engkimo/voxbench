@@ -520,6 +520,39 @@ a {
   font-size: 12px;
 }
 
+.detailTabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  min-width: 0;
+}
+
+.detailTab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid #c9d5df;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #596775;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.detailTab svg {
+  flex: 0 0 auto;
+}
+
+.detailTab.active {
+  border-color: #7aa9b4;
+  color: #1f6f78;
+  background: #f1f8fa;
+}
+
 .detailCompareGrid {
   display: grid;
   gap: 8px;

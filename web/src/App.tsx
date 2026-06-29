@@ -2,10 +2,12 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Clock3,
   Database,
   Headphones,
+  ListChecks,
   Pause,
   Play,
   RefreshCw,
@@ -27,6 +29,8 @@ import type {
 } from './types'
 
 const DEFAULT_API_BASE = '/api'
+
+type DetailTab = 'metrics' | 'checks' | 'audio'
 
 async function fetchTimeline(apiBase: string, runId: string): Promise<TimelineResponse> {
   const base = apiBase.replace(/\/$/, '')
@@ -482,6 +486,9 @@ function StageDetail({
       : null
   const hasCompare = compareRunId !== undefined
   const [activePlayerId, setActivePlayerId] = useState<string | null>(null)
+  const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>(
+    defaultDetailTab(stage, compareStage),
+  )
   const primaryPlayerId = `${runId}:${stage.stage}:primary`
   const comparePlayerId = compareRunId ? `${compareRunId}:${stage.stage}:compare` : null
 
@@ -494,7 +501,8 @@ function StageDetail({
 
   useEffect(() => {
     setActivePlayerId(null)
-  }, [compareRunId, runId, stage.stage])
+    setActiveDetailTab(defaultDetailTab(stage, compareStage))
+  }, [compareRunId, compareStage, runId, stage])
 
   return (
     <section className="stageDetail">
@@ -509,51 +517,94 @@ function StageDetail({
           {compareStage ? ` / ${compareStage.violations.length} fail compare` : ''}
         </span>
       </div>
-      <div className={hasCompare ? 'detailCompareGrid' : 'detailCompareGrid single'}>
-        <MetricPanel label="Primary metrics" metrics={stage.metrics} />
-        {hasCompare ? (
-          compareStage ? (
-            <MetricPanel label="Compare metrics" metrics={compareStage.metrics} />
-          ) : (
-            <MissingComparePanel label="Compare metrics" />
-          )
-        ) : null}
+      <div className="detailTabs" role="tablist" aria-label="Stage detail">
+        <button
+          className={detailTabClass(activeDetailTab, 'metrics')}
+          onClick={() => setActiveDetailTab('metrics')}
+          type="button"
+        >
+          <BarChart3 size={15} />
+          Metrics
+        </button>
+        <button
+          className={detailTabClass(activeDetailTab, 'checks')}
+          onClick={() => setActiveDetailTab('checks')}
+          type="button"
+        >
+          <ListChecks size={15} />
+          Checks
+        </button>
+        <button
+          className={detailTabClass(activeDetailTab, 'audio')}
+          onClick={() => setActiveDetailTab('audio')}
+          type="button"
+        >
+          <Headphones size={15} />
+          Audio
+        </button>
       </div>
-      <div className={hasCompare ? 'detailCompareGrid' : 'detailCompareGrid single'}>
-        <VerificationPanel label="Primary checks" violations={stage.violations} />
-        {hasCompare ? (
-          compareStage ? (
-            <VerificationPanel label="Compare checks" violations={compareStage.violations} />
-          ) : (
-            <MissingComparePanel label="Compare checks" />
-          )
-        ) : null}
-      </div>
-      <div className={hasCompare ? 'detailAudio compare' : 'detailAudio'}>
-        <strong>Recording</strong>
-        <RecordingWaveform
-          activePlayerId={activePlayerId}
-          durationMs={recording?.duration_ms}
-          label="Primary"
-          onActivate={activatePlayer}
-          onDeactivate={deactivatePlayer}
-          playerId={primaryPlayerId}
-          src={audioSrc}
-        />
-        {hasCompare && comparePlayerId ? (
+      {activeDetailTab === 'metrics' ? (
+        <div className={hasCompare ? 'detailCompareGrid' : 'detailCompareGrid single'}>
+          <MetricPanel label="Primary metrics" metrics={stage.metrics} />
+          {hasCompare ? (
+            compareStage ? (
+              <MetricPanel label="Compare metrics" metrics={compareStage.metrics} />
+            ) : (
+              <MissingComparePanel label="Compare metrics" />
+            )
+          ) : null}
+        </div>
+      ) : null}
+      {activeDetailTab === 'checks' ? (
+        <div className={hasCompare ? 'detailCompareGrid' : 'detailCompareGrid single'}>
+          <VerificationPanel label="Primary checks" violations={stage.violations} />
+          {hasCompare ? (
+            compareStage ? (
+              <VerificationPanel label="Compare checks" violations={compareStage.violations} />
+            ) : (
+              <MissingComparePanel label="Compare checks" />
+            )
+          ) : null}
+        </div>
+      ) : null}
+      {activeDetailTab === 'audio' ? (
+        <div className={hasCompare ? 'detailAudio compare' : 'detailAudio'}>
+          <strong>Recording</strong>
           <RecordingWaveform
             activePlayerId={activePlayerId}
-            durationMs={compareRecording?.duration_ms}
-            label="Compare"
+            durationMs={recording?.duration_ms}
+            label="Primary"
             onActivate={activatePlayer}
             onDeactivate={deactivatePlayer}
-            playerId={comparePlayerId}
-            src={compareAudioSrc}
+            playerId={primaryPlayerId}
+            src={audioSrc}
           />
-        ) : null}
-      </div>
+          {hasCompare && comparePlayerId ? (
+            <RecordingWaveform
+              activePlayerId={activePlayerId}
+              durationMs={compareRecording?.duration_ms}
+              label="Compare"
+              onActivate={activatePlayer}
+              onDeactivate={deactivatePlayer}
+              playerId={comparePlayerId}
+              src={compareAudioSrc}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </section>
   )
+}
+
+function defaultDetailTab(stage: TimelineStageLane, compareStage?: TimelineStageLane): DetailTab {
+  if (stage.violations.length > 0 || (compareStage?.violations.length ?? 0) > 0) {
+    return 'checks'
+  }
+  return 'metrics'
+}
+
+function detailTabClass(activeTab: DetailTab, tab: DetailTab) {
+  return activeTab === tab ? 'detailTab active' : 'detailTab'
 }
 
 function MetricPanel({
