@@ -276,7 +276,7 @@ caller. It records `provider_auto_interrupts` and `provider_truncate_requests`.
 Provider and bridge failures end the observed run with a non-secret
 `failure_alias`, which appears in Live preview.
 
-Before a provider session is established, the bridge retries transient connection
+Before a provider session is established, the bridge retries initial connection
 failures with bounded exponential backoff. The observed run is created first, so
 `provider_connect_attempts`, `provider_connect_retries`,
 `provider_connect_failures`, and `provider_connect_exhausted` remain visible. If
