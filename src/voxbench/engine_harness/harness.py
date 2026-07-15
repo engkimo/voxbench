@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -34,6 +36,8 @@ class EngineHarness:
         conversation_id = str(uuid4())
         recordings = []
         metrics = []
+        host_sample_start = _host_sample_start()
+        metrics.extend(_host_metrics(resolved_config, host_sample_start))
         with self.tracer.tracer.start_as_current_span(
             "voxbench.run",
             attributes=span_attrs(
@@ -65,7 +69,9 @@ class EngineHarness:
                         )
                     )
                     metrics.extend(_nominal_cadence_metrics(resolved_config, stage.stage))
+                    metrics.extend(_host_metrics(resolved_config, host_sample_start))
 
+        metrics.extend(_host_metrics(resolved_config, host_sample_start))
         return HarnessResult(
             run_id=run_id,
             conversation_id=conversation_id,
@@ -120,3 +126,68 @@ def _stage_config(resolved_config: dict[str, Any], stage_name: str) -> dict[str,
         if isinstance(stage, dict) and stage.get("type") == stage_name:
             return stage
     return None
+
+
+def _host_sample_start() -> tuple[float, float]:
+    return (time.perf_counter(), time.process_time())
+
+
+def _host_metrics(
+    resolved_config: dict[str, Any],
+    sample_start: tuple[float, float],
+) -> list[MetricArtifact]:
+    requested = resolved_config.get("spec", {}).get("observability", {}).get("host_metrics", [])
+    if not isinstance(requested, list):
+        return []
+
+    requested_names = {name for name in requested if isinstance(name, str)}
+    if not requested_names:
+        return []
+
+    wall_start, process_start = sample_start
+    ts = datetime.now(UTC)
+    metrics: list[MetricArtifact] = []
+    if "cpu" in requested_names:
+        wall_elapsed = max(time.perf_counter() - wall_start, 1e-9)
+        process_elapsed = max(time.process_time() - process_start, 0.0)
+        metrics.append(
+            MetricArtifact(
+                stage=None,
+                name="cpu",
+                value=(process_elapsed / wall_elapsed) * 100.0,
+                ts=ts,
+            )
+        )
+    if "active_tasks" in requested_names:
+        metrics.append(
+            MetricArtifact(
+                stage=None,
+                name="active_tasks",
+                value=float(_active_task_count()),
+                ts=ts,
+            )
+        )
+    if "loop_lag" in requested_names:
+        metrics.append(
+            MetricArtifact(
+                stage=None,
+                name="loop_lag",
+                value=_scheduler_lag_ms(),
+                ts=ts,
+            )
+        )
+    return metrics
+
+
+def _active_task_count() -> int:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return 0
+    return len(asyncio.all_tasks(loop))
+
+
+def _scheduler_lag_ms() -> float:
+    start = time.perf_counter()
+    time.sleep(0)
+    return max(0.0, (time.perf_counter() - start) * 1000.0)

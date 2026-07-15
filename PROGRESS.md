@@ -1,5 +1,35 @@
 # 進捗
 
+## OpenAI Realtime playback truncation hardening (2026-07-15)
+
+- OpenAI `response.output_audio.delta` の `item_id` / `content_index` を provider
+  audio chunk に保持し、AudioSocket の20 ms pacingに対応する再生位置を追跡する。
+- `input_audio_buffer.speech_started` では local queue を破棄し、最後にcallerへ
+  送った位置の `audio_end_ms` で `conversation.item.truncate` を送る。
+- OpenAI server VAD が response を自動cancelする契約に合わせ、bridgeからの重複
+  `response.cancel` は避ける。明示cancelしか持たないprovider境界との互換は維持する。
+- `provider_auto_interrupts` / `provider_truncate_requests` を operational metric
+  として記録し、provider itemを跨ぐときはpacket/resampler stateを切り替える。
+- fake providerによる位置・truncate検証まで完了。実provider/Asterisk通話での
+  truncation timingと音切れ確認は引き続き環境検証項目。
+
+## Live softphone realtime demo hardening (2026-07-14)
+
+- Asterisk AudioSocket から OpenAI Realtime / Gemini Live へ接続する provider
+  bridge と、direct-provider / Pipecat 向けの `voxbench.observability` 境界を実装した。
+- PCM16 mono の resampler は chunk 間で位相を保持する streaming 実装に更新した。
+- provider の speech/response/interruption event を正規化し、barge-in 時に
+  local playback queue を破棄して `barge_in_events` / `output_frames_dropped` を記録する。
+- OpenAI はactive responseだけに `response.cancel` を送り、
+  `provider_interrupt_requests` を記録する。再生済み位置に合わせたitem truncateは次段。
+- observed run に `POST /runs/{run_id}/fail` と安全な `failure_alias` を追加し、
+  Live preview で失敗理由aliasを確認できるようにした。
+- observed run -> localhost TCP AudioSocket -> fake provider -> stage WAV / metrics
+  -> Control Plane timeline -> run complete の統合テストを追加した。
+- 未実施なのは実API keyを使ったprovider接続と、実Asterisk/macOS softphoneでの通話確認。
+  次は実機でlatency/audio qualityを測定し、provider側cancel/truncate、RTP stats収集、
+  reconnectを詰める。
+
 ## Phase 0
 
 - §2 と §15 を確認し、Phase 0 のみに限定して着手。
@@ -27,3 +57,117 @@
 - MinIO SDK を使う storage sink の接続設定、bucket 作成方針、失敗時 retry 方針。
 - StageTap の実 artifact 保存は Phase 1 で local sink として実装済み。ステージ別参照音声生成は Phase 2 以降の対象。
 - Pipecat は Phase 1 で `Pipeline([...])` の adapter 境界のみ確認・実装済み。実 Asterisk/Gemini 接続は未実装。
+
+## Phase 4 前段
+
+- 最初の slice は `Run Environment Metadata + Readiness Checklist` の最小縦切りにした。
+- `POST /runs` で `environment` と `readiness_checklist` を任意入力でき、未指定時は標準チェックリストを `unknown` として扱う。
+- 保存・表示する値は alias/reference/status/note に限定し、URL や Slack ID 形式の raw reference は API で拒否する。
+- run response、recent runs、timeline response、Web timeline header、side rail、two-run compare に環境・準備状態を追加済み。
+- DB 永続化切替に備えて `runs.environment_metadata` と `runs.readiness_checklist` の JSONB migration を追加済み。
+
+### Phase 4 次候補
+
+- Host metrics ingestion: `cpu`, `active_tasks`, `loop_lag` を `metrics.stage = null` として取り込み、`timeline.lanes.host` に実データを流す。
+- Environment-aware compare の API 化: UI 内の差分計算から、比較専用 endpoint へ移して保存済み run 以外にも展開しやすくする。
+- Live Run Status preview: WebSocket 前段として `/runs` または新規 endpoint に latest host metrics と readiness/manual blocker を集約する。
+
+## Phase 4 Host Metrics 最小 slice
+
+- `observability.host_metrics` で宣言された `cpu`, `active_tasks`, `loop_lag` を harness で採取し、`MetricArtifact(stage=None)` として run metrics に追加した。
+- `timeline.lanes.host` は stage metrics と同じ `{ts, name, value}` 形式で host metric points を返す。
+- Web side rail に latest host metrics panel を追加し、CPU は `%`、loop lag は `ms` で表示する。
+- 現時点の sampler は stdlib ベースの単発採取。Phase 4 live run では周期サンプリングと active run preview へ拡張する。
+
+## Phase 4 Live Run Status preview 最小 slice
+
+- WebSocket `/live` の前段として `GET /runs/live-preview` を追加した。
+- response は recent runs を対象に、run status、environment alias、readiness summary、manual blockers、latest host metrics、violation count、tags を返す。
+- Web に Live preview panel を追加し、timeline 未選択時と timeline side rail の両方で readiness/manual blockers/latest host metrics を一覧できる。
+- 現時点では completed run の recent projection。次は active run lifecycle と周期 host metrics sampler をつなぐ。
+
+## Phase 4 Active Run Lifecycle 最小 slice
+
+- `POST /runs` は harness 実行前に `running` run を repository へ保存し、完了時に `completed`、例外時に `failed` へ更新する。
+- `GET /runs/live-preview` は処理中の run も返せるようになり、`ended_at` は running 中 `null` を許容する。
+- host metrics は run 開始時、各 stage tap 後、run 終了時に複数サンプルとして採取する。
+- threaded API test で、遅い harness 実行中に live-preview が `running` を返し、完了後に latest host metrics を返すことを確認済み。
+- 次は同期 `POST /runs` から切り離した background runner または WebSocket `/live` に進められる。
+
+## Phase 4 Background Runner 最小 slice
+
+- 既存 `POST /runs` は互換維持で同期実行のまま残した。
+- 新規 `POST /runs/async` を追加し、`running` run を即時 `202 Accepted` で返して daemon thread で harness を実行する。
+- 同期/非同期 route は config resolve、running run 作成、harness 実行、completed/failed 更新の helper を共有する。
+- API test で `POST /runs/async` が即 `running` を返し、live-preview に反映され、background 完了後に `completed` と latest host metrics へ更新されることを確認済み。
+- 次は WebSocket `/live` または async run 作成 UI。永続 runner に進む場合は thread ではなく job queue / DB-backed lease が必要。
+
+## Phase 4 WebSocket Live 最小 slice
+
+- `GET /runs/live-preview` と同じ projection を使う `WS /live` を追加した。
+- 接続直後から `interval_ms` ごとに recent run status、readiness、manual blockers、latest host metrics を snapshot push する。
+- Web UI は WebSocket snapshot を優先し、接続不可時は既存 REST live-preview query の結果を fallback 表示する。
+- Live preview panel に WebSocket connection state badge を追加した。
+- API test で `/live` が REST preview と同等の snapshot を返すことを確認済み。
+- 次は async run 作成 UI、または WebSocket を差分イベント化して payload を小さくする。
+
+## Phase 4 Async Run 作成 UI 最小 slice
+
+- Web に `Async run` panel を追加し、JSON payload を `POST /runs/async` へ送れるようにした。
+- 受理された run は Primary run に自動セットし、recent runs と live-preview を refetch する。
+- payload はブラウザ内に保存せず、textarea state のみで扱う。
+- エラーは panel 内に表示し、成功時は WebSocket live-preview で running/completed を追える。
+- 次は example payload をサーバ側の examples から安全に生成する dev helper、または checklist/environment 専用フォーム化。
+
+## Phase 4 Example Payload Generator 最小 slice
+
+- `GET /runs/example-payload` を追加し、repo の `examples/configs/valid-baseline.json` と example manifests から `RunCreateRequest` 互換 payload を生成する。
+- environment/readiness は alias/reference のみを含む demo/integration 用の保守的な仮値で返す。
+- API test で example payload がそのまま `POST /runs/async` に使え、completed run と latest host metrics まで進むことを確認済み。
+- Web の `Async run` panel に `Load example` を追加し、server-side example payload を textarea に読み込めるようにした。
+- 次は environment/readiness 専用フォーム化、または loaded example の profile/server alias だけを UI で編集できる lightweight controls。
+
+## Phase 4 Environment/Readiness Form 最小 slice
+
+- Web の `Async run` panel に environment/readiness controls を追加した。
+- `environment_profile`, `server_alias`, `integration_target_alias`, `tags` をフォームで編集すると JSON payload に反映される。
+- 標準 readiness checklist の各 status を `unknown/pass/fail` select で変更でき、同じ payload に反映される。
+- JSON textarea は残しており、細かい schema 調整や configs/manifests の直接編集も継続できる。
+- 次は manual blockers と secret ref names の chips/edit controls、または form-only run launcher への整理。
+
+## Phase 4 Blockers/Secret Refs Controls 最小 slice
+
+- Web の `Async run` panel に `manual_blockers` と `secret_ref_names` の comma-separated controls を追加した。
+- 入力値は environment payload に alias/reference list として反映され、secret 実値や外部 URL を扱わない方針を維持する。
+- `tags`, `manual_blockers`, `secret_ref_names` の list parsing を shared helper に寄せた。
+- これで demo/integration の準備状態は JSON を直接触らずに大半を調整できる。
+- 次は Phase 4 前段の仕上げとして、変更内容を整理した commit/PR 用 summary、または README/DESIGN の Phase 4 操作手順追記。
+
+## Phase 4 Docs 仕上げ slice
+
+- README の実装済み機能リストを Phase 4 前段まで更新した。
+- README に control-plane API、Web UI、example payload、async run、live-preview、`WS /live` の操作手順を追記した。
+- DESIGN の run schema に `environment_metadata` と `readiness_checklist` を追記した。
+- DESIGN の timeline/API surface/Phase 4 acceptance を、environment/readiness/live-preview/background run の前段と live host/SIP/RTP 後段に分けて更新した。
+
+## Phase 4 SIP/RTP Ingest 仮 schema slice
+
+- `POST /v1/sip-events` と `POST /v1/rtp-stats` を追加した。
+- SIP は `method`, `direction`, `status_code`, `summary_alias` の structured event のみ保存し、raw SIP body/SDP は扱わない。
+- RTP は `jitter_ms`, `loss_pct`, `mos` の structured quality point として保存する。
+- in-memory run に紐づけ、`GET /runs/{id}/timeline` の `lanes.sip_ladder` と `lanes.rtp_quality` に相対時刻付きで出す。
+- DB 永続化切替に備えて `sip_events` と `rtp_stats` の SQLAlchemy model/migration を追加した。
+- API test で ingest、timeline 反映、unknown run、raw external reference rejection を確認済み。
+
+## Phase 4 SIP/RTP Timeline UI 最小 slice
+
+- Web side rail に Live preview / Host metrics / SIP ladder / RTP quality / Environment / Readiness の順で切り分け用パネルを並べた。
+- SIP ladder は `method`, `direction`, `status_code`, `summary_alias`, `ts` の structured fields のみを表示し、raw SIP body/SDP は表示しない。
+- RTP quality は latest summary、count、各 point の `jitter_ms`, `loss_pct`, `mos`, `ts` を表示する。
+- two-run compare の environment deltas に SIP event count、RTP point count、latest RTP summary を最小追加した。
+
+## Phase 4 AGC Gain Controls 最小 slice
+
+- Web の `Async run` panel に AGC の `target_rms`, `max_gain`, `noise_floor` controls を追加した。
+- controls は payload 内の `configs[].spec.media.pipeline[]` から `type = agc` の stage を探し、既存 JSON textarea と同期して params を更新する。
+- packet/音声観測は引き続き structured SIP/RTP ingest と stage recording/timeline 表示まで。raw pcap/Wireshark import は未実装。

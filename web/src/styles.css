@@ -18,7 +18,9 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -100,7 +102,7 @@ a {
 
 .summaryGrid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 10px;
   margin: 18px 0;
 }
@@ -245,6 +247,53 @@ a {
   border: 1px solid #dde4eb;
   border-radius: 7px;
   background: #dde4eb;
+}
+
+.environmentCompare {
+  display: grid;
+  gap: 1px;
+  min-width: 620px;
+  background: #dde4eb;
+}
+
+.environmentCompareHeader {
+  padding: 9px;
+  color: #536272;
+  background: #f4f7fa;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.environmentCompareRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(90px, 0.5fr);
+  gap: 10px;
+  padding: 9px;
+  color: #334050;
+  background: #ffffff;
+}
+
+.environmentCompareRow.changed {
+  background: #fffaf0;
+}
+
+.environmentCompareRow strong,
+.environmentCompareRow span,
+.environmentCompareRow em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environmentCompareRow em {
+  color: #657384;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.environmentCompareRow.changed em {
+  color: #8a5f14;
 }
 
 .comparisonRow {
@@ -495,8 +544,15 @@ a {
 }
 
 .laneStatus,
+.asyncRunPanel,
+.environmentPanel,
+.hostMetricsPanel,
+.livePreviewPanel,
 .recordings,
 .recentRuns,
+.readinessPanel,
+.rtpQualityPanel,
+.sipLadderPanel,
 .stageDetail {
   border: 1px solid #d0d8e1;
   border-radius: 8px;
@@ -505,6 +561,8 @@ a {
 }
 
 .recentRunsWide {
+  display: grid;
+  gap: 10px;
   margin-bottom: 18px;
 }
 
@@ -573,6 +631,26 @@ a {
   font-style: normal;
 }
 
+.recentRunEnv {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.7fr) minmax(100px, 1fr) minmax(120px, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+
+.recentRunEnv span {
+  overflow: hidden;
+  border: 1px solid #d7e1e8;
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: #596775;
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .recentRunActions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -591,6 +669,549 @@ a {
 .stageDetail {
   display: grid;
   gap: 10px;
+}
+
+.asyncRunPanel {
+  display: grid;
+  gap: 10px;
+}
+
+.asyncRunForm {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.asyncRunForm label {
+  display: grid;
+  gap: 6px;
+  color: #536272;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.asyncRunControls,
+.asyncGainControls,
+.asyncReadinessControls {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.asyncRunControls {
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+}
+
+.asyncGainControls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.asyncReadinessControls {
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.asyncRunForm input,
+.asyncRunForm select {
+  width: 100%;
+  min-height: 34px;
+  min-width: 0;
+  border: 1px solid #b9c5d1;
+  border-radius: 7px;
+  padding: 0 8px;
+  color: #1d2430;
+  background: #ffffff;
+}
+
+.asyncRunForm textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  border: 1px solid #b9c5d1;
+  border-radius: 7px;
+  padding: 9px;
+  color: #1d2430;
+  background: #ffffff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.asyncRunForm button {
+  width: min(180px, 100%);
+  justify-self: start;
+  min-width: 120px;
+}
+
+.secondaryButton {
+  border-color: #b9c5d1;
+  color: #1f6f78;
+  background: #ffffff;
+}
+
+.asyncRunError {
+  overflow: hidden;
+  border: 1px solid #e0a2a2;
+  border-radius: 7px;
+  padding: 8px;
+  color: #8e2f35;
+  background: #fff4f4;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.environmentPanel,
+.hostMetricsPanel,
+.livePreviewPanel,
+.rtpQualityPanel,
+.readinessPanel {
+  display: grid;
+  gap: 10px;
+}
+
+.sipLadderPanel {
+  display: grid;
+  gap: 10px;
+}
+
+.panelCount {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #536272;
+  background: #eef3f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.liveRunList {
+  display: grid;
+  gap: 8px;
+}
+
+.liveSocketBadge {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #536272;
+  background: #eef3f6;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.liveSocketBadge.connected {
+  color: #176444;
+  background: #e3f4ea;
+}
+
+.liveSocketBadge.error,
+.liveSocketBadge.disconnected {
+  color: #8e2f35;
+  background: #ffe3e3;
+}
+
+.liveRunItem {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-left-width: 4px;
+  border-radius: 7px;
+  padding: 9px;
+  background: #f8fafc;
+}
+
+.liveRunItem.ready {
+  border-left-color: #2f8d61;
+}
+
+.liveRunItem.blocked {
+  border-left-color: #c84b52;
+}
+
+.liveRunHeader,
+.liveRunReadiness,
+.liveRunBlockers {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.liveRunHeader div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.liveRunHeader strong,
+.liveRunHeader span,
+.liveRunHeader em,
+.liveRunReadiness strong,
+.liveRunReadiness span,
+.liveRunBlockers strong,
+.liveRunBlockers span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.liveRunHeader strong {
+  color: #17202c;
+  font-size: 13px;
+}
+
+.liveRunHeader span,
+.liveRunReadiness span,
+.liveRunBlockers span {
+  color: #657384;
+  font-size: 12px;
+}
+
+.liveRunHeader em {
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #536272;
+  background: #eef3f6;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.liveRunReadiness strong,
+.liveRunBlockers strong {
+  color: #26323f;
+  font-size: 12px;
+}
+
+.liveRunItem.blocked .liveRunReadiness strong {
+  color: #8e2f35;
+}
+
+.liveRunHostMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.liveRunHostMetrics span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid #d7e1e8;
+  border-radius: 7px;
+  padding: 6px;
+  color: #536272;
+  background: #ffffff;
+  font-size: 11px;
+}
+
+.liveRunHostMetrics strong {
+  overflow: hidden;
+  color: #26323f;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hostMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.hostMetric {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.hostMetric span,
+.hostMetric strong,
+.hostMetric small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hostMetric span,
+.hostMetric small {
+  color: #657384;
+  font-size: 11px;
+}
+
+.hostMetric strong {
+  color: #17202c;
+  font-size: 13px;
+}
+
+.sipEventList,
+.rtpStatList {
+  display: grid;
+  gap: 8px;
+}
+
+.sipEvent,
+.rtpStat,
+.rtpLatest {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.sipEventHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  min-width: 0;
+}
+
+.sipEventHeader strong,
+.sipEventHeader span,
+.rtpLatest strong,
+.rtpLatest span,
+.rtpLatest small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sipEventHeader strong,
+.rtpLatest strong {
+  color: #17202c;
+  font-size: 13px;
+}
+
+.sipEventHeader span {
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #1f6f78;
+  background: #e0f1f3;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.sipEventFacts,
+.rtpStat {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.rtpLatest span,
+.rtpLatest small {
+  color: #657384;
+  font-size: 12px;
+}
+
+.environmentFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.fact {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.fact span,
+.fact strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fact span {
+  color: #657384;
+  font-size: 11px;
+}
+
+.fact strong {
+  color: #17202c;
+  font-size: 12px;
+}
+
+.chipList {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chipList > strong {
+  color: #3f4d5b;
+  font-size: 12px;
+}
+
+.chipList > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.chipList span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #cbd7df;
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #4f5f6e;
+  background: #f8fafc;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chipList.danger span {
+  border-color: #e0a2a2;
+  color: #8e2f35;
+  background: #fff4f4;
+}
+
+.operatorNote {
+  display: grid;
+  gap: 4px;
+  border: 1px solid #d7e1e8;
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.operatorNote strong {
+  color: #3f4d5b;
+  font-size: 12px;
+}
+
+.operatorNote span {
+  color: #596775;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.readinessSummary {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #b9dcc8;
+  border-radius: 7px;
+  padding: 9px;
+  background: #f0faf4;
+}
+
+.readinessSummary.blocked {
+  border-color: #e6b5b5;
+  background: #fff4f4;
+}
+
+.readinessSummary strong {
+  color: #176444;
+  font-size: 14px;
+}
+
+.readinessSummary.blocked strong {
+  color: #8e2f35;
+}
+
+.readinessSummary span {
+  color: #657384;
+  font-size: 12px;
+}
+
+.readinessList {
+  display: grid;
+  gap: 7px;
+}
+
+.readinessItem {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid #dde4eb;
+  border-left-width: 4px;
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.readinessItem.pass {
+  border-left-color: #2f8d61;
+}
+
+.readinessItem.fail {
+  border-left-color: #c84b52;
+}
+
+.readinessItem.unknown {
+  border-left-color: #c79b31;
+}
+
+.readinessItem div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.readinessItem strong,
+.readinessItem span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.readinessItem strong {
+  color: #26323f;
+  font-size: 12px;
+}
+
+.readinessItem span {
+  color: #657384;
+  font-size: 12px;
+}
+
+.readinessItem em {
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: #536272;
+  background: #eef3f6;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.readinessItem.pass em {
+  color: #176444;
+  background: #e3f4ea;
+}
+
+.readinessItem.fail em {
+  color: #8e2f35;
+  background: #ffe3e3;
+}
+
+.readinessItem.unknown em {
+  color: #7a5715;
+  background: #fff2d3;
 }
 
 .detailTitle {
@@ -938,6 +1559,16 @@ a {
   }
 
   .recentRunMeta {
+    grid-template-columns: 1fr;
+  }
+
+  .recentRunEnv,
+  .asyncGainControls,
+  .liveRunHostMetrics,
+  .hostMetricGrid,
+  .environmentFacts,
+  .sipEventFacts,
+  .rtpStat {
     grid-template-columns: 1fr;
   }
 }

@@ -1,22 +1,94 @@
 """Run API models and router."""
 
+import asyncio
+import base64
+import binascii
+import json
+import wave
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
-from urllib.parse import unquote, urlparse
+from threading import Thread
+from typing import Annotated, Any, Literal
+from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict
+from fastapi.websockets import WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from voxbench.engine_harness.harness import EngineHarness
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact, SpanArtifact
 from voxbench.engine_harness.storage import LocalRecordingSink
+from voxbench.live_demo.simulated_bridge import run_simulated_live_bridge
+from voxbench.realtime_providers import GeminiLiveProvider, OpenAIRealtimeProvider
 from voxbench.registry.errors import RegistryError
 from voxbench.registry.service import RegistryService
 from voxbench.verification import VerificationResult, verify_recordings
+
+EnvironmentProfile = Literal["local", "dev", "demo", "integration", "staging"]
+ReadinessStatus = Literal["pass", "fail", "unknown"]
+SipDirection = Literal["in", "out"]
+LiveDemoProvider = Literal["gemini-live", "openai-realtime"]
+
+DEFAULT_READINESS_ITEMS: tuple[tuple[str, str], ...] = (
+    ("ai_phone_setup_complete", "AI phone setup complete"),
+    (
+        "intermediate_db_environment_registration_complete",
+        "Intermediate DB/environment registration complete",
+    ),
+    ("connection_route_verified", "Connection route verified"),
+    (
+        "expected_codec_sample_rate_cadence_declared",
+        "Expected codec/sample rate/cadence declared",
+    ),
+    ("recording_taps_enabled", "Recording taps enabled"),
+    ("host_metrics_enabled", "Host metrics enabled"),
+    ("secret_references_present", "Secret references present"),
+)
+
+SENSITIVE_TEXT_MARKERS = ("http://", "https://", "<@", "slack://")
+EXAMPLE_ROOT = Path(__file__).resolve().parents[3] / "examples"
+EXAMPLE_CONFIG_PATH = EXAMPLE_ROOT / "configs" / "valid-baseline.json"
+EXAMPLE_MANIFEST_PATHS = (
+    EXAMPLE_ROOT / "manifests" / "engine" / "asterisk.json",
+    EXAMPLE_ROOT / "manifests" / "provider" / "gemini.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "resampler.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "agc.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "limiter.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "serializer.json",
+)
+LIVE_DEMO_CONFIG_PATHS = {
+    "gemini-live": EXAMPLE_ROOT / "configs" / "live-demo-gemini-live.json",
+    "openai-realtime": EXAMPLE_ROOT / "configs" / "live-demo-openai-realtime.json",
+}
+LIVE_DEMO_PROVIDER_MANIFEST_PATHS = {
+    "gemini-live": EXAMPLE_ROOT / "manifests" / "provider" / "gemini-live.json",
+    "openai-realtime": EXAMPLE_ROOT / "manifests" / "provider" / "openai-realtime.json",
+}
+LIVE_DEMO_PROCESSOR_MANIFEST_PATHS = (
+    EXAMPLE_ROOT / "manifests" / "engine" / "asterisk.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "resampler.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "agc.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "limiter.json",
+    EXAMPLE_ROOT / "manifests" / "processor" / "serializer.json",
+)
+
+
+def _validate_reference_text(value: str, field_name: str) -> str:
+    stripped = value.strip()
+    lowered = stripped.lower()
+    if any(marker in lowered for marker in SENSITIVE_TEXT_MARKERS):
+        raise ValueError(f"{field_name} must use an alias/reference, not a URL or Slack ID")
+    return stripped
+
+
+def _default_readiness_checklist() -> list["ReadinessChecklistItem"]:
+    return [
+        ReadinessChecklistItem(item_id=item_id, label=label)
+        for item_id, label in DEFAULT_READINESS_ITEMS
+    ]
 
 
 class RunCreateRequest(BaseModel):
@@ -26,6 +98,98 @@ class RunCreateRequest(BaseModel):
     configs: list[dict[str, Any]]
     manifests: list[dict[str, Any]]
     call_id: str | None = None
+    environment: "RunEnvironmentMetadata" = Field(default_factory=lambda: RunEnvironmentMetadata())
+    readiness_checklist: list["ReadinessChecklistItem"] = Field(
+        default_factory=_default_readiness_checklist,
+    )
+
+    @model_validator(mode="after")
+    def require_unique_checklist_items(self) -> "RunCreateRequest":
+        item_ids = [item.item_id for item in self.readiness_checklist]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("readiness_checklist item_id values must be unique")
+        return self
+
+
+class LiveDemoRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: LiveDemoProvider = "gemini-live"
+    call_id: str | None = "local-softphone-simulated"
+    dry_run: bool = True
+    duration_ms: int = Field(default=1200, ge=100, le=30_000)
+    input_rms: float = Field(default=2600.0, gt=0.0, le=32_000.0)
+    target_rms: int | None = Field(default=None, gt=0)
+    max_gain: float | None = Field(default=None, gt=0.0)
+    noise_floor: int | None = Field(default=None, ge=0)
+
+    @field_validator("call_id")
+    @classmethod
+    def validate_call_id(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
+
+
+class RunFailureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    failure_alias: str = Field(min_length=1, max_length=128)
+
+    @field_validator("failure_alias")
+    @classmethod
+    def validate_failure_alias(cls, value: str, info) -> str:
+        return _validate_reference_text(value, info.field_name)
+
+
+class RunEnvironmentMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    environment_profile: EnvironmentProfile = "local"
+    server_alias: str | None = None
+    integration_target_alias: str | None = None
+    environment_snapshot_hash: str | None = None
+    started_from: str | None = None
+    operator_note: str | None = None
+    manual_blockers: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    related_internal_ref: str | None = None
+    secret_ref_names: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "server_alias",
+        "integration_target_alias",
+        "environment_snapshot_hash",
+        "started_from",
+        "operator_note",
+        "related_internal_ref",
+    )
+    @classmethod
+    def validate_optional_reference_text(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
+
+    @field_validator("manual_blockers", "tags", "secret_ref_names")
+    @classmethod
+    def validate_reference_lists(cls, values: list[str], info) -> list[str]:
+        return [_validate_reference_text(value, info.field_name) for value in values]
+
+
+class ReadinessChecklistItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    label: str
+    status: ReadinessStatus = "unknown"
+    note: str | None = None
+
+    @field_validator("item_id", "label", "note")
+    @classmethod
+    def validate_reference_text(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
 
 
 class RecordingResponse(BaseModel):
@@ -88,12 +252,167 @@ class TimelineRecording(BaseModel):
     duration_ms: float
 
 
+class SipEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    call_id: str | None = None
+    method: str
+    direction: SipDirection
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    status_code: int | None = None
+    summary_alias: str | None = None
+
+    @field_validator("call_id", "method", "summary_alias")
+    @classmethod
+    def validate_reference_text(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
+
+
+class SipEventResponse(BaseModel):
+    call_id: str | None
+    method: str
+    direction: SipDirection
+    ts: datetime
+    status_code: int | None
+    summary_alias: str | None
+
+
+class TimelineSipEvent(BaseModel):
+    ts: float
+    call_id: str | None
+    method: str
+    direction: SipDirection
+    status_code: int | None
+    summary_alias: str | None
+
+
+class RtpStatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    jitter_ms: float | None = None
+    loss_pct: float | None = None
+    mos: float | None = None
+
+
+class RtpStatResponse(BaseModel):
+    ts: datetime
+    jitter_ms: float | None
+    loss_pct: float | None
+    mos: float | None
+
+
+class MetricObservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    stage: str | None = None
+    name: str
+    value: float
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("stage", "name")
+    @classmethod
+    def validate_reference_text(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
+
+
+class AudioChunkObservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stage: str
+    pcm_s16le_base64: str = Field(max_length=1_400_000)
+    sample_rate_hz: int = Field(ge=8_000, le=48_000)
+    channels: int = Field(default=1, ge=1, le=2)
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("stage")
+    @classmethod
+    def validate_stage(cls, value: str, info) -> str:
+        return _validate_reference_text(value, info.field_name)
+
+
+class SipEventObservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    call_id: str | None = None
+    method: str
+    direction: SipDirection
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    status_code: int | None = None
+    summary_alias: str | None = None
+
+    @field_validator("call_id", "method", "summary_alias")
+    @classmethod
+    def validate_reference_text(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
+
+
+class RtpStatObservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    jitter_ms: float | None = None
+    loss_pct: float | None = None
+    mos: float | None = None
+
+
+class ObservationBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    metrics: list[MetricObservationRequest] = Field(default_factory=list, max_length=500)
+    audio_chunks: list[AudioChunkObservationRequest] = Field(
+        default_factory=list,
+        max_length=64,
+    )
+    sip_events: list[SipEventObservationRequest] = Field(default_factory=list, max_length=64)
+    rtp_stats: list[RtpStatObservationRequest] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def require_observation(self) -> "ObservationBatchRequest":
+        if not (self.metrics or self.audio_chunks or self.sip_events or self.rtp_stats):
+            raise ValueError("at least one observation is required")
+        return self
+
+
+class ObservationBatchResponse(BaseModel):
+    run_id: str
+    metric_count: int
+    audio_chunk_count: int
+    sip_event_count: int
+    rtp_stat_count: int
+    recording_count: int
+
+
+class TimelineRtpStat(BaseModel):
+    ts: float
+    jitter_ms: float | None
+    loss_pct: float | None
+    mos: float | None
+
+
+class ReadinessSummaryResponse(BaseModel):
+    passed_count: int
+    failed_count: int
+    unknown_count: int
+    manual_blocker_count: int
+    incomplete_count: int
+
+
 class TimelineLanes(BaseModel):
-    sip_ladder: list[dict[str, Any]]
-    rtp_quality: list[dict[str, Any]]
+    sip_ladder: list[TimelineSipEvent]
+    rtp_quality: list[TimelineRtpStat]
     stages: list[TimelineStageLane]
     turns: list[dict[str, Any]]
-    host: list[dict[str, Any]]
+    host: list[TimelineMetricPoint]
     recordings: list[TimelineRecording]
 
 
@@ -101,6 +420,9 @@ class TimelineResponse(BaseModel):
     run_id: str
     t0: datetime
     config_hash: str
+    environment: RunEnvironmentMetadata
+    readiness_checklist: list[ReadinessChecklistItem]
+    readiness_summary: ReadinessSummaryResponse
     lanes: TimelineLanes
 
 
@@ -112,10 +434,14 @@ class RunResponse(BaseModel):
     provider: str
     engine: str
     status: str
+    failure_alias: str | None
     recordings: list[RecordingResponse]
     spans: list[SpanResponse]
     metrics: list[MetricResponse]
     verifications: list[VerificationResponse]
+    environment: RunEnvironmentMetadata
+    readiness_checklist: list[ReadinessChecklistItem]
+    readiness_summary: ReadinessSummaryResponse
 
 
 class RunSummaryResponse(BaseModel):
@@ -125,9 +451,38 @@ class RunSummaryResponse(BaseModel):
     engine: str
     status: str
     started_at: datetime
-    ended_at: datetime
+    ended_at: datetime | None
     recording_count: int
     violation_count: int
+    environment_profile: EnvironmentProfile
+    server_alias: str | None
+    integration_target_alias: str | None
+    readiness_failed_count: int
+    readiness_unknown_count: int
+    manual_blocker_count: int
+    tags: list[str]
+
+
+class HostMetricSnapshotResponse(BaseModel):
+    name: str
+    value: float
+    ts: datetime
+
+
+class LiveRunStatusResponse(BaseModel):
+    run_id: str
+    status: str
+    failure_alias: str | None
+    started_at: datetime
+    ended_at: datetime | None
+    environment_profile: EnvironmentProfile
+    server_alias: str | None
+    integration_target_alias: str | None
+    readiness_summary: ReadinessSummaryResponse
+    manual_blockers: list[str]
+    latest_host_metrics: list[HostMetricSnapshotResponse]
+    violation_count: int
+    tags: list[str]
 
 
 @dataclass
@@ -140,12 +495,19 @@ class StoredRun:
     engine: str
     status: str
     started_at: datetime
-    ended_at: datetime
+    ended_at: datetime | None
     resolved_config: dict[str, Any]
     recordings: list[RecordingArtifact]
     spans: list[SpanArtifact]
     metrics: list[MetricArtifact]
+    failure_alias: str | None = None
     verifications: list[VerificationResult] = field(default_factory=list)
+    sip_events: list[SipEventResponse] = field(default_factory=list)
+    rtp_stats: list[RtpStatResponse] = field(default_factory=list)
+    environment: RunEnvironmentMetadata = field(default_factory=RunEnvironmentMetadata)
+    readiness_checklist: list[ReadinessChecklistItem] = field(
+        default_factory=_default_readiness_checklist,
+    )
 
     def to_response(self) -> RunResponse:
         return RunResponse(
@@ -156,6 +518,7 @@ class StoredRun:
             provider=self.provider,
             engine=self.engine,
             status=self.status,
+            failure_alias=self.failure_alias,
             recordings=[RecordingResponse(**recording.__dict__) for recording in self.recordings],
             spans=[SpanResponse(**span.__dict__) for span in self.spans],
             metrics=[MetricResponse(**metric.__dict__) for metric in self.metrics],
@@ -163,9 +526,13 @@ class StoredRun:
                 VerificationResponse(**verification.__dict__)
                 for verification in self.verifications
             ],
+            environment=self.environment,
+            readiness_checklist=self.readiness_checklist,
+            readiness_summary=self.readiness_summary(),
         )
 
     def to_summary(self) -> RunSummaryResponse:
+        readiness_summary = self.readiness_summary()
         return RunSummaryResponse(
             run_id=self.run_id,
             config_hash=self.config_hash,
@@ -178,6 +545,32 @@ class StoredRun:
             violation_count=sum(
                 1 for verification in self.verifications if not verification.passed
             ),
+            environment_profile=self.environment.environment_profile,
+            server_alias=self.environment.server_alias,
+            integration_target_alias=self.environment.integration_target_alias,
+            readiness_failed_count=readiness_summary.failed_count,
+            readiness_unknown_count=readiness_summary.unknown_count,
+            manual_blocker_count=readiness_summary.manual_blocker_count,
+            tags=self.environment.tags,
+        )
+
+    def to_live_status(self) -> LiveRunStatusResponse:
+        return LiveRunStatusResponse(
+            run_id=self.run_id,
+            status=self.status,
+            failure_alias=self.failure_alias,
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+            environment_profile=self.environment.environment_profile,
+            server_alias=self.environment.server_alias,
+            integration_target_alias=self.environment.integration_target_alias,
+            readiness_summary=self.readiness_summary(),
+            manual_blockers=self.environment.manual_blockers,
+            latest_host_metrics=self.latest_host_metrics(),
+            violation_count=sum(
+                1 for verification in self.verifications if not verification.passed
+            ),
+            tags=self.environment.tags,
         )
 
     def to_timeline(self) -> TimelineResponse:
@@ -211,13 +604,45 @@ class StoredRun:
             ]
             for stage in stage_names
         }
+        host_metrics = [
+            TimelineMetricPoint(
+                ts=_relative_seconds(metric.ts, self.started_at),
+                name=metric.name,
+                value=metric.value,
+            )
+            for metric in self.metrics
+            if metric.stage is None
+        ]
+        sip_ladder = [
+            TimelineSipEvent(
+                ts=_relative_seconds(event.ts, self.started_at),
+                call_id=event.call_id,
+                method=event.method,
+                direction=event.direction,
+                status_code=event.status_code,
+                summary_alias=event.summary_alias,
+            )
+            for event in self.sip_events
+        ]
+        rtp_quality = [
+            TimelineRtpStat(
+                ts=_relative_seconds(stat.ts, self.started_at),
+                jitter_ms=stat.jitter_ms,
+                loss_pct=stat.loss_pct,
+                mos=stat.mos,
+            )
+            for stat in self.rtp_stats
+        ]
         return TimelineResponse(
             run_id=self.run_id,
             t0=self.started_at,
             config_hash=self.config_hash,
+            environment=self.environment,
+            readiness_checklist=self.readiness_checklist,
+            readiness_summary=self.readiness_summary(),
             lanes=TimelineLanes(
-                sip_ladder=[],
-                rtp_quality=[],
+                sip_ladder=sip_ladder,
+                rtp_quality=rtp_quality,
                 stages=[
                     TimelineStageLane(
                         stage=stage,
@@ -227,13 +652,39 @@ class StoredRun:
                     for stage in stage_names
                 ],
                 turns=[],
-                host=[],
+                host=host_metrics,
                 recordings=[
                     TimelineRecording(**recording.__dict__)
                     for recording in self.recordings
                 ],
             ),
         )
+
+    def readiness_summary(self) -> ReadinessSummaryResponse:
+        passed_count = sum(1 for item in self.readiness_checklist if item.status == "pass")
+        failed_count = sum(1 for item in self.readiness_checklist if item.status == "fail")
+        unknown_count = sum(1 for item in self.readiness_checklist if item.status == "unknown")
+        manual_blocker_count = len(self.environment.manual_blockers)
+        return ReadinessSummaryResponse(
+            passed_count=passed_count,
+            failed_count=failed_count,
+            unknown_count=unknown_count,
+            manual_blocker_count=manual_blocker_count,
+            incomplete_count=failed_count + unknown_count + manual_blocker_count,
+        )
+
+    def latest_host_metrics(self) -> list[HostMetricSnapshotResponse]:
+        by_name: dict[str, MetricArtifact] = {}
+        for metric in self.metrics:
+            if metric.stage is not None:
+                continue
+            current = by_name.get(metric.name)
+            if current is None or metric.ts >= current.ts:
+                by_name[metric.name] = metric
+        return [
+            HostMetricSnapshotResponse(name=metric.name, value=metric.value, ts=metric.ts)
+            for metric in sorted(by_name.values(), key=lambda metric: metric.name)
+        ]
 
 
 @dataclass
@@ -251,9 +702,17 @@ class InMemoryRunRepository:
 
 
 @dataclass
+class RunAudioBuffer:
+    sample_rate_hz: int
+    channels: int
+    pcm_s16le: bytearray = field(default_factory=bytearray)
+
+
+@dataclass
 class RunApiState:
     artifact_root: Path = Path("artifacts/recordings")
     repository: InMemoryRunRepository = field(default_factory=InMemoryRunRepository)
+    audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def create_harness(self) -> EngineHarness:
         return EngineHarness(recording_sink=LocalRecordingSink(self.artifact_root))
@@ -266,6 +725,298 @@ def get_run_api_state(request: Request) -> RunApiState:
 RunApiStateDependency = Annotated[RunApiState, Depends(get_run_api_state)]
 
 
+def _resolve_run_request(request: RunCreateRequest):
+    registry = RegistryService()
+    try:
+        for manifest in request.manifests:
+            registry.register_manifest(manifest)
+        for config in request.configs:
+            registry.register_config(config)
+        return registry.resolve_config(request.config_name)
+    except RegistryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _create_running_run(request: RunCreateRequest, resolved: Any) -> StoredRun:
+    run_id = str(uuid4())
+    return StoredRun(
+        run_id=run_id,
+        config_hash=resolved.hash,
+        call_id=request.call_id,
+        conversation_id="",
+        provider=resolved.resolved["spec"]["ai"]["provider"],
+        engine=resolved.resolved["spec"]["engine"]["kind"],
+        status="running",
+        started_at=datetime.now(UTC),
+        ended_at=None,
+        resolved_config=resolved.resolved,
+        recordings=[],
+        spans=[],
+        metrics=[],
+        verifications=[],
+        environment=request.environment,
+        readiness_checklist=request.readiness_checklist,
+    )
+
+
+def _execute_stored_run(stored: StoredRun, api_state: RunApiState) -> None:
+    try:
+        harness_result = api_state.create_harness().run_once(
+            run_id=stored.run_id,
+            resolved_config=stored.resolved_config,
+            config_hash=stored.config_hash,
+        )
+    except Exception:
+        stored.status = "failed"
+        stored.failure_alias = "engine-harness-error"
+        stored.ended_at = datetime.now(UTC)
+        raise
+
+    stored.conversation_id = harness_result.conversation_id
+    stored.status = "completed"
+    stored.ended_at = datetime.now(UTC)
+    stored.recordings = harness_result.recordings
+    stored.spans = harness_result.spans
+    stored.metrics = harness_result.metrics
+    stored.verifications = verify_recordings(
+        resolved_config=stored.resolved_config,
+        recordings=harness_result.recordings,
+        metrics=harness_result.metrics,
+    )
+
+
+def _start_background_run(stored: StoredRun, api_state: RunApiState) -> None:
+    def target() -> None:
+        try:
+            _execute_stored_run(stored, api_state)
+        except Exception:
+            # The run status carries the failure; a future persistent runner can store detail.
+            return
+
+    Thread(target=target, name=f"voxbench-run-{stored.run_id}", daemon=True).start()
+
+
+def _live_preview(api_state: RunApiState) -> list[LiveRunStatusResponse]:
+    return [run.to_live_status() for run in api_state.repository.list_recent()]
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"example payload source is unavailable: {path.name}",
+        ) from exc
+
+
+def _example_run_payload(environment_profile: EnvironmentProfile) -> RunCreateRequest:
+    return RunCreateRequest(
+        config_name="baseline",
+        configs=[_load_json_file(EXAMPLE_CONFIG_PATH)],
+        manifests=[_load_json_file(path) for path in EXAMPLE_MANIFEST_PATHS],
+        environment=RunEnvironmentMetadata(
+            environment_profile=environment_profile,
+            server_alias=f"{environment_profile}-host-a",
+            integration_target_alias="integration-target-a",
+            environment_snapshot_hash="example-snapshot-ref",
+            started_from="web-async-run-example",
+            operator_note="Example aliases only; replace before demo or integration use.",
+            manual_blockers=[],
+            tags=["phase4", "example"],
+            related_internal_ref="example-run-ref",
+            secret_ref_names=["example-provider-api-key-ref"],
+        ),
+        readiness_checklist=[
+            ReadinessChecklistItem(
+                item_id=item_id,
+                label=label,
+                status="unknown",
+            )
+            for item_id, label in DEFAULT_READINESS_ITEMS
+        ],
+    )
+
+
+def _live_demo_run_payload(request: LiveDemoRunRequest) -> RunCreateRequest:
+    config = _load_json_file(LIVE_DEMO_CONFIG_PATHS[request.provider])
+    _apply_agc_overrides(config, request)
+    readiness = _provider_readiness(request)
+    missing_dependency = readiness.missing_optional_dependency
+    provider_note = (
+        "Simulated live bridge; provider network connection is not opened in this slice."
+    )
+    if missing_dependency:
+        provider_note = f"{provider_note} Optional dependency missing: {missing_dependency}."
+
+    return RunCreateRequest(
+        config_name=config["meta"]["name"],
+        configs=[config],
+        manifests=[
+            _load_json_file(LIVE_DEMO_PROVIDER_MANIFEST_PATHS[request.provider]),
+            *[_load_json_file(path) for path in LIVE_DEMO_PROCESSOR_MANIFEST_PATHS],
+        ],
+        call_id=request.call_id,
+        environment=RunEnvironmentMetadata(
+            environment_profile="demo",
+            server_alias="local-softphone-demo-host",
+            integration_target_alias=f"{request.provider}-live-api",
+            started_from="live-demo-simulated-bridge",
+            operator_note=provider_note,
+            manual_blockers=[],
+            tags=["live-demo", "simulated-audio", request.provider],
+            related_internal_ref="live-softphone-demo-plan",
+            secret_ref_names=[readiness.env_var],
+        ),
+        readiness_checklist=[
+            ReadinessChecklistItem(
+                item_id="ai_phone_setup_complete",
+                label="AI phone setup complete",
+                status="unknown",
+                note="Configure macOS softphone and Asterisk before real RTP bridge.",
+            ),
+            ReadinessChecklistItem(
+                item_id="intermediate_db_environment_registration_complete",
+                label="Intermediate DB/environment registration complete",
+                status="pass",
+            ),
+            ReadinessChecklistItem(
+                item_id="connection_route_verified",
+                label="Connection route verified",
+                status="unknown",
+                note="Structured SIP/RTP events are simulated in this slice.",
+            ),
+            ReadinessChecklistItem(
+                item_id="expected_codec_sample_rate_cadence_declared",
+                label="Expected codec/sample rate/cadence declared",
+                status="pass",
+            ),
+            ReadinessChecklistItem(
+                item_id="recording_taps_enabled",
+                label="Recording taps enabled",
+                status="pass",
+            ),
+            ReadinessChecklistItem(
+                item_id="host_metrics_enabled",
+                label="Host metrics enabled",
+                status="unknown",
+            ),
+            ReadinessChecklistItem(
+                item_id="secret_references_present",
+                label="Secret references present",
+                status="pass" if request.dry_run or readiness.has_api_key else "fail",
+                note=f"Uses env var alias {readiness.env_var}; value is not stored.",
+            ),
+        ],
+    )
+
+
+def _apply_agc_overrides(config: dict[str, Any], request: LiveDemoRunRequest) -> None:
+    agc_params = None
+    for stage in config.get("spec", {}).get("media", {}).get("pipeline", []):
+        if isinstance(stage, dict) and stage.get("type") == "agc":
+            agc_params = stage.setdefault("params", {})
+            break
+    if not isinstance(agc_params, dict):
+        return
+    if request.target_rms is not None:
+        agc_params["target_rms"] = request.target_rms
+    if request.max_gain is not None:
+        agc_params["max_gain"] = request.max_gain
+    if request.noise_floor is not None:
+        agc_params["noise_floor"] = request.noise_floor
+
+
+def _provider_readiness(request: LiveDemoRunRequest):
+    if request.provider == "openai-realtime":
+        return OpenAIRealtimeProvider().readiness(dry_run=request.dry_run)
+    return GeminiLiveProvider().readiness(dry_run=request.dry_run)
+
+
+def _configured_stage_names(stored: StoredRun) -> set[str]:
+    return {
+        stage["type"]
+        for stage in stored.resolved_config["spec"]["media"]["pipeline"]
+        if isinstance(stage, dict) and isinstance(stage.get("type"), str)
+    }
+
+
+def _decode_audio_chunk(chunk: AudioChunkObservationRequest) -> bytes:
+    try:
+        pcm = base64.b64decode(chunk.pcm_s16le_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="pcm_s16le_base64 is not valid base64") from exc
+    if not pcm:
+        raise HTTPException(status_code=400, detail="audio chunks must not be empty")
+    if len(pcm) % (2 * chunk.channels):
+        raise HTTPException(
+            status_code=400,
+            detail="PCM16LE audio length must contain complete channel frames",
+        )
+    return pcm
+
+
+def _write_observed_audio(
+    *,
+    api_state: RunApiState,
+    stored: StoredRun,
+    chunk: AudioChunkObservationRequest,
+    pcm: bytes,
+) -> None:
+    key = (stored.run_id, chunk.stage)
+    buffer = api_state.audio_buffers.get(key)
+    if buffer is None:
+        buffer = RunAudioBuffer(
+            sample_rate_hz=chunk.sample_rate_hz,
+            channels=chunk.channels,
+        )
+        api_state.audio_buffers[key] = buffer
+    elif (buffer.sample_rate_hz, buffer.channels) != (
+        chunk.sample_rate_hz,
+        chunk.channels,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=f"audio format changed within stage '{chunk.stage}'",
+        )
+
+    buffer.pcm_s16le.extend(pcm)
+    stage_filename = quote(chunk.stage, safe="")
+    path = api_state.artifact_root.resolve() / stored.run_id / f"{stage_filename}.wav"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(buffer.channels)
+        wav.setsampwidth(2)
+        wav.setframerate(buffer.sample_rate_hz)
+        wav.writeframes(buffer.pcm_s16le)
+
+    duration_ms = (
+        len(buffer.pcm_s16le) / (2 * buffer.channels * buffer.sample_rate_hz) * 1000.0
+    )
+    recording = RecordingArtifact(
+        stage=chunk.stage,
+        uri=path.as_uri(),
+        format={
+            "encoding": "linear16",
+            "rate": buffer.sample_rate_hz,
+            "channels": buffer.channels,
+        },
+        duration_ms=duration_ms,
+    )
+    existing_index = next(
+        (
+            index
+            for index, existing in enumerate(stored.recordings)
+            if existing.stage == chunk.stage
+        ),
+        None,
+    )
+    if existing_index is None:
+        stored.recordings.append(recording)
+    else:
+        stored.recordings[existing_index] = recording
+
+
 def create_runs_router() -> APIRouter:
     router = APIRouter()
 
@@ -274,51 +1025,304 @@ def create_runs_router() -> APIRouter:
         request: RunCreateRequest,
         api_state: RunApiStateDependency,
     ) -> RunResponse:
-        registry = RegistryService()
-        try:
-            for manifest in request.manifests:
-                registry.register_manifest(manifest)
-            for config in request.configs:
-                registry.register_config(config)
-            resolved = registry.resolve_config(request.config_name)
-        except RegistryError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        resolved = _resolve_run_request(request)
+        stored = _create_running_run(request, resolved)
+        api_state.repository.save(stored)
+        _execute_stored_run(stored, api_state)
+        return stored.to_response()
 
-        run_id = str(uuid4())
-        started_at = datetime.now(UTC)
-        harness_result = api_state.create_harness().run_once(
-            run_id=run_id,
-            resolved_config=resolved.resolved,
-            config_hash=resolved.hash,
-        )
-        ended_at = datetime.now(UTC)
+    @router.post(
+        "/runs/async",
+        response_model=LiveRunStatusResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def create_run_async(
+        request: RunCreateRequest,
+        api_state: RunApiStateDependency,
+    ) -> LiveRunStatusResponse:
+        resolved = _resolve_run_request(request)
+        stored = _create_running_run(request, resolved)
+        api_state.repository.save(stored)
+        _start_background_run(stored, api_state)
+        return stored.to_live_status()
 
-        stored = StoredRun(
-            run_id=run_id,
-            config_hash=resolved.hash,
-            call_id=request.call_id,
-            conversation_id=harness_result.conversation_id,
-            provider=resolved.resolved["spec"]["ai"]["provider"],
-            engine=resolved.resolved["spec"]["engine"]["kind"],
-            status="completed",
-            started_at=started_at,
-            ended_at=ended_at,
-            resolved_config=resolved.resolved,
-            recordings=harness_result.recordings,
-            spans=harness_result.spans,
-            metrics=harness_result.metrics,
-            verifications=verify_recordings(
-                resolved_config=resolved.resolved,
-                recordings=harness_result.recordings,
-                metrics=harness_result.metrics,
-            ),
-        )
+    @router.post("/runs/observed", response_model=RunResponse)
+    async def create_observed_run(
+        request: RunCreateRequest,
+        api_state: RunApiStateDependency,
+    ) -> RunResponse:
+        resolved = _resolve_run_request(request)
+        stored = _create_running_run(request, resolved)
+        stored.conversation_id = f"observed-{stored.run_id}"
         api_state.repository.save(stored)
         return stored.to_response()
 
     @router.get("/runs", response_model=list[RunSummaryResponse])
     async def list_runs(api_state: RunApiStateDependency) -> list[RunSummaryResponse]:
         return [run.to_summary() for run in api_state.repository.list_recent()]
+
+    @router.get("/runs/live-preview", response_model=list[LiveRunStatusResponse])
+    async def list_live_preview(
+        api_state: RunApiStateDependency,
+    ) -> list[LiveRunStatusResponse]:
+        return _live_preview(api_state)
+
+    @router.post("/runs/live-demo/simulated", response_model=RunResponse)
+    async def create_simulated_live_demo_run(
+        request: LiveDemoRunRequest,
+        api_state: RunApiStateDependency,
+    ) -> RunResponse:
+        readiness = _provider_readiness(request)
+        if not request.dry_run and not readiness.ready:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{request.provider} is not ready for a non-dry-run demo; "
+                    "set the API key env var and install optional provider deps"
+                ),
+            )
+
+        run_request = _live_demo_run_payload(request)
+        resolved = _resolve_run_request(run_request)
+        stored = _create_running_run(run_request, resolved)
+        api_state.repository.save(stored)
+        try:
+            bridge_result = run_simulated_live_bridge(
+                run_id=stored.run_id,
+                call_id=stored.call_id,
+                resolved_config=stored.resolved_config,
+                artifact_root=api_state.artifact_root,
+                started_at=stored.started_at,
+                input_rms=request.input_rms,
+                duration_ms=request.duration_ms,
+            )
+        except Exception:
+            stored.status = "failed"
+            stored.ended_at = datetime.now(UTC)
+            raise
+
+        stored.conversation_id = f"simulated-{stored.run_id}"
+        stored.recordings = bridge_result.recordings
+        stored.metrics = bridge_result.metrics
+        stored.sip_events = [
+            SipEventResponse(**event.__dict__) for event in bridge_result.sip_events
+        ]
+        stored.rtp_stats = [RtpStatResponse(**stat.__dict__) for stat in bridge_result.rtp_stats]
+        stored.verifications = verify_recordings(
+            resolved_config=stored.resolved_config,
+            recordings=stored.recordings,
+            metrics=stored.metrics,
+        )
+        stored.status = "completed"
+        stored.ended_at = datetime.now(UTC)
+        return stored.to_response()
+
+    @router.post("/v1/sip-events", response_model=SipEventResponse)
+    async def ingest_sip_event(
+        request: SipEventRequest,
+        api_state: RunApiStateDependency,
+    ) -> SipEventResponse:
+        stored = api_state.repository.get(request.run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{request.run_id}'")
+        event = SipEventResponse(
+            call_id=request.call_id,
+            method=request.method,
+            direction=request.direction,
+            ts=request.ts,
+            status_code=request.status_code,
+            summary_alias=request.summary_alias,
+        )
+        stored.sip_events.append(event)
+        return event
+
+    @router.post("/v1/rtp-stats", response_model=RtpStatResponse)
+    async def ingest_rtp_stat(
+        request: RtpStatRequest,
+        api_state: RunApiStateDependency,
+    ) -> RtpStatResponse:
+        stored = api_state.repository.get(request.run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{request.run_id}'")
+        stat = RtpStatResponse(
+            ts=request.ts,
+            jitter_ms=request.jitter_ms,
+            loss_pct=request.loss_pct,
+            mos=request.mos,
+        )
+        stored.rtp_stats.append(stat)
+        return stat
+
+    @router.post("/v1/observations", response_model=ObservationBatchResponse)
+    async def ingest_observation_batch(
+        request: ObservationBatchRequest,
+        api_state: RunApiStateDependency,
+    ) -> ObservationBatchResponse:
+        stored = api_state.repository.get(request.run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{request.run_id}'")
+        if stored.status != "running":
+            raise HTTPException(
+                status_code=409,
+                detail=f"run '{request.run_id}' is not accepting observations",
+            )
+
+        configured_stages = _configured_stage_names(stored)
+        referenced_stages = {
+            metric.stage for metric in request.metrics if metric.stage is not None
+        } | {chunk.stage for chunk in request.audio_chunks}
+        unknown_stages = sorted(referenced_stages - configured_stages)
+        if unknown_stages:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown pipeline stages: {', '.join(unknown_stages)}",
+            )
+
+        decoded_audio = [(chunk, _decode_audio_chunk(chunk)) for chunk in request.audio_chunks]
+        formats_by_stage: dict[str, set[tuple[int, int]]] = {}
+        for chunk, _ in decoded_audio:
+            formats_by_stage.setdefault(chunk.stage, set()).add(
+                (chunk.sample_rate_hz, chunk.channels)
+            )
+        changed_stage = next(
+            (stage for stage, formats in formats_by_stage.items() if len(formats) > 1),
+            None,
+        )
+        if changed_stage is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"audio format changed within stage '{changed_stage}'",
+            )
+        for stage, formats in formats_by_stage.items():
+            existing = api_state.audio_buffers.get((stored.run_id, stage))
+            if existing is not None and (existing.sample_rate_hz, existing.channels) not in formats:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"audio format changed within stage '{stage}'",
+                )
+
+        for chunk, pcm in decoded_audio:
+            _write_observed_audio(
+                api_state=api_state,
+                stored=stored,
+                chunk=chunk,
+                pcm=pcm,
+            )
+        stored.metrics.extend(
+            MetricArtifact(
+                stage=metric.stage,
+                name=metric.name,
+                value=metric.value,
+                ts=metric.ts,
+            )
+            for metric in request.metrics
+        )
+        stored.sip_events.extend(
+            SipEventResponse(
+                call_id=event.call_id,
+                method=event.method,
+                direction=event.direction,
+                ts=event.ts,
+                status_code=event.status_code,
+                summary_alias=event.summary_alias,
+            )
+            for event in request.sip_events
+        )
+        stored.rtp_stats.extend(
+            RtpStatResponse(
+                ts=stat.ts,
+                jitter_ms=stat.jitter_ms,
+                loss_pct=stat.loss_pct,
+                mos=stat.mos,
+            )
+            for stat in request.rtp_stats
+        )
+        return ObservationBatchResponse(
+            run_id=stored.run_id,
+            metric_count=len(request.metrics),
+            audio_chunk_count=len(request.audio_chunks),
+            sip_event_count=len(request.sip_events),
+            rtp_stat_count=len(request.rtp_stats),
+            recording_count=len(stored.recordings),
+        )
+
+    @router.post("/runs/{run_id}/complete", response_model=RunResponse)
+    async def complete_observed_run(
+        run_id: str,
+        api_state: RunApiStateDependency,
+    ) -> RunResponse:
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        if stored.status == "completed":
+            return stored.to_response()
+        if stored.status != "running":
+            raise HTTPException(status_code=409, detail=f"run '{run_id}' cannot be completed")
+
+        stored.verifications = verify_recordings(
+            resolved_config=stored.resolved_config,
+            recordings=stored.recordings,
+            metrics=stored.metrics,
+        )
+        stored.status = "completed"
+        stored.ended_at = datetime.now(UTC)
+        for key in [key for key in api_state.audio_buffers if key[0] == run_id]:
+            del api_state.audio_buffers[key]
+        return stored.to_response()
+
+    @router.post("/runs/{run_id}/fail", response_model=RunResponse)
+    async def fail_observed_run(
+        run_id: str,
+        request: RunFailureRequest,
+        api_state: RunApiStateDependency,
+    ) -> RunResponse:
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        if stored.status == "failed":
+            return stored.to_response()
+        if stored.status != "running":
+            raise HTTPException(status_code=409, detail=f"run '{run_id}' cannot be failed")
+
+        stored.status = "failed"
+        stored.failure_alias = request.failure_alias
+        stored.ended_at = datetime.now(UTC)
+        stored.metrics.append(
+            MetricArtifact(
+                stage=None,
+                name="run_failed",
+                value=1.0,
+                ts=stored.ended_at,
+            )
+        )
+        for key in [key for key in api_state.audio_buffers if key[0] == run_id]:
+            del api_state.audio_buffers[key]
+        return stored.to_response()
+
+    @router.get("/runs/example-payload", response_model=RunCreateRequest)
+    async def get_example_run_payload(
+        environment_profile: EnvironmentProfile = "demo",
+    ) -> RunCreateRequest:
+        return _example_run_payload(environment_profile)
+
+    @router.websocket("/live")
+    async def live_websocket(
+        websocket: WebSocket,
+        interval_ms: Annotated[int, Query(ge=100, le=10_000)] = 1_000,
+    ) -> None:
+        await websocket.accept()
+        api_state = get_run_api_state(websocket)
+        try:
+            while True:
+                await websocket.send_json(
+                    [
+                        status.model_dump(mode="json")
+                        for status in _live_preview(api_state)
+                    ]
+                )
+                await asyncio.sleep(interval_ms / 1000.0)
+        except WebSocketDisconnect:
+            return
 
     @router.get("/runs/{run_id}", response_model=RunResponse)
     async def get_run(

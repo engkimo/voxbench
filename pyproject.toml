@@ -21,6 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+live = [
+  "google-genai>=1.0.0",
+  "websockets>=14.2",
+]
 dev = [
   "httpx>=0.28.0",
   "pytest>=9.0.0",

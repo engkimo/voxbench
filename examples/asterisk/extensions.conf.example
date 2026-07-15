@@ -1,0 +1,10 @@
+[globals]
+; For Asterisk in Docker, use host.docker.internal:9019 instead.
+VOXBENCH_AUDIOSOCKET=127.0.0.1:9019
+
+[voxbench-demo]
+exten => 7000,1,NoOp(VoxBench AudioSocket loopback demo)
+ same => n,Answer()
+ same => n,Set(CALL_UUID=${UUID()})
+ same => n,AudioSocket(${CALL_UUID},${VOXBENCH_AUDIOSOCKET})
+ same => n,Hangup()

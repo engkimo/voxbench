@@ -133,7 +133,10 @@ runs (
   call_id text,                 -- SIP Call-ID（双方向マップ）
   conversation_id text,         -- PipeCat側
   provider text, engine text,
-  status text, started_at, ended_at
+  status text,                  -- 'running' | 'completed' | 'failed'
+  environment_metadata jsonb,    -- aliases/references only; no secret values/URLs/Slack IDs
+  readiness_checklist jsonb,     -- [{item_id,label,status,note}]
+  started_at, ended_at
 )
 
 -- ステージごとのタップ録音
@@ -165,9 +168,12 @@ spans (
   name text, start_ns bigint, end_ns bigint, attrs jsonb
 )
 
--- SIP/RTP（任意・v1後半）。HEP取込
-sip_events ( id pk, run_id uuid, call_id text, method text, ts, raw jsonb )
-rtp_stats  ( id pk, run_id uuid, ts, jitter numeric, loss numeric, mos numeric )
+-- SIP/RTP（任意・v1後半）。HEP/collector取込。raw packet/bodyは保存しない。
+sip_events (
+  id pk, run_id uuid, call_id text null, method text, direction text,
+  status_code int null, summary_alias text null, ts
+)
+rtp_stats  ( id pk, run_id uuid, ts, jitter_ms numeric, loss_pct numeric, mos numeric )
 ```
 
 ---
@@ -344,6 +350,21 @@ provider_caps:
 ```json
 {
   "run_id": "...", "t0": "...", "config_hash": "...",
+  "environment": {
+    "environment_profile": "demo",
+    "server_alias": "demo-host-a",
+    "integration_target_alias": "integration-target-a",
+    "manual_blockers": ["route-confirmation"],
+    "tags": ["phase4"],
+    "secret_ref_names": ["provider-api-key-ref"]
+  },
+  "readiness_summary": {
+    "passed_count": 3,
+    "failed_count": 1,
+    "unknown_count": 2,
+    "manual_blocker_count": 1,
+    "incomplete_count": 4
+  },
   "lanes": {
     "sip_ladder":   [ {"ts":0,"method":"INVITE","dir":"in"} ],
     "rtp_quality":  [ {"ts":0,"mos":4.1,"jitter":3,"loss":0} ],
@@ -353,7 +374,7 @@ provider_caps:
         "violations": [ {"invariant":"isochronous","passed":false,"detail":"frames_out/in=7/50"} ]
     } ],
     "turns":        [ {"ts":0,"kind":"user","event":"start","ttfb_ms":null} ],
-    "host":         [ {"ts":0,"cpu":78,"active_tasks":12,"loop_lag":40} ],
+    "host":         [ {"ts":0,"name":"cpu","value":78} ],
     "recordings":   [ {"stage":"MediaSender","uri":"..."} ]
   }
 }
@@ -381,6 +402,10 @@ POST /experiments
 POST /experiments/{id}/run         # シナリオに従いN runを発火・割当
 GET  /experiments/{id}/results     # config別集計＋有意差
 POST /runs                         # 単発コール実行(config指定, run_id発行)
+POST /runs/async                   # running runを即返しbackground実行
+GET  /runs                         # recent run summaries
+GET  /runs/example-payload         # examplesベースのRunCreateRequest payload
+GET  /runs/live-preview            # recent run status + readiness + latest host metrics
 GET  /runs/{id}
 GET  /runs/{id}/timeline           # §10
 GET  /runs/cross-session-trends
@@ -391,10 +416,12 @@ POST /synthetic-caller/calls       # 参照音声+雑音で発信
 # Telemetry ingest
 POST /v1/traces                    # OTLP/HTTP 受け口（自前シンク）
 POST /v1/host-metrics
+POST /v1/sip-events                # structured SIP ladder event; no raw body/SDP
+POST /v1/rtp-stats                 # structured RTP quality point
 # HEP UDP listener（任意・別ポート）
 
 # Live
-WS   /live                         # アクティブコール/リアルタイムMOS
+WS   /live                         # live-preview projectionをsnapshot push
 ```
 
 ---
@@ -474,8 +501,10 @@ voxbench/
 - accept：1コールの劣化ステージが赤く出て、隣接録音を聴き比べられる。2 config をテーブル比較できる。
 
 **Phase 4 — ホスト/横断＋ライブ監視**
-- host_metricsレーン、cross-session trend（リーク検出）、`WS /live`。
-- accept：通話横断で active_tasks 単調増加が検出・可視化される。
+- 前段：run environment metadata、readiness checklist、manual blockers、secret reference names、host_metricsレーン、live-preview、background run、`WS /live`。
+- 後段：cross-session trend（リーク検出）、実 live host / SIP / RTP 取込。
+- accept（前段）：demo/integration run の環境差分と準備状態を recent/timeline/compare/live preview で確認でき、secret 実値・外部URL・Slack IDを保存しない。
+- accept（後段）：通話横断で active_tasks 単調増加が検出・可視化される。
 
 **Phase 5 — 抽象の実証＋スケール**
 - 2つ目のプロバイダ（OpenAI Realtime）と2つ目のエンジンをプラグインで追加し、コア無改修で動くことを実証。任意でHEP/RTP取込、`--profile scale`。

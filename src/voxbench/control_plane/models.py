@@ -81,6 +81,16 @@ class Run(TimestampMixin, Base):
     provider: Mapped[str] = mapped_column(String(255), nullable=False)
     engine: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    environment_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+    )
+    readiness_checklist: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -148,3 +158,35 @@ class Metric(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     value: Mapped[float] = mapped_column(nullable=False)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SipEvent(Base):
+    __tablename__ = "sip_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    call_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    method: Mapped[str] = mapped_column(String(64), nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    status_code: Mapped[int | None] = mapped_column(nullable=True)
+    summary_alias: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class RtpStat(Base):
+    __tablename__ = "rtp_stats"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    jitter_ms: Mapped[float | None] = mapped_column(nullable=True)
+    loss_pct: Mapped[float | None] = mapped_column(nullable=True)
+    mos: Mapped[float | None] = mapped_column(nullable=True)

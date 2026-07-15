@@ -1,0 +1,74 @@
+{
+  "apiVersion": "voxbench/v1",
+  "kind": "VoiceConfig",
+  "meta": {
+    "name": "live-demo-openai-realtime",
+    "version": "1.0.0",
+    "labels": { "env": "demo", "demo": "live-softphone" }
+  },
+  "spec": {
+    "engine": {
+      "kind": "asterisk",
+      "params": {
+        "websocket_url": "alias:local-asterisk-media-websocket",
+        "media_profile": "8khz-pcm16-20ms"
+      }
+    },
+    "transport": {
+      "codec": "pcm16",
+      "ptime_ms": 20,
+      "jitter_buffer": { "mode": "adaptive", "max_ms": 200 }
+    },
+    "media": {
+      "pipeline": [
+        {
+          "type": "resampler",
+          "plugin": "soxr-stream",
+          "params": { "input_rate": 24000, "output_rate": 8000, "quality": "high" },
+          "host_capabilities": ["cadence_pacing"]
+        },
+        {
+          "type": "agc",
+          "plugin": "rms-target",
+          "params": { "target_rms": 3000, "max_gain": 8.0, "noise_floor": 200 }
+        },
+        {
+          "type": "limiter",
+          "plugin": "peak-limiter",
+          "params": { "ceiling": 0.7 }
+        },
+        {
+          "type": "serializer",
+          "plugin": "asterisk-ws",
+          "params": { "encoding": "mulaw", "ptime_ms": 20 },
+          "host_capabilities": ["cadence_pacing", "output_buffering"]
+        }
+      ]
+    },
+    "turn_taking": {
+      "owner": "server_vad",
+      "barge_in": true
+    },
+    "ai": {
+      "provider": "openai-realtime",
+      "model": "gpt-realtime-2.1",
+      "params": {
+        "api_key_ref": "env:OPENAI_API_KEY",
+        "input_format": { "type": "audio/pcm", "rate": 24000 },
+        "output_format": { "type": "audio/pcm" },
+        "turn_detection": "semantic_vad",
+        "voice": "marin"
+      },
+      "system_prompt_ref": "live-demo-default@1.0.0",
+      "tools": []
+    },
+    "observability": {
+      "stage_taps": true,
+      "record_audio": true,
+      "trace_sample": 1.0,
+      "signal_metrics": ["rms_io", "duration_ratio", "frame_cadence_jitter", "gain"],
+      "host_metrics": ["cpu", "active_tasks", "loop_lag"],
+      "cross_session": ["task_count_trend", "mem_trend"]
+    }
+  }
+}

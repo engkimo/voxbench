@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
-  Clock3,
   Database,
   Headphones,
   ListChecks,
@@ -20,17 +19,96 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import WaveSurfer from 'wavesurfer.js'
 
 import type {
+  EnvironmentProfile,
+  LiveRunStatus,
+  ReadinessChecklistItem,
+  ReadinessStatus,
+  ReadinessSummary,
+  RunSummary,
+  RunEnvironmentMetadata,
   TimelineMetricPoint,
   TimelineRecording,
+  TimelineRtpStat,
   TimelineResponse,
+  TimelineSipEvent,
   TimelineStageLane,
   TimelineViolation,
-  RunSummary,
 } from './types'
 
 const DEFAULT_API_BASE = '/api'
+const DEFAULT_ASYNC_RUN_PAYLOAD = JSON.stringify(
+  {
+    config_name: 'baseline',
+    configs: [],
+    manifests: [],
+    environment: {
+      environment_profile: 'demo',
+      server_alias: 'demo-host-a',
+      integration_target_alias: 'integration-target-a',
+      manual_blockers: [],
+      tags: ['phase4'],
+      secret_ref_names: [],
+    },
+    readiness_checklist: [
+      {
+        item_id: 'ai_phone_setup_complete',
+        label: 'AI phone setup complete',
+        status: 'unknown',
+      },
+      {
+        item_id: 'connection_route_verified',
+        label: 'Connection route verified',
+        status: 'unknown',
+      },
+      {
+        item_id: 'host_metrics_enabled',
+        label: 'Host metrics enabled',
+        status: 'unknown',
+      },
+    ],
+  },
+  null,
+  2,
+)
 
 type DetailTab = 'metrics' | 'checks' | 'audio'
+type LiveSocketState = 'connecting' | 'connected' | 'disconnected' | 'error'
+type AgcGainParams = {
+  target_rms?: number
+  max_gain?: number
+  noise_floor?: number
+}
+type AsyncPayloadDraft = {
+  environment?: Partial<RunEnvironmentMetadata>
+  readiness_checklist?: Array<Partial<ReadinessChecklistItem>>
+  [key: string]: unknown
+}
+
+const ENVIRONMENT_PROFILES: EnvironmentProfile[] = [
+  'local',
+  'dev',
+  'demo',
+  'integration',
+  'staging',
+]
+
+const READINESS_CONTROLS: Array<Pick<ReadinessChecklistItem, 'item_id' | 'label'>> = [
+  { item_id: 'ai_phone_setup_complete', label: 'AI phone setup complete' },
+  {
+    item_id: 'intermediate_db_environment_registration_complete',
+    label: 'Intermediate DB/environment registration complete',
+  },
+  { item_id: 'connection_route_verified', label: 'Connection route verified' },
+  {
+    item_id: 'expected_codec_sample_rate_cadence_declared',
+    label: 'Expected codec/sample rate/cadence declared',
+  },
+  { item_id: 'recording_taps_enabled', label: 'Recording taps enabled' },
+  { item_id: 'host_metrics_enabled', label: 'Host metrics enabled' },
+  { item_id: 'secret_references_present', label: 'Secret references present' },
+]
+
+const READINESS_STATUSES: ReadinessStatus[] = ['unknown', 'pass', 'fail']
 
 async function fetchTimeline(apiBase: string, runId: string): Promise<TimelineResponse> {
   const base = apiBase.replace(/\/$/, '')
@@ -50,6 +128,196 @@ async function fetchRuns(apiBase: string): Promise<RunSummary[]> {
   return response.json()
 }
 
+async function fetchLivePreview(apiBase: string): Promise<LiveRunStatus[]> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/runs/live-preview`)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function createAsyncRun(apiBase: string, payload: unknown): Promise<LiveRunStatus> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/runs/async`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = await response.text()
+    throw new Error(`HTTP ${response.status}${detail ? ` ${detail}` : ''}`)
+  }
+  return response.json()
+}
+
+async function fetchExamplePayload(apiBase: string): Promise<unknown> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/runs/example-payload?environment_profile=demo`)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+function liveWebSocketUrl(apiBase: string) {
+  const base = apiBase.replace(/\/$/, '')
+  const origin = typeof window === 'undefined' ? 'http://127.0.0.1' : window.location.origin
+  const url = new URL(`${base}/live`, origin)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
+}
+
+function parseAsyncPayloadDraft(payload: string): AsyncPayloadDraft | null {
+  try {
+    const parsed = JSON.parse(payload) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as AsyncPayloadDraft
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function fallbackAsyncPayloadDraft(payload: string): AsyncPayloadDraft {
+  return parseAsyncPayloadDraft(payload) ?? parseAsyncPayloadDraft(DEFAULT_ASYNC_RUN_PAYLOAD) ?? {}
+}
+
+function formatAsyncPayloadDraft(draft: AsyncPayloadDraft) {
+  return JSON.stringify(draft, null, 2)
+}
+
+function updatePayloadEnvironment(
+  payload: string,
+  updates: Partial<RunEnvironmentMetadata>,
+) {
+  const draft = fallbackAsyncPayloadDraft(payload)
+  const environment = {
+    ...(draft.environment ?? {}),
+    ...updates,
+  }
+  return formatAsyncPayloadDraft({ ...draft, environment })
+}
+
+function updatePayloadReadiness(
+  payload: string,
+  itemId: string,
+  status: ReadinessStatus,
+) {
+  const draft = fallbackAsyncPayloadDraft(payload)
+  const currentItems = Array.isArray(draft.readiness_checklist)
+    ? draft.readiness_checklist
+    : []
+  const existing = new Map(currentItems.map((item) => [item.item_id, item]))
+  const control = READINESS_CONTROLS.find((item) => item.item_id === itemId)
+  existing.set(itemId, {
+    item_id: itemId,
+    label: control?.label ?? itemId,
+    ...(existing.get(itemId) ?? {}),
+    status,
+  })
+  const readiness_checklist = READINESS_CONTROLS.map((item) => (
+    existing.get(item.item_id) ?? {
+      item_id: item.item_id,
+      label: item.label,
+      status: 'unknown' as ReadinessStatus,
+    }
+  ))
+  return formatAsyncPayloadDraft({ ...draft, readiness_checklist })
+}
+
+function updatePayloadAgcParams(payload: string, updates: AgcGainParams) {
+  const draft = fallbackAsyncPayloadDraft(payload)
+  const configs = Array.isArray(draft.configs) ? draft.configs : []
+  let updated = false
+  const nextConfigs = configs.map((config) => {
+    if (!isRecord(config) || !isRecord(config.spec)) {
+      return config
+    }
+    const media = config.spec.media
+    if (!isRecord(media) || !Array.isArray(media.pipeline)) {
+      return config
+    }
+    const nextPipeline = media.pipeline.map((stage) => {
+      if (!isRecord(stage) || stage.type !== 'agc') {
+        return stage
+      }
+      updated = true
+      const params = isRecord(stage.params) ? stage.params : {}
+      return {
+        ...stage,
+        params: {
+          ...params,
+          ...updates,
+        },
+      }
+    })
+    return {
+      ...config,
+      spec: {
+        ...config.spec,
+        media: {
+          ...media,
+          pipeline: nextPipeline,
+        },
+      },
+    }
+  })
+  return updated ? formatAsyncPayloadDraft({ ...draft, configs: nextConfigs }) : payload
+}
+
+function agcGainParamsFromDraft(draft: AsyncPayloadDraft): AgcGainParams {
+  const configs = Array.isArray(draft.configs) ? draft.configs : []
+  for (const config of configs) {
+    if (!isRecord(config) || !isRecord(config.spec)) {
+      continue
+    }
+    const media = config.spec.media
+    if (!isRecord(media) || !Array.isArray(media.pipeline)) {
+      continue
+    }
+    for (const stage of media.pipeline) {
+      if (!isRecord(stage) || stage.type !== 'agc' || !isRecord(stage.params)) {
+        continue
+      }
+      return {
+        target_rms: numberParam(stage.params.target_rms),
+        max_gain: numberParam(stage.params.max_gain),
+        noise_floor: numberParam(stage.params.noise_floor),
+      }
+    }
+  }
+  return {}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function numberParam(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function numberInput(value: number | undefined) {
+  return value === undefined ? '' : String(value)
+}
+
+function parseNumberInput(value: string) {
+  if (value.trim() === '') {
+    return undefined
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function commaList(value: string) {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 export function App() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE)
   const [draftRunId, setDraftRunId] = useState('')
@@ -57,6 +325,12 @@ export function App() {
   const [runId, setRunId] = useState('')
   const [compareRunId, setCompareRunId] = useState('')
   const [selectedStageName, setSelectedStageName] = useState<string | null>(null)
+  const [livePreviewSocketRuns, setLivePreviewSocketRuns] = useState<LiveRunStatus[] | null>(null)
+  const [liveSocketState, setLiveSocketState] = useState<LiveSocketState>('connecting')
+  const [asyncRunPayload, setAsyncRunPayload] = useState(DEFAULT_ASYNC_RUN_PAYLOAD)
+  const [asyncRunError, setAsyncRunError] = useState<string | null>(null)
+  const [asyncRunPending, setAsyncRunPending] = useState(false)
+  const [examplePayloadPending, setExamplePayloadPending] = useState(false)
 
   const timelineQuery = useQuery({
     queryKey: ['timeline', apiBase, runId],
@@ -72,6 +346,38 @@ export function App() {
     queryKey: ['runs', apiBase],
     queryFn: () => fetchRuns(apiBase),
   })
+  const livePreviewQuery = useQuery({
+    queryKey: ['live-preview', apiBase],
+    queryFn: () => fetchLivePreview(apiBase),
+  })
+
+  useEffect(() => {
+    const url = liveWebSocketUrl(apiBase)
+    setLiveSocketState('connecting')
+    setLivePreviewSocketRuns(null)
+    const socket = new WebSocket(url)
+
+    socket.addEventListener('open', () => {
+      setLiveSocketState('connected')
+    })
+    socket.addEventListener('message', (event) => {
+      try {
+        setLivePreviewSocketRuns(JSON.parse(event.data) as LiveRunStatus[])
+      } catch {
+        setLiveSocketState('error')
+      }
+    })
+    socket.addEventListener('error', () => {
+      setLiveSocketState('error')
+    })
+    socket.addEventListener('close', () => {
+      setLiveSocketState((current) => (current === 'error' ? 'error' : 'disconnected'))
+    })
+
+    return () => {
+      socket.close()
+    }
+  }, [apiBase])
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -79,8 +385,61 @@ export function App() {
     setCompareRunId(draftCompareRunId.trim())
   }
 
+  async function submitAsyncRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAsyncRunPending(true)
+    setAsyncRunError(null)
+    try {
+      const payload = JSON.parse(asyncRunPayload) as unknown
+      const accepted = await createAsyncRun(apiBase, payload)
+      setDraftRunId(accepted.run_id)
+      setRunId(accepted.run_id)
+      void runsQuery.refetch()
+      void livePreviewQuery.refetch()
+    } catch (error) {
+      setAsyncRunError(error instanceof Error ? error.message : 'Async run failed')
+    } finally {
+      setAsyncRunPending(false)
+    }
+  }
+
+  async function loadExamplePayload() {
+    setExamplePayloadPending(true)
+    setAsyncRunError(null)
+    try {
+      const payload = await fetchExamplePayload(apiBase)
+      setAsyncRunPayload(JSON.stringify(payload, null, 2))
+    } catch (error) {
+      setAsyncRunError(error instanceof Error ? error.message : 'Example payload unavailable')
+    } finally {
+      setExamplePayloadPending(false)
+    }
+  }
+
+  function updateAsyncEnvironment(updates: Partial<RunEnvironmentMetadata>) {
+    setAsyncRunPayload((current) => updatePayloadEnvironment(current, updates))
+  }
+
+  function updateAsyncReadiness(itemId: string, status: ReadinessStatus) {
+    setAsyncRunPayload((current) => updatePayloadReadiness(current, itemId, status))
+  }
+
+  function updateAsyncAgcParams(updates: AgcGainParams) {
+    setAsyncRunPayload((current) => updatePayloadAgcParams(current, updates))
+  }
+
   const timeline = timelineQuery.data
   const compareTimeline = compareTimelineQuery.data
+  const livePreviewRuns = livePreviewSocketRuns ?? livePreviewQuery.data ?? []
+  const asyncPayloadDraft = useMemo(
+    () => fallbackAsyncPayloadDraft(asyncRunPayload),
+    [asyncRunPayload],
+  )
+  const asyncEnvironment = asyncPayloadDraft.environment ?? {}
+  const asyncAgcParams = useMemo(
+    () => agcGainParamsFromDraft(asyncPayloadDraft),
+    [asyncPayloadDraft],
+  )
   const failedCount = useMemo(
     () =>
       timeline?.lanes.stages.reduce(
@@ -88,14 +447,6 @@ export function App() {
         0,
       ) ?? 0,
     [timeline],
-  )
-  const compareFailedCount = useMemo(
-    () =>
-      compareTimeline?.lanes.stages.reduce(
-        (count, stage) => count + stage.violations.length,
-        0,
-      ) ?? 0,
-    [compareTimeline],
   )
   const compareStages = useMemo(
     () => (compareTimeline ? stageMap(compareTimeline) : null),
@@ -157,6 +508,7 @@ export function App() {
             onClick={() => {
               void timelineQuery.refetch()
               void runsQuery.refetch()
+              void livePreviewQuery.refetch()
               if (compareRunId) {
                 void compareTimelineQuery.refetch()
               }
@@ -171,11 +523,16 @@ export function App() {
       <section className="summaryGrid">
         <SummaryTile icon={<Database size={18} />} label="Run" value={timeline?.run_id ?? '-'} />
         <SummaryTile icon={<Database size={18} />} label="Compare" value={compareTimeline?.run_id ?? '-'} />
+        <SummaryTile
+          icon={<Server size={18} />}
+          label="Environment"
+          value={timeline ? environmentHeadline(timeline.environment) : '-'}
+        />
         <SummaryTile icon={<AlertTriangle size={18} />} label="Violations" value={failedCount} />
         <SummaryTile
-          icon={<Clock3 size={18} />}
-          label="Compare Fails"
-          value={compareTimeline ? compareFailedCount : '-'}
+          icon={<ListChecks size={18} />}
+          label="Readiness"
+          value={timeline ? readinessHeadline(timeline.readiness_summary) : '-'}
         />
       </section>
 
@@ -191,6 +548,27 @@ export function App() {
 
       {!timeline ? (
         <div className="recentRunsWide">
+          <AsyncRunPanel
+            agcParams={asyncAgcParams}
+            environment={asyncEnvironment}
+            error={asyncRunError}
+            examplePending={examplePayloadPending}
+            onAgcParamsChange={updateAsyncAgcParams}
+            onEnvironmentChange={updateAsyncEnvironment}
+            onLoadExample={loadExamplePayload}
+            onPayloadChange={setAsyncRunPayload}
+            onReadinessChange={updateAsyncReadiness}
+            onSubmit={submitAsyncRun}
+            payload={asyncRunPayload}
+            pending={asyncRunPending}
+            readinessChecklist={asyncPayloadDraft.readiness_checklist ?? []}
+          />
+          <LivePreviewPanel
+            connectionState={liveSocketState}
+            isError={livePreviewQuery.isError}
+            isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
+            runs={livePreviewRuns}
+          />
           <RecentRuns
             compareRunId={compareRunId}
             isError={runsQuery.isError}
@@ -234,10 +612,37 @@ export function App() {
           </div>
 
           <aside className="sideRail">
-            <LaneStatus title="SIP" icon={<Signal size={17} />} count={timeline.lanes.sip_ladder.length} />
-            <LaneStatus title="RTP" icon={<Waves size={17} />} count={timeline.lanes.rtp_quality.length} />
+            <LivePreviewPanel
+              connectionState={liveSocketState}
+              isError={livePreviewQuery.isError}
+              isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
+              runs={livePreviewRuns}
+            />
+            <HostMetricsPanel metrics={timeline.lanes.host} />
+            <SipLadderPanel events={timeline.lanes.sip_ladder} />
+            <RtpQualityPanel stats={timeline.lanes.rtp_quality} />
+            <EnvironmentPanel environment={timeline.environment} />
+            <ReadinessPanel
+              checklist={timeline.readiness_checklist}
+              environment={timeline.environment}
+              summary={timeline.readiness_summary}
+            />
             <LaneStatus title="Turns" icon={<Headphones size={17} />} count={timeline.lanes.turns.length} />
-            <LaneStatus title="Host" icon={<Server size={17} />} count={timeline.lanes.host.length} />
+            <AsyncRunPanel
+              agcParams={asyncAgcParams}
+              environment={asyncEnvironment}
+              error={asyncRunError}
+              examplePending={examplePayloadPending}
+              onAgcParamsChange={updateAsyncAgcParams}
+              onEnvironmentChange={updateAsyncEnvironment}
+              onLoadExample={loadExamplePayload}
+              onPayloadChange={setAsyncRunPayload}
+              onReadinessChange={updateAsyncReadiness}
+              onSubmit={submitAsyncRun}
+              payload={asyncRunPayload}
+              pending={asyncRunPending}
+              readinessChecklist={asyncPayloadDraft.readiness_checklist ?? []}
+            />
             <RecentRuns
               compareRunId={compareRunId}
               isError={runsQuery.isError}
@@ -273,6 +678,281 @@ export function App() {
         </section>
       ) : null}
     </main>
+  )
+}
+
+function AsyncRunPanel({
+  agcParams,
+  environment,
+  error,
+  examplePending,
+  onAgcParamsChange,
+  onEnvironmentChange,
+  onLoadExample,
+  onPayloadChange,
+  onReadinessChange,
+  onSubmit,
+  payload,
+  pending,
+  readinessChecklist,
+}: {
+  agcParams: AgcGainParams
+  environment: Partial<RunEnvironmentMetadata>
+  error: string | null
+  examplePending: boolean
+  onAgcParamsChange: (updates: AgcGainParams) => void
+  onEnvironmentChange: (updates: Partial<RunEnvironmentMetadata>) => void
+  onLoadExample: () => void
+  onPayloadChange: (payload: string) => void
+  onReadinessChange: (itemId: string, status: ReadinessStatus) => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  payload: string
+  pending: boolean
+  readinessChecklist: Array<Partial<ReadinessChecklistItem>>
+}) {
+  const readinessById = new Map(readinessChecklist.map((item) => [item.item_id, item]))
+  return (
+    <section className="asyncRunPanel">
+      <div className="sectionHeader compact">
+        <Play size={17} />
+        <h2>Async run</h2>
+      </div>
+      <form className="asyncRunForm" onSubmit={onSubmit}>
+        <div className="asyncRunControls">
+          <label>
+            Profile
+            <select
+              value={environment.environment_profile ?? 'demo'}
+              onChange={(event) =>
+                onEnvironmentChange({
+                  environment_profile: event.target.value as EnvironmentProfile,
+                })
+              }
+            >
+              {ENVIRONMENT_PROFILES.map((profile) => (
+                <option key={profile} value={profile}>
+                  {profile}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Server alias
+            <input
+              value={environment.server_alias ?? ''}
+              onChange={(event) => onEnvironmentChange({ server_alias: event.target.value })}
+              placeholder="demo-host-a"
+            />
+          </label>
+          <label>
+            Target alias
+            <input
+              value={environment.integration_target_alias ?? ''}
+              onChange={(event) =>
+                onEnvironmentChange({ integration_target_alias: event.target.value })
+              }
+              placeholder="integration-target-a"
+            />
+          </label>
+          <label>
+            Tags
+            <input
+              value={(environment.tags ?? []).join(', ')}
+              onChange={(event) =>
+                onEnvironmentChange({
+                  tags: commaList(event.target.value),
+                })
+              }
+              placeholder="phase4, demo"
+            />
+          </label>
+          <label>
+            Manual blockers
+            <input
+              value={(environment.manual_blockers ?? []).join(', ')}
+              onChange={(event) =>
+                onEnvironmentChange({
+                  manual_blockers: commaList(event.target.value),
+                })
+              }
+              placeholder="route-confirmation"
+            />
+          </label>
+          <label>
+            Secret refs
+            <input
+              value={(environment.secret_ref_names ?? []).join(', ')}
+              onChange={(event) =>
+                onEnvironmentChange({
+                  secret_ref_names: commaList(event.target.value),
+                })
+              }
+              placeholder="provider-api-key-ref"
+            />
+          </label>
+        </div>
+        <div className="asyncGainControls">
+          <label>
+            Target RMS
+            <input
+              min="0"
+              step="1"
+              type="number"
+              value={numberInput(agcParams.target_rms)}
+              onChange={(event) =>
+                onAgcParamsChange({ target_rms: parseNumberInput(event.target.value) })
+              }
+              placeholder="3000"
+            />
+          </label>
+          <label>
+            Max gain
+            <input
+              min="0"
+              step="0.1"
+              type="number"
+              value={numberInput(agcParams.max_gain)}
+              onChange={(event) =>
+                onAgcParamsChange({ max_gain: parseNumberInput(event.target.value) })
+              }
+              placeholder="8.0"
+            />
+          </label>
+          <label>
+            Noise floor
+            <input
+              min="0"
+              step="1"
+              type="number"
+              value={numberInput(agcParams.noise_floor)}
+              onChange={(event) =>
+                onAgcParamsChange({ noise_floor: parseNumberInput(event.target.value) })
+              }
+              placeholder="200"
+            />
+          </label>
+        </div>
+        <div className="asyncReadinessControls">
+          {READINESS_CONTROLS.map((item) => {
+            const status = readinessById.get(item.item_id)?.status ?? 'unknown'
+            return (
+              <label key={item.item_id}>
+                {item.label}
+                <select
+                  value={status}
+                  onChange={(event) =>
+                    onReadinessChange(item.item_id, event.target.value as ReadinessStatus)
+                  }
+                >
+                  {READINESS_STATUSES.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )
+          })}
+        </div>
+        <label>
+          Payload JSON
+          <textarea
+            spellCheck={false}
+            value={payload}
+            onChange={(event) => onPayloadChange(event.target.value)}
+          />
+        </label>
+        <button disabled={pending} type="submit">
+          <Play size={16} />
+          {pending ? 'Starting' : 'Start'}
+        </button>
+        <button
+          className="secondaryButton"
+          disabled={examplePending || pending}
+          onClick={onLoadExample}
+          type="button"
+        >
+          <Database size={16} />
+          {examplePending ? 'Loading' : 'Load example'}
+        </button>
+        {error ? <div className="asyncRunError">{error}</div> : null}
+      </form>
+    </section>
+  )
+}
+
+function LivePreviewPanel({
+  connectionState,
+  isError,
+  isLoading,
+  runs,
+}: {
+  connectionState: LiveSocketState
+  isError: boolean
+  isLoading: boolean
+  runs: LiveRunStatus[]
+}) {
+  return (
+    <section className="livePreviewPanel">
+      <div className="sectionHeader compact">
+        <Activity size={17} />
+        <h2>Live preview</h2>
+        <span className={`liveSocketBadge ${connectionState}`}>{connectionState}</span>
+      </div>
+      {isLoading ? <div className="emptyInline">Loading live preview</div> : null}
+      {isError ? <div className="emptyInline">Live preview unavailable</div> : null}
+      {!isLoading && !isError && runs.length === 0 ? (
+        <div className="emptyInline">No recent run status</div>
+      ) : null}
+      <div className="liveRunList">
+        {runs.map((run) => {
+          const blocked = run.readiness_summary.incomplete_count > 0
+          return (
+            <article className={blocked ? 'liveRunItem blocked' : 'liveRunItem ready'} key={run.run_id}>
+              <div className="liveRunHeader">
+                <div>
+                  <strong>{shortId(run.run_id)}</strong>
+                  <span>{environmentStatusLabel(run)}</span>
+                </div>
+                <em>{run.status}</em>
+              </div>
+              {run.failure_alias ? (
+                <div className="liveRunBlockers">
+                  <strong>Failure</strong>
+                  <span>{run.failure_alias}</span>
+                </div>
+              ) : null}
+              <div className="liveRunReadiness">
+                <strong>{readinessHeadline(run.readiness_summary)}</strong>
+                <span>
+                  {run.readiness_summary.failed_count} fail / {run.readiness_summary.unknown_count} unknown
+                </span>
+              </div>
+              {run.manual_blockers.length > 0 ? (
+                <div className="liveRunBlockers">
+                  <strong>Blockers</strong>
+                  <span>{joinList(run.manual_blockers)}</span>
+                </div>
+              ) : null}
+              <div className="liveRunHostMetrics">
+                {run.latest_host_metrics.map((metric) => (
+                  <span key={metric.name}>
+                    <strong>{metric.name}</strong>
+                    {formatLiveHostMetric(metric.name, metric.value)}
+                  </span>
+                ))}
+                {run.latest_host_metrics.length === 0 ? (
+                  <span>
+                    <strong>host</strong>
+                    missing
+                  </span>
+                ) : null}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+    </section>
   )
 }
 
@@ -313,6 +993,13 @@ function RecentRuns({
               <em>
                 {run.recording_count} rec / {run.violation_count} fail
               </em>
+            </div>
+            <div className="recentRunEnv">
+              <span>{run.environment_profile}</span>
+              <span>{run.server_alias ?? 'no server alias'}</span>
+              <span>
+                {run.readiness_failed_count} fail / {run.readiness_unknown_count} unknown
+              </span>
             </div>
             <div className="recentRunActions">
               <button
@@ -393,6 +1080,7 @@ function ComparisonTable({
         <span>{compare.lanes.recordings.length} compare recordings</span>
       </div>
       <div className="comparisonTable" role="table">
+        <EnvironmentComparison primary={primary} compare={compare} />
         <div className="comparisonRow header" role="row">
           <span>Stage</span>
           <span>Primary</span>
@@ -412,6 +1100,86 @@ function ComparisonTable({
         })}
       </div>
     </section>
+  )
+}
+
+function EnvironmentComparison({
+  primary,
+  compare,
+}: {
+  primary: TimelineResponse
+  compare: TimelineResponse
+}) {
+  const rows = [
+    {
+      label: 'Environment',
+      primary: primary.environment.environment_profile,
+      compare: compare.environment.environment_profile,
+    },
+    {
+      label: 'Server',
+      primary: primary.environment.server_alias,
+      compare: compare.environment.server_alias,
+    },
+    {
+      label: 'Target',
+      primary: primary.environment.integration_target_alias,
+      compare: compare.environment.integration_target_alias,
+    },
+    {
+      label: 'Snapshot',
+      primary: primary.environment.environment_snapshot_hash,
+      compare: compare.environment.environment_snapshot_hash,
+    },
+    {
+      label: 'Readiness',
+      primary: readinessHeadline(primary.readiness_summary),
+      compare: readinessHeadline(compare.readiness_summary),
+    },
+    {
+      label: 'Manual blockers',
+      primary: joinList(primary.environment.manual_blockers),
+      compare: joinList(compare.environment.manual_blockers),
+    },
+    {
+      label: 'Tags',
+      primary: joinList(primary.environment.tags),
+      compare: joinList(compare.environment.tags),
+    },
+    {
+      label: 'SIP events',
+      primary: primary.lanes.sip_ladder.length,
+      compare: compare.lanes.sip_ladder.length,
+    },
+    {
+      label: 'RTP points',
+      primary: primary.lanes.rtp_quality.length,
+      compare: compare.lanes.rtp_quality.length,
+    },
+    {
+      label: 'Latest RTP',
+      primary: rtpSummary(latestRtpStat(primary.lanes.rtp_quality)),
+      compare: rtpSummary(latestRtpStat(compare.lanes.rtp_quality)),
+    },
+  ]
+
+  return (
+    <div className="environmentCompare">
+      <div className="environmentCompareHeader">Environment deltas</div>
+      {rows.map((row) => {
+        const primaryValue = displayValue(row.primary)
+        const compareValue = displayValue(row.compare)
+        const changed = primaryValue !== compareValue
+        return (
+          <div className={changed ? 'environmentCompareRow changed' : 'environmentCompareRow'} key={row.label}>
+            <strong>{row.label}</strong>
+            <span>{primaryValue}</span>
+            <span>{compareValue}</span>
+            <em>{changed ? 'different' : 'same'}</em>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -486,6 +1254,102 @@ function StageLane({
         </div>
       ) : null}
     </article>
+  )
+}
+
+function EnvironmentPanel({ environment }: { environment: RunEnvironmentMetadata }) {
+  return (
+    <section className="environmentPanel">
+      <div className="sectionHeader compact">
+        <Server size={17} />
+        <h2>Environment</h2>
+      </div>
+      <div className="environmentFacts">
+        <Fact label="Profile" value={environment.environment_profile} />
+        <Fact label="Server" value={environment.server_alias} />
+        <Fact label="Target" value={environment.integration_target_alias} />
+        <Fact label="Snapshot" value={environment.environment_snapshot_hash} />
+        <Fact label="Started from" value={environment.started_from} />
+        <Fact label="Internal ref" value={environment.related_internal_ref} />
+        <Fact label="Secret refs" value={`${environment.secret_ref_names.length} refs`} />
+      </div>
+      {environment.tags.length > 0 ? <ChipList label="Tags" values={environment.tags} /> : null}
+      {environment.operator_note ? (
+        <div className="operatorNote">
+          <strong>Note</strong>
+          <span>{environment.operator_note}</span>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function ReadinessPanel({
+  checklist,
+  environment,
+  summary,
+}: {
+  checklist: ReadinessChecklistItem[]
+  environment: RunEnvironmentMetadata
+  summary: ReadinessSummary
+}) {
+  return (
+    <section className="readinessPanel">
+      <div className="sectionHeader compact">
+        <ListChecks size={17} />
+        <h2>Readiness</h2>
+      </div>
+      <div className={`readinessSummary ${summary.incomplete_count > 0 ? 'blocked' : 'ready'}`}>
+        <strong>{readinessHeadline(summary)}</strong>
+        <span>
+          {summary.passed_count} pass / {summary.failed_count} fail / {summary.unknown_count} unknown
+        </span>
+      </div>
+      {environment.manual_blockers.length > 0 ? (
+        <ChipList label="Manual blockers" values={environment.manual_blockers} tone="danger" />
+      ) : null}
+      <div className="readinessList">
+        {checklist.map((item) => (
+          <article className={`readinessItem ${item.status}`} key={item.item_id}>
+            <div>
+              <strong>{item.label}</strong>
+              {item.note ? <span>{item.note}</span> : null}
+            </div>
+            <em>{item.status}</em>
+          </article>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function Fact({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div className="fact">
+      <span>{label}</span>
+      <strong>{displayValue(value)}</strong>
+    </div>
+  )
+}
+
+function ChipList({
+  label,
+  tone,
+  values,
+}: {
+  label: string
+  tone?: 'danger'
+  values: string[]
+}) {
+  return (
+    <div className={tone === 'danger' ? 'chipList danger' : 'chipList'}>
+      <strong>{label}</strong>
+      <div>
+        {values.map((value) => (
+          <span key={value}>{value}</span>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -884,6 +1748,96 @@ function LaneStatus({ title, icon, count }: { title: string; icon: React.ReactNo
   )
 }
 
+function HostMetricsPanel({ metrics }: { metrics: TimelineMetricPoint[] }) {
+  const latest = latestMetrics(metrics)
+  return (
+    <section className="hostMetricsPanel">
+      <div className="sectionHeader compact">
+        <Server size={17} />
+        <h2>Host metrics</h2>
+      </div>
+      {latest.length > 0 ? (
+        <div className="hostMetricGrid">
+          {latest.map((metric) => (
+            <div className="hostMetric" key={metric.name}>
+              <span>{metric.name}</span>
+              <strong>{formatHostMetric(metric)}</strong>
+              <small>{metric.ts.toFixed(3)}s</small>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="emptyInline">No host metrics</div>
+      )}
+    </section>
+  )
+}
+
+function SipLadderPanel({ events }: { events: TimelineSipEvent[] }) {
+  return (
+    <section className="sipLadderPanel">
+      <div className="sectionHeader compact">
+        <Signal size={17} />
+        <h2>SIP ladder</h2>
+        <span className="panelCount">{events.length}</span>
+      </div>
+      {events.length > 0 ? (
+        <div className="sipEventList">
+          {events.map((event, index) => (
+            <article className="sipEvent" key={`${event.ts}-${event.method}-${index}`}>
+              <div className="sipEventHeader">
+                <strong>{event.method}</strong>
+                <span>{event.direction}</span>
+              </div>
+              <div className="sipEventFacts">
+                <Fact label="Status" value={event.status_code?.toString() ?? null} />
+                <Fact label="Summary" value={event.summary_alias} />
+                <Fact label="Time" value={`${event.ts.toFixed(3)}s`} />
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="emptyInline">No SIP events</div>
+      )}
+    </section>
+  )
+}
+
+function RtpQualityPanel({ stats }: { stats: TimelineRtpStat[] }) {
+  const latest = latestRtpStat(stats)
+  return (
+    <section className="rtpQualityPanel">
+      <div className="sectionHeader compact">
+        <Waves size={17} />
+        <h2>RTP quality</h2>
+        <span className="panelCount">{stats.length}</span>
+      </div>
+      {latest ? (
+        <div className="rtpLatest">
+          <strong>Latest</strong>
+          <span>{rtpSummary(latest)}</span>
+          <small>{latest.ts.toFixed(3)}s</small>
+        </div>
+      ) : null}
+      {stats.length > 0 ? (
+        <div className="rtpStatList">
+          {stats.map((stat, index) => (
+            <article className="rtpStat" key={`${stat.ts}-${index}`}>
+              <Fact label="Jitter" value={formatNullableMetric(stat.jitter_ms, ' ms')} />
+              <Fact label="Loss" value={formatNullableMetric(stat.loss_pct, '%')} />
+              <Fact label="MOS" value={formatNullableMetric(stat.mos)} />
+              <Fact label="Time" value={`${stat.ts.toFixed(3)}s`} />
+            </article>
+          ))}
+        </div>
+      ) : (
+        <div className="emptyInline">No RTP quality points</div>
+      )}
+    </section>
+  )
+}
+
 function Recordings({
   apiBase,
   recordings,
@@ -937,6 +1891,87 @@ function formatDate(value?: string) {
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(3)
+}
+
+function formatHostMetric(metric: TimelineMetricPoint) {
+  if (metric.name === 'cpu') {
+    return `${formatNumber(metric.value)}%`
+  }
+  if (metric.name === 'loop_lag') {
+    return `${formatNumber(metric.value)} ms`
+  }
+  return formatNumber(metric.value)
+}
+
+function formatLiveHostMetric(name: string, value: number) {
+  if (name === 'cpu') {
+    return `${formatNumber(value)}%`
+  }
+  if (name === 'loop_lag') {
+    return `${formatNumber(value)} ms`
+  }
+  return formatNumber(value)
+}
+
+function latestMetrics(metrics: TimelineMetricPoint[]) {
+  const byName = new Map<string, TimelineMetricPoint>()
+  for (const metric of metrics) {
+    const current = byName.get(metric.name)
+    if (!current || metric.ts >= current.ts) {
+      byName.set(metric.name, metric)
+    }
+  }
+  return Array.from(byName.values()).sort((left, right) => left.name.localeCompare(right.name))
+}
+
+function latestRtpStat(stats: TimelineRtpStat[]) {
+  return stats.reduce<TimelineRtpStat | null>(
+    (latest, stat) => (latest === null || stat.ts >= latest.ts ? stat : latest),
+    null,
+  )
+}
+
+function rtpSummary(stat: TimelineRtpStat | null) {
+  if (!stat) {
+    return null
+  }
+  return [
+    `jitter ${formatNullableMetric(stat.jitter_ms, ' ms')}`,
+    `loss ${formatNullableMetric(stat.loss_pct, '%')}`,
+    `mos ${formatNullableMetric(stat.mos)}`,
+  ].join(' / ')
+}
+
+function formatNullableMetric(value: number | null, suffix = '') {
+  return value === null ? '-' : `${formatNumber(value)}${suffix}`
+}
+
+function environmentStatusLabel(run: LiveRunStatus) {
+  const alias = run.server_alias ?? run.integration_target_alias
+  return alias ? `${run.environment_profile} / ${alias}` : run.environment_profile
+}
+
+function environmentHeadline(environment: RunEnvironmentMetadata) {
+  const server = environment.server_alias ?? environment.integration_target_alias
+  return server ? `${environment.environment_profile} / ${server}` : environment.environment_profile
+}
+
+function readinessHeadline(summary: ReadinessSummary) {
+  if (summary.incomplete_count === 0) {
+    return 'ready'
+  }
+  return `${summary.incomplete_count} incomplete`
+}
+
+function displayValue(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+  return String(value)
+}
+
+function joinList(values: string[]) {
+  return values.length > 0 ? values.join(', ') : null
 }
 
 function stageMap(timeline: TimelineResponse) {
