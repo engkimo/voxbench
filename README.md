@@ -237,7 +237,8 @@ Live preview. OpenAI server VAD cancels an interrupted response and the bridge
 truncates the unplayed assistant audio at the caller's playback position. Initial
 provider connection is retried three times by default; use `--connect-attempts`
 and `--connect-backoff-seconds` to tune it. Mid-call disconnects fail the run
-instead of silently resetting conversation state. Live preview projects the
+as `provider-stream-ended` or `provider-session-error` instead of silently
+resetting conversation state or completing the run. Live preview projects the
 connection as `pending`, `connected`, `exhausted`, or `unobserved` and shows its
 attempt/retry/failure counts. A real Asterisk/provider call is environment
 validation and is not performed by the automated suite.

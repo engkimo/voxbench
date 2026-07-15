@@ -1,5 +1,15 @@
 # 進捗
 
+## Mid-call provider stream failure hardening (2026-07-15)
+
+- OpenAI/Geminiのreceive streamをpersistent contractとして宣言し、通話中のclean EOFを
+  completed扱いせず `provider-stream-ended` でrun failureにする。
+- provider receive例外はraw message/URL/responseを保存せず、
+  `provider-session-error` と `provider_stream_errors` metricへ正規化する。
+- AudioSocket入力待ち中にoutput taskが終了していた場合もfinallyで結果を回収し、
+  terminateとのraceで誤ってrun completeにならないようにした。
+- finiteなdry-run/fake providerはpersistentではないため、既存embedding testとの互換を維持する。
+
 ## Provider connection operator panel (2026-07-15)
 
 - Live preview responseに `provider_connection` projectionを追加し、接続metricを

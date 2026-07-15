@@ -46,6 +46,14 @@ class AudioSocketFrame:
     playback_position: PlaybackPosition | None = None
 
 
+class ProviderStreamEndedError(RuntimeError):
+    """A persistent provider receive stream ended while the call was active."""
+
+
+class ProviderSessionError(RuntimeError):
+    """A provider receive stream failed without exposing its raw error."""
+
+
 async def read_frame(reader: asyncio.StreamReader) -> AudioSocketFrame | None:
     """Read one AudioSocket frame, returning None on a clean socket close."""
 
@@ -483,6 +491,18 @@ class RealtimeCallSession:
                     )
                     if dropped:
                         self.observer.observe_metric("output_frames_dropped", 1.0)
+            if getattr(
+                self.provider_session,
+                "persistent_receive_stream",
+                False,
+            ):
+                self.observer.observe_metric("provider_stream_ended", 1.0)
+                raise ProviderStreamEndedError("provider receive stream ended")
+        except ProviderStreamEndedError:
+            raise
+        except Exception:
+            self.observer.observe_metric("provider_stream_errors", 1.0)
+            raise ProviderSessionError("provider receive stream failed") from None
         finally:
             await playback.close()
 
@@ -628,6 +648,10 @@ class AudioSocketRealtimeServer:
                     session.observe_dtmf(frame.payload.decode("ascii", errors="replace"))
                 elif frame.frame_type == TYPE_ERROR:
                     break
+        except ProviderStreamEndedError:
+            failure_alias = "provider-stream-ended"
+        except ProviderSessionError:
+            failure_alias = "provider-session-error"
         except Exception:
             failure_alias = "realtime-bridge-error"
         finally:
@@ -635,6 +659,15 @@ class AudioSocketRealtimeServer:
                 output_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await output_task
+            elif output_task is not None and failure_alias is None:
+                try:
+                    await output_task
+                except ProviderStreamEndedError:
+                    failure_alias = "provider-stream-ended"
+                except ProviderSessionError:
+                    failure_alias = "provider-session-error"
+                except Exception:
+                    failure_alias = "realtime-bridge-error"
             try:
                 if session is not None:
                     await session.close(failure_alias)

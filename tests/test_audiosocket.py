@@ -342,6 +342,91 @@ def test_realtime_call_session_truncates_openai_item_at_played_position() -> Non
     assert any(metric.name == "provider_auto_interrupts" for metric in metrics)
 
 
+def test_realtime_server_fails_when_persistent_provider_stream_ends() -> None:
+    class PersistentEndingProvider(FakeProviderSession):
+        persistent_receive_stream = True
+
+    async def scenario():
+        transport = CapturingTransport()
+        completed: list[bool] = []
+        failures: list[str] = []
+        provider = PersistentEndingProvider()
+
+        async def session_factory(call_uuid) -> RealtimeCallSession:
+            return RealtimeCallSession(
+                call_id=str(call_uuid),
+                observer=VoxBenchObserver("run-1", transport),
+                provider_session=provider,
+                complete_run=lambda: completed.append(True),
+                fail_run=failures.append,
+            )
+
+        bridge = AudioSocketRealtimeServer(session_factory=session_factory)
+        server = await asyncio.start_server(bridge._handle_connection, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        await write_frame(writer, 0x01, uuid4().bytes)
+        assert await read_frame(reader) is not None
+        await asyncio.sleep(0.03)
+        await write_frame(writer, 0x00)
+        assert await reader.read() == b""
+        writer.close()
+        await writer.wait_closed()
+        server.close()
+        await server.wait_closed()
+        return transport, completed, failures
+
+    transport, completed, failures = asyncio.run(scenario())
+    assert completed == []
+    assert failures == ["provider-stream-ended"]
+    metrics = [metric for batch in transport.batches for metric in batch.metrics]
+    assert any(metric.name == "provider_stream_ended" for metric in metrics)
+
+
+def test_realtime_server_sanitizes_provider_stream_errors() -> None:
+    class FailingProvider(FakeProviderSession):
+        persistent_receive_stream = True
+
+        async def receive(self):
+            if False:
+                yield ProviderEvent("response_done")
+            raise RuntimeError("wss://provider.example?token=do-not-store")
+
+    async def scenario():
+        transport = CapturingTransport()
+        failures: list[str] = []
+        provider = FailingProvider()
+
+        async def session_factory(call_uuid) -> RealtimeCallSession:
+            return RealtimeCallSession(
+                call_id=str(call_uuid),
+                observer=VoxBenchObserver("run-1", transport),
+                provider_session=provider,
+                complete_run=lambda: None,
+                fail_run=failures.append,
+            )
+
+        bridge = AudioSocketRealtimeServer(session_factory=session_factory)
+        server = await asyncio.start_server(bridge._handle_connection, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        await write_frame(writer, 0x01, uuid4().bytes)
+        await asyncio.sleep(0.01)
+        await write_frame(writer, 0x00)
+        assert await reader.read() == b""
+        writer.close()
+        await writer.wait_closed()
+        server.close()
+        await server.wait_closed()
+        return transport, failures
+
+    transport, failures = asyncio.run(scenario())
+    assert failures == ["provider-session-error"]
+    assert "provider.example" not in failures[0]
+    metrics = [metric for batch in transport.batches for metric in batch.metrics]
+    assert any(metric.name == "provider_stream_errors" for metric in metrics)
+
+
 def test_realtime_audiosocket_path_reaches_control_plane(tmp_path: Path) -> None:
     client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
     call_uuid = uuid4()

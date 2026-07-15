@@ -285,6 +285,14 @@ are not stored. This policy does not reconnect an established mid-call session,
 because doing so would reset provider conversation state and should not be hidden
 from the operator.
 
+Once connected, OpenAI and Gemini sessions are treated as persistent receive
+streams. A clean EOF while the AudioSocket call is still active fails the run as
+`provider-stream-ended`; a receive exception is reduced to the safe alias
+`provider-session-error`. VoxBench records `provider_stream_ended` or
+`provider_stream_errors` without persisting the raw provider exception, URL,
+response body, or credential material. Finite dry-run/fake sessions remain valid
+for local tests and embedding examples.
+
 Live preview renders these metrics as a dedicated Provider connection block. Its
 state is `pending` before a provider outcome is observed, `connected` after a
 successful initial session, `exhausted` after all attempts fail, and `unobserved`

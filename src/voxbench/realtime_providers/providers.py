@@ -69,6 +69,7 @@ class RealtimeProviderSession(Protocol):
     input_rate: int
     output_rate: int
     auto_interrupts_on_speech: bool
+    persistent_receive_stream: bool
 
     async def send_pcm(self, audio: AudioChunk) -> None:
         """Send one mono PCM audio chunk to the provider session."""
@@ -149,6 +150,7 @@ class DryRunRealtimeProviderSession:
     input_rate: int
     output_rate: int
     auto_interrupts_on_speech: bool = False
+    persistent_receive_stream: bool = False
     _sent: list[AudioChunk] = field(default_factory=list)
 
     async def send_pcm(self, audio: AudioChunk) -> None:
@@ -187,6 +189,7 @@ class OpenAIRealtimeWebSocketSession:
     input_rate: int = 24000
     output_rate: int = 24000
     auto_interrupts_on_speech: bool = True
+    persistent_receive_stream: bool = True
     _response_active: bool = False
 
     async def send_pcm(self, audio: AudioChunk) -> None:
@@ -271,6 +274,7 @@ class GeminiLiveSdkSession:
     input_rate: int = 16000
     output_rate: int = 24000
     auto_interrupts_on_speech: bool = True
+    persistent_receive_stream: bool = True
 
     async def send_pcm(self, audio: AudioChunk) -> None:
         _validate_pcm_chunk(audio, expected_rate=self.input_rate)
