@@ -285,6 +285,12 @@ are not stored. This policy does not reconnect an established mid-call session,
 because doing so would reset provider conversation state and should not be hidden
 from the operator.
 
+Live preview renders these metrics as a dedicated Provider connection block. Its
+state is `pending` before a provider outcome is observed, `connected` after a
+successful initial session, `exhausted` after all attempts fail, and `unobserved`
+when a provider-mode run ends without connection telemetry. Connection metrics are
+removed from the generic host metric tiles to keep the operational signal clear.
+
 This remains a demo-grade bridge. The dependency-free linear resampler preserves
 phase across streaming chunks, but production integrations should inject their
 existing high-quality resampler. Stateful mid-call recovery, validation of the

@@ -1,5 +1,15 @@
 # 進捗
 
+## Provider connection operator panel (2026-07-15)
+
+- Live preview responseに `provider_connection` projectionを追加し、接続metricを
+  `pending/connected/exhausted/unobserved/not_applicable` に正規化した。
+- attempt/retry/failure/exhaustion countを専用blockに表示し、generic host metric
+  tilesからprovider connection metricを分離した。
+- 接続成功metricはprovider session確立直後にflushするため、通話中のWebSocket
+  snapshotから確認できる。failed runとexhausted connectionは赤い状態で強調する。
+- API testでpending、retry後connected、attempt枯渇exhaustedを確認した。
+
 ## Initial provider connection retry hardening (2026-07-15)
 
 - `audiosocket-realtime` は observed run を先に作成し、provider session の初回接続を

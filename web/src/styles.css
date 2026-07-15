@@ -895,6 +895,86 @@ a {
   color: #8e2f35;
 }
 
+.providerConnectionSummary {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #d7e1e8;
+  border-left: 3px solid #7b8997;
+  border-radius: 7px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.providerConnectionSummary.connected {
+  border-left-color: #2f8d61;
+  background: #f3fbf6;
+}
+
+.providerConnectionSummary.pending,
+.providerConnectionSummary.unobserved {
+  border-left-color: #c59432;
+  background: #fffaf0;
+}
+
+.providerConnectionSummary.exhausted {
+  border-left-color: #c84b52;
+  background: #fff4f4;
+}
+
+.providerConnectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.providerConnectionHeader strong {
+  color: #26323f;
+  font-size: 12px;
+}
+
+.providerConnectionHeader em {
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #536272;
+  background: #eef3f6;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.providerConnectionSummary.connected .providerConnectionHeader em {
+  color: #176444;
+  background: #dff2e7;
+}
+
+.providerConnectionSummary.exhausted .providerConnectionHeader em {
+  color: #8e2f35;
+  background: #ffe3e3;
+}
+
+.providerConnectionMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.providerConnectionMetrics span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: #536272;
+  font-size: 11px;
+}
+
+.providerConnectionMetrics strong {
+  overflow: hidden;
+  color: #657384;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .liveRunHostMetrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

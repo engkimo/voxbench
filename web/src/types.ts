@@ -115,6 +115,21 @@ export type HostMetricSnapshot = {
   ts: string
 }
 
+export type ProviderConnectionState =
+  | 'not_applicable'
+  | 'pending'
+  | 'connected'
+  | 'exhausted'
+  | 'unobserved'
+
+export type ProviderConnectionStatus = {
+  state: ProviderConnectionState
+  attempts: number
+  retries: number
+  failures: number
+  exhausted: boolean
+}
+
 export type LiveRunStatus = {
   run_id: string
   status: string
@@ -127,6 +142,7 @@ export type LiveRunStatus = {
   readiness_summary: ReadinessSummary
   manual_blockers: string[]
   latest_host_metrics: HostMetricSnapshot[]
+  provider_connection: ProviderConnectionStatus
   violation_count: number
   tags: string[]
 }

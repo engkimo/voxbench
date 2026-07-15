@@ -180,3 +180,64 @@ def test_observed_run_can_fail_with_safe_alias(tmp_path: Path) -> None:
         json={"failure_alias": "https://provider.example/error"},
     )
     assert unsafe.status_code == 422
+
+
+def test_live_preview_projects_provider_connection_metrics(tmp_path: Path) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    pending_payload = _observed_run_payload()
+    pending_payload["environment"] = {"tags": ["live-demo", "provider"]}
+    pending_run_id = client.post(
+        "/runs/observed",
+        json=pending_payload,
+    ).json()["run_id"]
+    pending_preview = client.get("/runs/live-preview").json()[0]
+    assert pending_preview["run_id"] == pending_run_id
+    assert pending_preview["provider_connection"] == {
+        "state": "pending",
+        "attempts": 0,
+        "retries": 0,
+        "failures": 0,
+        "exhausted": False,
+    }
+
+    run_id = client.post("/runs/observed", json=_observed_run_payload()).json()["run_id"]
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+    observer.observe_metric("provider_connect_attempts", 3)
+    observer.observe_metric("provider_connect_retries", 2)
+    observer.observe_metric("provider_connect_failures", 2)
+    assert observer.flush() == 3
+
+    preview = client.get("/runs/live-preview").json()[0]
+    assert preview["provider_connection"] == {
+        "state": "connected",
+        "attempts": 3,
+        "retries": 2,
+        "failures": 2,
+        "exhausted": False,
+    }
+
+    exhausted_run_id = client.post(
+        "/runs/observed",
+        json=_observed_run_payload(),
+    ).json()["run_id"]
+    exhausted_observer = VoxBenchObserver(exhausted_run_id, ApiTestTransport(client))
+    exhausted_observer.observe_metric("provider_connect_attempts", 3)
+    exhausted_observer.observe_metric("provider_connect_retries", 2)
+    exhausted_observer.observe_metric("provider_connect_failures", 3)
+    exhausted_observer.observe_metric("provider_connect_exhausted", 1)
+    assert exhausted_observer.flush() == 4
+    failed = client.post(
+        f"/runs/{exhausted_run_id}/fail",
+        json={"failure_alias": "provider-connect-error"},
+    )
+    assert failed.status_code == 200
+
+    exhausted_preview = client.get("/runs/live-preview").json()[0]
+    assert exhausted_preview["run_id"] == exhausted_run_id
+    assert exhausted_preview["provider_connection"] == {
+        "state": "exhausted",
+        "attempts": 3,
+        "retries": 2,
+        "failures": 3,
+        "exhausted": True,
+    }

@@ -31,6 +31,13 @@ EnvironmentProfile = Literal["local", "dev", "demo", "integration", "staging"]
 ReadinessStatus = Literal["pass", "fail", "unknown"]
 SipDirection = Literal["in", "out"]
 LiveDemoProvider = Literal["gemini-live", "openai-realtime"]
+ProviderConnectionState = Literal[
+    "not_applicable",
+    "pending",
+    "connected",
+    "exhausted",
+    "unobserved",
+]
 
 DEFAULT_READINESS_ITEMS: tuple[tuple[str, str], ...] = (
     ("ai_phone_setup_complete", "AI phone setup complete"),
@@ -469,6 +476,14 @@ class HostMetricSnapshotResponse(BaseModel):
     ts: datetime
 
 
+class ProviderConnectionStatusResponse(BaseModel):
+    state: ProviderConnectionState
+    attempts: int = 0
+    retries: int = 0
+    failures: int = 0
+    exhausted: bool = False
+
+
 class LiveRunStatusResponse(BaseModel):
     run_id: str
     status: str
@@ -481,6 +496,7 @@ class LiveRunStatusResponse(BaseModel):
     readiness_summary: ReadinessSummaryResponse
     manual_blockers: list[str]
     latest_host_metrics: list[HostMetricSnapshotResponse]
+    provider_connection: ProviderConnectionStatusResponse
     violation_count: int
     tags: list[str]
 
@@ -567,6 +583,7 @@ class StoredRun:
             readiness_summary=self.readiness_summary(),
             manual_blockers=self.environment.manual_blockers,
             latest_host_metrics=self.latest_host_metrics(),
+            provider_connection=self.provider_connection_status(),
             violation_count=sum(
                 1 for verification in self.verifications if not verification.passed
             ),
@@ -685,6 +702,37 @@ class StoredRun:
             HostMetricSnapshotResponse(name=metric.name, value=metric.value, ts=metric.ts)
             for metric in sorted(by_name.values(), key=lambda metric: metric.name)
         ]
+
+    def provider_connection_status(self) -> ProviderConnectionStatusResponse:
+        values = {
+            metric.name: metric.value
+            for metric in self.latest_host_metrics()
+            if metric.name.startswith("provider_connect_")
+        }
+        attempts = max(0, int(values.get("provider_connect_attempts", 0)))
+        retries = max(0, int(values.get("provider_connect_retries", 0)))
+        failures = max(0, int(values.get("provider_connect_failures", 0)))
+        exhausted = (
+            values.get("provider_connect_exhausted", 0) > 0
+            or self.failure_alias == "provider-connect-error"
+        )
+        if exhausted:
+            state: ProviderConnectionState = "exhausted"
+        elif attempts > 0:
+            state = "connected"
+        elif "provider" not in self.environment.tags:
+            state = "not_applicable"
+        elif self.status == "running":
+            state = "pending"
+        else:
+            state = "unobserved"
+        return ProviderConnectionStatusResponse(
+            state=state,
+            attempts=attempts,
+            retries=retries,
+            failures=failures,
+            exhausted=exhausted,
+        )
 
 
 @dataclass

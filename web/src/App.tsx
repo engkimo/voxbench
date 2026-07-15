@@ -906,7 +906,14 @@ function LivePreviewPanel({
       ) : null}
       <div className="liveRunList">
         {runs.map((run) => {
-          const blocked = run.readiness_summary.incomplete_count > 0
+          const connection = run.provider_connection
+          const blocked =
+            run.readiness_summary.incomplete_count > 0 ||
+            connection.exhausted ||
+            run.status === 'failed'
+          const hostMetrics = run.latest_host_metrics.filter(
+            (metric) => !metric.name.startsWith('provider_connect_'),
+          )
           return (
             <article className={blocked ? 'liveRunItem blocked' : 'liveRunItem ready'} key={run.run_id}>
               <div className="liveRunHeader">
@@ -934,14 +941,36 @@ function LivePreviewPanel({
                   <span>{joinList(run.manual_blockers)}</span>
                 </div>
               ) : null}
+              {connection.state !== 'not_applicable' ? (
+                <div className={`providerConnectionSummary ${connection.state}`}>
+                  <div className="providerConnectionHeader">
+                    <strong>Provider connection</strong>
+                    <em>{providerConnectionLabel(connection.state)}</em>
+                  </div>
+                  <div className="providerConnectionMetrics">
+                    <span>
+                      <strong>attempts</strong>
+                      {connection.attempts}
+                    </span>
+                    <span>
+                      <strong>retries</strong>
+                      {connection.retries}
+                    </span>
+                    <span>
+                      <strong>failures</strong>
+                      {connection.failures}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
               <div className="liveRunHostMetrics">
-                {run.latest_host_metrics.map((metric) => (
+                {hostMetrics.map((metric) => (
                   <span key={metric.name}>
                     <strong>{metric.name}</strong>
                     {formatLiveHostMetric(metric.name, metric.value)}
                   </span>
                 ))}
-                {run.latest_host_metrics.length === 0 ? (
+                {hostMetrics.length === 0 ? (
                   <span>
                     <strong>host</strong>
                     missing
@@ -1911,6 +1940,13 @@ function formatLiveHostMetric(name: string, value: number) {
     return `${formatNumber(value)} ms`
   }
   return formatNumber(value)
+}
+
+function providerConnectionLabel(state: LiveRunStatus['provider_connection']['state']) {
+  if (state === 'not_applicable') {
+    return 'n/a'
+  }
+  return state
 }
 
 function latestMetrics(metrics: TimelineMetricPoint[]) {

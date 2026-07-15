@@ -202,6 +202,7 @@ def audiosocket_realtime(
                 "provider_connect_failures",
                 float(connection.attempts - 1),
             )
+        await asyncio.to_thread(observer.flush)
         typer.echo(f"AudioSocket call {call_id} -> {provider} -> run {run['run_id']}")
         return RealtimeCallSession(
             call_id=call_id,
