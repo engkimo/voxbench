@@ -7,11 +7,12 @@ API keys for local simulated runs.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib.util
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -86,6 +87,58 @@ class RealtimeProviderSession(Protocol):
 
     async def close(self) -> None:
         """Close provider resources."""
+
+
+class RealtimeProvider(Protocol):
+    async def connect(self, *, dry_run: bool = True) -> RealtimeProviderSession:
+        """Open one provider session."""
+
+
+@dataclass(frozen=True)
+class ProviderConnectionResult:
+    session: RealtimeProviderSession
+    attempts: int
+
+
+class ProviderConnectionError(RuntimeError):
+    def __init__(self, attempts: int) -> None:
+        self.attempts = attempts
+        super().__init__(f"provider connection failed after {attempts} attempts")
+
+
+async def connect_with_retry(
+    provider: RealtimeProvider,
+    *,
+    attempts: int = 3,
+    initial_backoff_seconds: float = 0.5,
+    max_backoff_seconds: float = 4.0,
+    on_retry: Callable[[int, float], None] | None = None,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> ProviderConnectionResult:
+    """Retry initial connection only; an established conversation is never replayed."""
+
+    if attempts < 1:
+        raise ValueError("connection attempts must be at least 1")
+    if initial_backoff_seconds < 0 or max_backoff_seconds < 0:
+        raise ValueError("connection backoff must be non-negative")
+
+    for attempt in range(1, attempts + 1):
+        try:
+            session = await provider.connect(dry_run=False)
+        except Exception:
+            if attempt >= attempts:
+                raise ProviderConnectionError(attempts) from None
+            delay = min(
+                max_backoff_seconds,
+                initial_backoff_seconds * (2 ** (attempt - 1)),
+            )
+            if on_retry is not None:
+                on_retry(attempt, delay)
+            await sleep(delay)
+        else:
+            return ProviderConnectionResult(session=session, attempts=attempt)
+
+    raise AssertionError("provider connection retry loop did not terminate")
 
 
 @dataclass

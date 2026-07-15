@@ -1,5 +1,15 @@
 # 進捗
 
+## Initial provider connection retry hardening (2026-07-15)
+
+- `audiosocket-realtime` は observed run を先に作成し、provider session の初回接続を
+  既定3回、bounded exponential backoff付きで再試行する。
+- `--connect-attempts` と `--connect-backoff-seconds` でdemo環境のretryを調整できる。
+- attempt/retry/failure/exhaustionをhost metricへ記録し、枯渇時はraw provider errorを
+  保存せず `provider-connect-error` でrunをfailedにする。
+- 確立済み通話の透過reconnectはconversation stateを失うため実装していない。
+  mid-call disconnectは明示的なrun failureとして扱う。
+
 ## OpenAI Realtime playback truncation hardening (2026-07-15)
 
 - OpenAI `response.output_audio.delta` の `item_id` / `content_index` を provider

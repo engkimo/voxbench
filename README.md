@@ -233,9 +233,12 @@ Switch the provider argument to `gemini-live` for Gemini. API key values remain
 in environment variables and are not stored in run payloads or artifacts. The
 realtime bridge uses stateful streaming resampling, paced 20 ms AudioSocket
 output, local playback clearing on barge-in, and failed-run aliases visible in
-Live preview. OpenAI barge-in also cancels an active provider response. A real
-Asterisk/provider call is environment validation and is not performed by the
-automated suite.
+Live preview. OpenAI server VAD cancels an interrupted response and the bridge
+truncates the unplayed assistant audio at the caller's playback position. Initial
+provider connection is retried three times by default; use `--connect-attempts`
+and `--connect-backoff-seconds` to tune it. Mid-call disconnects fail the run
+instead of silently resetting conversation state. A real Asterisk/provider call
+is environment validation and is not performed by the automated suite.
 
 ## Verification
 

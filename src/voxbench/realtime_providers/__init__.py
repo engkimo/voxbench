@@ -8,9 +8,13 @@ from voxbench.realtime_providers.providers import (
     OpenAIRealtimeProvider,
     OpenAIRealtimeWebSocketSession,
     PlaybackPosition,
+    ProviderConnectionError,
+    ProviderConnectionResult,
     ProviderEvent,
     ProviderReadiness,
+    RealtimeProvider,
     RealtimeProviderSession,
+    connect_with_retry,
 )
 
 __all__ = [
@@ -21,7 +25,11 @@ __all__ = [
     "OpenAIRealtimeProvider",
     "OpenAIRealtimeWebSocketSession",
     "PlaybackPosition",
+    "ProviderConnectionError",
+    "ProviderConnectionResult",
     "ProviderEvent",
     "ProviderReadiness",
+    "RealtimeProvider",
     "RealtimeProviderSession",
+    "connect_with_retry",
 ]

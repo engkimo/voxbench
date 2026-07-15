@@ -15,7 +15,12 @@ from voxbench.live_demo.observed_run import (
     build_audiosocket_observed_run_payload,
 )
 from voxbench.observability import HttpObservationTransport, VoxBenchObserver
-from voxbench.realtime_providers import GeminiLiveProvider, OpenAIRealtimeProvider
+from voxbench.realtime_providers import (
+    GeminiLiveProvider,
+    OpenAIRealtimeProvider,
+    ProviderConnectionError,
+    connect_with_retry,
+)
 from voxbench.registry.service import RegistryService
 from voxbench.telephony import (
     AudioSocketLoopbackServer,
@@ -121,6 +126,14 @@ def audiosocket_realtime(
     target_rms: Annotated[float, typer.Option("--target-rms", min=1.0)] = 3000.0,
     max_gain: Annotated[float, typer.Option("--max-gain", min=0.01)] = 8.0,
     noise_floor: Annotated[float, typer.Option("--noise-floor", min=0.0)] = 200.0,
+    connect_attempts: Annotated[
+        int,
+        typer.Option("--connect-attempts", min=1, max=10),
+    ] = 3,
+    connect_backoff_seconds: Annotated[
+        float,
+        typer.Option("--connect-backoff-seconds", min=0.0, max=30.0),
+    ] = 0.5,
 ) -> None:
     """Bridge Asterisk AudioSocket PCM to a realtime AI provider."""
 
@@ -137,7 +150,6 @@ def audiosocket_realtime(
 
     async def create_session(call_uuid: UUID) -> RealtimeCallSession:
         call_id = str(call_uuid)
-        provider_session = await provider_adapter.connect(dry_run=False)
         payload = build_audiosocket_observed_run_payload(
             provider=provider,
             call_id=call_id,
@@ -146,16 +158,55 @@ def audiosocket_realtime(
             noise_floor=noise_floor,
             mode="provider",
         )
+        run = await asyncio.to_thread(transport.start_run, payload)
+        observer = VoxBenchObserver(run["run_id"], transport)
+
+        def report_retry(failed_attempt: int, delay: float) -> None:
+            typer.echo(
+                f"Provider connection attempt {failed_attempt}/{connect_attempts} "
+                f"failed; retrying in {delay:.2f}s"
+            )
+
         try:
-            run = await asyncio.to_thread(transport.start_run, payload)
-        except Exception:
-            await provider_session.close()
+            connection = await connect_with_retry(
+                provider_adapter,
+                attempts=connect_attempts,
+                initial_backoff_seconds=connect_backoff_seconds,
+                on_retry=report_retry,
+            )
+        except ProviderConnectionError as exc:
+            observer.observe_metric("provider_connect_attempts", float(exc.attempts))
+            observer.observe_metric("provider_connect_retries", float(exc.attempts - 1))
+            observer.observe_metric("provider_connect_failures", float(exc.attempts))
+            observer.observe_metric("provider_connect_exhausted", 1.0)
+            try:
+                await asyncio.to_thread(observer.flush)
+            finally:
+                await asyncio.to_thread(
+                    transport.fail_run,
+                    run["run_id"],
+                    "provider-connect-error",
+                )
             raise
+
+        observer.observe_metric(
+            "provider_connect_attempts",
+            float(connection.attempts),
+        )
+        observer.observe_metric(
+            "provider_connect_retries",
+            float(connection.attempts - 1),
+        )
+        if connection.attempts > 1:
+            observer.observe_metric(
+                "provider_connect_failures",
+                float(connection.attempts - 1),
+            )
         typer.echo(f"AudioSocket call {call_id} -> {provider} -> run {run['run_id']}")
         return RealtimeCallSession(
             call_id=call_id,
-            observer=VoxBenchObserver(run["run_id"], transport),
-            provider_session=provider_session,
+            observer=observer,
+            provider_session=connection.session,
             complete_run=lambda: transport.complete_run(run["run_id"]),
             fail_run=lambda failure_alias: transport.fail_run(
                 run["run_id"],

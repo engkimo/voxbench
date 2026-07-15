@@ -241,7 +241,9 @@ voxbench audiosocket-realtime \
   --provider openai-realtime \
   --target-rms 3000 \
   --max-gain 8 \
-  --noise-floor 200
+  --noise-floor 200 \
+  --connect-attempts 3 \
+  --connect-backoff-seconds 0.5
 ```
 
 For Gemini Live, use:
@@ -274,10 +276,20 @@ caller. It records `provider_auto_interrupts` and `provider_truncate_requests`.
 Provider and bridge failures end the observed run with a non-secret
 `failure_alias`, which appears in Live preview.
 
+Before a provider session is established, the bridge retries transient connection
+failures with bounded exponential backoff. The observed run is created first, so
+`provider_connect_attempts`, `provider_connect_retries`,
+`provider_connect_failures`, and `provider_connect_exhausted` remain visible. If
+all attempts fail, the run ends with `provider-connect-error`; raw provider errors
+are not stored. This policy does not reconnect an established mid-call session,
+because doing so would reset provider conversation state and should not be hidden
+from the operator.
+
 This remains a demo-grade bridge. The dependency-free linear resampler preserves
 phase across streaming chunks, but production integrations should inject their
-existing high-quality resampler. Reconnection, validation of the truncation timing
-against a real provider call, real RTP quality collection, and production auth/TLS
-are still hardening work. The automated suite exercises an actual localhost
-AudioSocket TCP path with a fake provider; a real provider call still requires
-local Asterisk, a softphone, network access, and the selected API key.
+existing high-quality resampler. Stateful mid-call recovery, validation of the
+truncation timing against a real provider call, real RTP quality collection, and
+production auth/TLS are still hardening work. The automated suite exercises an
+actual localhost AudioSocket TCP path with a fake provider; a real provider call
+still requires local Asterisk, a softphone, network access, and the selected API
+key.

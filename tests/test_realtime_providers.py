@@ -13,7 +13,9 @@ from voxbench.realtime_providers import (
     OpenAIRealtimeProvider,
     OpenAIRealtimeWebSocketSession,
     PlaybackPosition,
+    ProviderConnectionError,
     ProviderEvent,
+    connect_with_retry,
 )
 
 
@@ -253,3 +255,64 @@ def test_gemini_live_session_normalizes_interruption_events() -> None:
         ProviderEvent("interrupted"),
         ProviderEvent("response_done"),
     ]
+
+
+def test_initial_provider_connection_retries_with_bounded_backoff() -> None:
+    class FlakyProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.session = OpenAIRealtimeWebSocketSession(FakeWebSocket([]))
+
+        async def connect(self, *, dry_run: bool = True):
+            assert dry_run is False
+            self.calls += 1
+            if self.calls < 3:
+                raise ConnectionError("raw-provider-detail-must-not-escape")
+            return self.session
+
+    async def scenario():
+        provider = FlakyProvider()
+        sleeps: list[float] = []
+        retries: list[tuple[int, float]] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        result = await connect_with_retry(
+            provider,
+            attempts=4,
+            initial_backoff_seconds=0.25,
+            max_backoff_seconds=1.0,
+            on_retry=lambda attempt, delay: retries.append((attempt, delay)),
+            sleep=fake_sleep,
+        )
+        return provider, result, sleeps, retries
+
+    provider, result, sleeps, retries = asyncio.run(scenario())
+    assert result.session is provider.session
+    assert result.attempts == 3
+    assert sleeps == [0.25, 0.5]
+    assert retries == [(1, 0.25), (2, 0.5)]
+
+
+def test_initial_provider_connection_exhaustion_has_safe_error() -> None:
+    class UnavailableProvider:
+        async def connect(self, *, dry_run: bool = True):
+            raise RuntimeError("wss://secret-provider.example?token=do-not-store")
+
+    async def scenario() -> None:
+        async def fake_sleep(delay: float) -> None:
+            return None
+
+        with pytest.raises(ProviderConnectionError) as captured:
+            await connect_with_retry(
+                UnavailableProvider(),
+                attempts=2,
+                initial_backoff_seconds=0,
+                sleep=fake_sleep,
+            )
+        assert captured.value.attempts == 2
+        assert str(captured.value) == "provider connection failed after 2 attempts"
+        assert "secret-provider" not in str(captured.value)
+
+    asyncio.run(scenario())
