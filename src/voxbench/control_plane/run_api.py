@@ -7,6 +7,7 @@ import json
 import wave
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from threading import Thread
 from typing import Annotated, Any, Literal
@@ -40,6 +41,10 @@ ProviderConnectionState = Literal[
     "unobserved",
 ]
 RtpCollectorState = Literal["inactive", "connected", "collecting", "failed"]
+CrossSessionTrendState = Literal["insufficient", "stable", "increasing"]
+
+CROSS_SESSION_METRIC_NAMES = ("active_tasks", "memory_rss_bytes")
+CROSS_SESSION_MIN_SAMPLES = 3
 
 DEFAULT_READINESS_ITEMS: tuple[tuple[str, str], ...] = (
     ("ai_phone_setup_complete", "AI phone setup complete"),
@@ -500,6 +505,24 @@ class RtpCollectorStatusResponse(BaseModel):
     failures: int = 0
 
 
+class CrossSessionTrendPoint(BaseModel):
+    run_id: str
+    started_at: datetime
+    value: float
+
+
+class CrossSessionTrendResponse(BaseModel):
+    metric: str
+    environment_profile: EnvironmentProfile
+    server_alias: str
+    state: CrossSessionTrendState
+    sample_count: int
+    first_value: float
+    latest_value: float
+    total_delta: float
+    points: list[CrossSessionTrendPoint]
+
+
 class LiveRunStatusResponse(BaseModel):
     run_id: str
     status: str
@@ -905,6 +928,67 @@ def _live_preview(api_state: RunApiState) -> list[LiveRunStatusResponse]:
     return [run.to_live_status() for run in api_state.repository.list_recent()]
 
 
+def _cross_session_trends(api_state: RunApiState) -> list[CrossSessionTrendResponse]:
+    groups: dict[
+        tuple[EnvironmentProfile, str, str],
+        list[CrossSessionTrendPoint],
+    ] = {}
+    for run in sorted(api_state.repository.runs.values(), key=lambda item: item.started_at):
+        if run.status not in {"completed", "failed"} or run.ended_at is None:
+            continue
+        server_alias = run.environment.server_alias
+        if server_alias is None:
+            continue
+        latest_metrics = {metric.name: metric for metric in run.latest_host_metrics()}
+        for metric_name in CROSS_SESSION_METRIC_NAMES:
+            metric = latest_metrics.get(metric_name)
+            if metric is None:
+                continue
+            key = (
+                run.environment.environment_profile,
+                server_alias,
+                metric_name,
+            )
+            groups.setdefault(key, []).append(
+                CrossSessionTrendPoint(
+                    run_id=run.run_id,
+                    started_at=run.started_at,
+                    value=metric.value,
+                )
+            )
+
+    trends: list[CrossSessionTrendResponse] = []
+    sorted_groups = sorted(
+        groups.items(),
+        key=lambda item: item[0],
+    )
+    for (profile, server_alias, metric_name), points in sorted_groups:
+        values = [point.value for point in points]
+        total_delta = values[-1] - values[0]
+        if len(points) < CROSS_SESSION_MIN_SAMPLES:
+            state: CrossSessionTrendState = "insufficient"
+        elif total_delta > 0 and all(
+            current >= previous for previous, current in pairwise(values)
+        ):
+            state = "increasing"
+        else:
+            state = "stable"
+        trends.append(
+            CrossSessionTrendResponse(
+                metric=metric_name,
+                environment_profile=profile,
+                server_alias=server_alias,
+                state=state,
+                sample_count=len(points),
+                first_value=values[0],
+                latest_value=values[-1],
+                total_delta=total_delta,
+                points=points,
+            )
+        )
+    return trends
+
+
 def _load_json_file(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -1171,6 +1255,15 @@ def create_runs_router() -> APIRouter:
         api_state: RunApiStateDependency,
     ) -> list[LiveRunStatusResponse]:
         return _live_preview(api_state)
+
+    @router.get(
+        "/runs/cross-session-trends",
+        response_model=list[CrossSessionTrendResponse],
+    )
+    async def list_cross_session_trends(
+        api_state: RunApiStateDependency,
+    ) -> list[CrossSessionTrendResponse]:
+        return _cross_session_trends(api_state)
 
     @router.post("/runs/live-demo/simulated", response_model=RunResponse)
     async def create_simulated_live_demo_run(

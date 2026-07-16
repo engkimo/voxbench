@@ -117,6 +117,22 @@ export type HostMetricSnapshot = {
   ts: string
 }
 
+export type CrossSessionTrend = {
+  metric: string
+  environment_profile: EnvironmentProfile
+  server_alias: string
+  state: 'insufficient' | 'stable' | 'increasing'
+  sample_count: number
+  first_value: number
+  latest_value: number
+  total_delta: number
+  points: Array<{
+    run_id: string
+    started_at: string
+    value: number
+  }>
+}
+
 export type ProviderConnectionState =
   | 'not_applicable'
   | 'pending'

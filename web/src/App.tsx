@@ -19,6 +19,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import WaveSurfer from 'wavesurfer.js'
 
 import type {
+  CrossSessionTrend,
   EnvironmentProfile,
   LiveRunStatus,
   ReadinessChecklistItem,
@@ -131,6 +132,15 @@ async function fetchRuns(apiBase: string): Promise<RunSummary[]> {
 async function fetchLivePreview(apiBase: string): Promise<LiveRunStatus[]> {
   const base = apiBase.replace(/\/$/, '')
   const response = await fetch(`${base}/runs/live-preview`)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function fetchCrossSessionTrends(apiBase: string): Promise<CrossSessionTrend[]> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/runs/cross-session-trends`)
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
@@ -350,6 +360,11 @@ export function App() {
     queryKey: ['live-preview', apiBase],
     queryFn: () => fetchLivePreview(apiBase),
   })
+  const crossSessionTrendsQuery = useQuery({
+    queryKey: ['cross-session-trends', apiBase],
+    queryFn: () => fetchCrossSessionTrends(apiBase),
+    refetchInterval: 5_000,
+  })
 
   useEffect(() => {
     const url = liveWebSocketUrl(apiBase)
@@ -396,6 +411,7 @@ export function App() {
       setRunId(accepted.run_id)
       void runsQuery.refetch()
       void livePreviewQuery.refetch()
+      void crossSessionTrendsQuery.refetch()
     } catch (error) {
       setAsyncRunError(error instanceof Error ? error.message : 'Async run failed')
     } finally {
@@ -509,6 +525,7 @@ export function App() {
               void timelineQuery.refetch()
               void runsQuery.refetch()
               void livePreviewQuery.refetch()
+              void crossSessionTrendsQuery.refetch()
               if (compareRunId) {
                 void compareTimelineQuery.refetch()
               }
@@ -565,6 +582,9 @@ export function App() {
           />
           <LivePreviewPanel
             connectionState={liveSocketState}
+            crossSessionError={crossSessionTrendsQuery.isError}
+            crossSessionLoading={crossSessionTrendsQuery.isPending}
+            crossSessionTrends={crossSessionTrendsQuery.data ?? []}
             isError={livePreviewQuery.isError}
             isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
             runs={livePreviewRuns}
@@ -614,6 +634,9 @@ export function App() {
           <aside className="sideRail">
             <LivePreviewPanel
               connectionState={liveSocketState}
+              crossSessionError={crossSessionTrendsQuery.isError}
+              crossSessionLoading={crossSessionTrendsQuery.isPending}
+              crossSessionTrends={crossSessionTrendsQuery.data ?? []}
               isError={livePreviewQuery.isError}
               isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
               runs={livePreviewRuns}
@@ -883,15 +906,24 @@ function AsyncRunPanel({
 
 function LivePreviewPanel({
   connectionState,
+  crossSessionError,
+  crossSessionLoading,
+  crossSessionTrends,
   isError,
   isLoading,
   runs,
 }: {
   connectionState: LiveSocketState
+  crossSessionError: boolean
+  crossSessionLoading: boolean
+  crossSessionTrends: CrossSessionTrend[]
   isError: boolean
   isLoading: boolean
   runs: LiveRunStatus[]
 }) {
+  const increasingTrendCount = crossSessionTrends.filter(
+    (trend) => trend.state === 'increasing',
+  ).length
   return (
     <section className="livePreviewPanel">
       <div className="sectionHeader compact">
@@ -904,6 +936,33 @@ function LivePreviewPanel({
       {!isLoading && !isError && runs.length === 0 ? (
         <div className="emptyInline">No recent run status</div>
       ) : null}
+      <div className="crossSessionTrendList">
+        {crossSessionTrends.length > 0 ? (
+          <div className="crossSessionTrendHeader">
+            <strong>Cross-session trends</strong>
+            <span>{increasingTrendCount} increasing</span>
+          </div>
+        ) : null}
+        {crossSessionLoading ? <div className="emptyInline">Loading cross-session trends</div> : null}
+        {crossSessionError ? <div className="emptyInline">Cross-session trends unavailable</div> : null}
+        {crossSessionTrends.map((trend) => (
+          <article
+            className={`crossSessionTrend ${trend.state}`}
+            key={`${trend.environment_profile}-${trend.server_alias}-${trend.metric}`}
+          >
+            <div>
+              <strong>{trend.metric}</strong>
+              <em>{trend.state}</em>
+            </div>
+            <span>{trend.server_alias} / {trend.sample_count} runs</span>
+            <small>
+              {formatCrossSessionTrendValue(trend.metric, trend.first_value)} →{' '}
+              {formatCrossSessionTrendValue(trend.metric, trend.latest_value)}{' '}
+              (Δ {formatCrossSessionTrendValue(trend.metric, trend.total_delta)})
+            </small>
+          </article>
+        ))}
+      </div>
       <div className="liveRunList">
         {runs.map((run) => {
           const connection = run.provider_connection
@@ -1971,6 +2030,13 @@ function providerConnectionLabel(state: LiveRunStatus['provider_connection']['st
     return 'n/a'
   }
   return state
+}
+
+function formatCrossSessionTrendValue(metric: string, value: number) {
+  if (metric === 'memory_rss_bytes') {
+    return `${formatNumber(value / (1024 * 1024))} MiB`
+  }
+  return formatNumber(value)
 }
 
 function latestMetrics(metrics: TimelineMetricPoint[]) {

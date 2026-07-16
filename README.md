@@ -161,6 +161,20 @@ readiness summary, manual blockers, tags, and latest host metrics. `WS /live`
 streams the same projection as repeated snapshots. Host metrics currently include
 `cpu`, `active_tasks`, and `loop_lag` sampled by the harness during the synthetic run.
 
+Cross-session resource trends are derived from the latest metric of each ended
+run on the same `server_alias`:
+
+```bash
+curl http://127.0.0.1:8000/runs/cross-session-trends
+```
+
+The detector requires at least three ended runs. It marks `active_tasks` or
+externally observed `memory_rss_bytes` as `increasing` only when every successive
+value is non-decreasing and the total delta is positive. Running runs, missing
+server aliases, and metrics from different servers are not combined. Live preview
+polls this projection and highlights increasing trends separately from per-run
+host metrics.
+
 SIP/RTP integration can start with structured ingest endpoints before wiring a real
 collector. These endpoints attach data to an existing run and intentionally avoid raw
 packet bodies, SDP, external URLs, and secret values:

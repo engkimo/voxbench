@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 4 Cross-session resource trend (2026-07-16)
+
+- DESIGN記載の `GET /runs/cross-session-trends` を実装した。
+- 同一 `server_alias` の終了済みrunだけを時系列に並べ、各runの最新
+  `active_tasks` / `memory_rss_bytes` を比較する。running runやaliasなしは除外する。
+- 3 run以上で全区間が非減少かつ総増分が正の場合だけ `increasing` と判定し、
+  それ以外を `stable`、3件未満を `insufficient` とする。
+- Web Live previewは5秒pollでtrendを表示し、increasingを赤、stableを緑で可視化する。
+- API testで最新run値の選択、単調増加、下降を含むstable、server分離、
+  running/aliasなし除外、minimum sampleを固定した。
+- このsliceによりPhase 4後段のcross-session acceptanceを満たし、全体進捗目安は
+  約72%から約74%、Phase 4は約75%から約85%へ更新する。
+
 ## Overall progress checkpoint (2026-07-16)
 
 - DESIGN Phase 0–5のacceptanceと現実装を照合した全体進捗は約72%。
