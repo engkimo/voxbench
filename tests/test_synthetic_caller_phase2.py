@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import wave
 from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 from voxbench.registry.service import RegistryService, load_json
 from voxbench.synthetic_caller import (
@@ -33,6 +36,12 @@ def test_synthetic_artifacts_verify_clean_path(tmp_path: Path) -> None:
     )
 
     assert Path(artifacts.reference_uri.removeprefix("file://")).exists()
+    assert {reference.stage for reference in artifacts.stage_references} == {
+        "resampler",
+        "agc",
+        "limiter",
+        "serializer",
+    }
     assert {recording.stage for recording in artifacts.recordings} == {
         "resampler",
         "agc",
@@ -54,6 +63,60 @@ def test_synthetic_artifacts_verify_clean_path(tmp_path: Path) -> None:
         ("serializer", "duration_preserving"),
         ("serializer", "isochronous"),
     }
+
+
+def test_synthetic_stage_references_use_expected_format_and_block_missing_codec_round_trip(
+    tmp_path: Path,
+) -> None:
+    artifacts = generate_synthetic_artifacts(
+        resolved_config=_resolved_baseline(),
+        output_root=tmp_path,
+        audio_spec=_audio_spec(),
+    )
+    references = {reference.stage: reference for reference in artifacts.stage_references}
+
+    resampler = references["resampler"]
+    assert resampler.stage_format == {"encoding": "pcm16", "rate": 8000, "channels": 1}
+    assert resampler.comparison_format == {
+        "encoding": "pcm16",
+        "rate": 8000,
+        "channels": 1,
+    }
+    assert resampler.transformations == ("resample:1000->8000",)
+    assert resampler.comparison_ready is True
+    assert resampler.blocked_reason is None
+
+    with wave.open(str(Path(resampler.uri.removeprefix("file://"))), "rb") as wav:
+        assert wav.getframerate() == 8000
+        assert wav.getnchannels() == 1
+        assert wav.getnframes() == 8000
+
+    serializer = references["serializer"]
+    assert serializer.stage_format["encoding"] == "mulaw"
+    assert serializer.comparison_format["encoding"] == "pcm16"
+    assert serializer.transformations == (
+        "resample:1000->8000",
+        "codec-round-trip:mulaw",
+    )
+    assert serializer.comparison_ready is False
+    assert serializer.blocked_reason == "codec-round-trip-required:mulaw"
+
+
+def test_synthetic_reference_rejects_frequency_at_or_above_target_nyquist(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="Nyquist"):
+        generate_synthetic_artifacts(
+            resolved_config=_resolved_baseline(),
+            output_root=tmp_path,
+            audio_spec=SyntheticAudioSpec(
+                sample_rate_hz=24_000,
+                channels=1,
+                duration_seconds=1.0,
+                amplitude=10_000,
+                frequency_hz=4_000,
+            ),
+        )
 
 
 def test_synthetic_artifacts_trigger_duration_failure(tmp_path: Path) -> None:

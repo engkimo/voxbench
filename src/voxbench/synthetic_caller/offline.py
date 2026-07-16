@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact
+from voxbench.engine_harness.plan import build_stage_plan
 
 
 @dataclass(frozen=True)
@@ -34,8 +35,21 @@ class SyntheticStageDegradation:
 @dataclass(frozen=True)
 class SyntheticArtifacts:
     reference_uri: str
+    stage_references: list[StageReferenceArtifact]
     recordings: list[RecordingArtifact]
     metrics: list[MetricArtifact]
+
+
+@dataclass(frozen=True)
+class StageReferenceArtifact:
+    stage: str
+    uri: str
+    stage_format: dict[str, Any]
+    comparison_format: dict[str, Any]
+    duration_ms: float
+    transformations: tuple[str, ...]
+    comparison_ready: bool
+    blocked_reason: str | None = None
 
 
 def generate_synthetic_artifacts(
@@ -53,6 +67,11 @@ def generate_synthetic_artifacts(
 
     reference_path = output_root / "reference.wav"
     _write_sine_wav(reference_path, audio_spec=audio_spec)
+    stage_references = _stage_references(
+        resolved_config=resolved_config,
+        output_root=output_root,
+        audio_spec=audio_spec,
+    )
 
     recordings = []
     metrics = []
@@ -92,9 +111,86 @@ def generate_synthetic_artifacts(
 
     return SyntheticArtifacts(
         reference_uri=reference_path.as_uri(),
+        stage_references=stage_references,
         recordings=recordings,
         metrics=metrics,
     )
+
+
+def _stage_references(
+    *,
+    resolved_config: dict[str, Any],
+    output_root: Path,
+    audio_spec: SyntheticAudioSpec,
+) -> list[StageReferenceArtifact]:
+    references_root = output_root / "references"
+    references_root.mkdir(parents=True, exist_ok=True)
+    references = []
+    for stage_plan in build_stage_plan(resolved_config):
+        rate = stage_plan.format.get("rate") or stage_plan.format.get("output_rate")
+        channels = stage_plan.format.get("channels")
+        if not isinstance(rate, int) or rate <= 0:
+            raise ValueError(f"stage '{stage_plan.stage}' reference format requires a rate")
+        if not isinstance(channels, int) or channels <= 0:
+            raise ValueError(f"stage '{stage_plan.stage}' reference format requires channels")
+
+        reference_spec = SyntheticAudioSpec(
+            sample_rate_hz=rate,
+            channels=channels,
+            duration_seconds=audio_spec.duration_seconds,
+            amplitude=audio_spec.amplitude,
+            frequency_hz=audio_spec.frequency_hz,
+        )
+        _validate_audio_spec(reference_spec)
+        path = references_root / f"{stage_plan.stage}.wav"
+        _write_sine_wav(path, audio_spec=reference_spec)
+
+        encoding = stage_plan.format.get("encoding")
+        comparison_ready = encoding in {"pcm16", "linear16"}
+        transformations = _reference_transformations(
+            source_spec=audio_spec,
+            target_spec=reference_spec,
+            stage_encoding=encoding,
+        )
+        references.append(
+            StageReferenceArtifact(
+                stage=stage_plan.stage,
+                uri=path.as_uri(),
+                stage_format=dict(stage_plan.format),
+                comparison_format={
+                    "encoding": "pcm16",
+                    "rate": rate,
+                    "channels": channels,
+                },
+                duration_ms=audio_spec.duration_seconds * 1_000.0,
+                transformations=transformations,
+                comparison_ready=comparison_ready,
+                blocked_reason=(
+                    None
+                    if comparison_ready
+                    else f"codec-round-trip-required:{encoding}"
+                ),
+            )
+        )
+    return references
+
+
+def _reference_transformations(
+    *,
+    source_spec: SyntheticAudioSpec,
+    target_spec: SyntheticAudioSpec,
+    stage_encoding: object,
+) -> tuple[str, ...]:
+    transformations = []
+    if source_spec.sample_rate_hz != target_spec.sample_rate_hz:
+        transformations.append(
+            f"resample:{source_spec.sample_rate_hz}->{target_spec.sample_rate_hz}"
+        )
+    if source_spec.channels != target_spec.channels:
+        transformations.append(f"channel-map:{source_spec.channels}->{target_spec.channels}")
+    if stage_encoding not in {None, "pcm16", "linear16"}:
+        transformations.append(f"codec-round-trip:{stage_encoding}")
+    return tuple(transformations)
 
 
 def _cadence_metrics(
@@ -164,3 +260,5 @@ def _validate_audio_spec(audio_spec: SyntheticAudioSpec) -> None:
         raise ValueError("amplitude must fit signed 16-bit PCM")
     if audio_spec.frequency_hz <= 0:
         raise ValueError("frequency_hz must be positive")
+    if audio_spec.frequency_hz >= audio_spec.sample_rate_hz / 2:
+        raise ValueError("frequency_hz must be below the Nyquist frequency")

@@ -1,5 +1,16 @@
 # 進捗
 
+## Phase 2 Stage-specific reference audio contract (2026-07-16)
+
+- Synthetic Callerの単一clean referenceに加え、resolved pipelineの各stageごとに
+  expected rate/channelsのreference WAVとformat metadataを生成する。
+- artifactはstage format、PCM comparison format、変換履歴、`comparison_ready`、
+  `blocked_reason` を保持し、future ViSQOL/PESQ scorerの入力gateにできる。
+- PCM16/linear16 stageは比較可能。μ-law等のcodec stageは実codec round-trip未実装のため
+  `codec-round-trip-required:<encoding>` で明示的にblockする。
+- source/target Nyquistを満たさないsynthetic toneを拒否し、aliasingした参照生成を防ぐ。
+- baseline testで8 kHz stage reference、変換履歴、WAV format、μ-law blockを確認した。
+
 ## Phase 4 Cross-session resource trend (2026-07-16)
 
 - DESIGN記載の `GET /runs/cross-session-trends` を実装した。
