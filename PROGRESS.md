@@ -1,5 +1,15 @@
 # 進捗
 
+## Phase 2 G.711 mu-law reference round-trip (2026-07-16)
+
+- dependency-freeのG.711 μ-law sample/buffer encode/decode helperを追加した。
+- 8 kHz μ-law stage referenceはPCM16 toneを8-bit μ-lawへencodeし、PCM16へdecodeした
+  実quantized waveformを保存する。
+- serializer stageの `comparison_ready` をtrueへ更新し、codec変換履歴は保持する。
+- known zero/full-scale code、全256 code decode/re-encode、buffer sample count、
+  partial PCM rejectionをtestで固定した。negative zero codeはcanonical zeroへ正規化する。
+- 未対応codecと8 kHz以外のμ-lawは引き続きcomparison blockとなる。
+
 ## Phase 2 Stage-specific reference audio contract (2026-07-16)
 
 - Synthetic Callerの単一clean referenceに加え、resolved pipelineの各stageごとに

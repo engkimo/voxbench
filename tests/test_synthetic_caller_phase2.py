@@ -65,7 +65,7 @@ def test_synthetic_artifacts_verify_clean_path(tmp_path: Path) -> None:
     }
 
 
-def test_synthetic_stage_references_use_expected_format_and_block_missing_codec_round_trip(
+def test_synthetic_stage_references_use_expected_format_and_apply_mulaw_round_trip(
     tmp_path: Path,
 ) -> None:
     artifacts = generate_synthetic_artifacts(
@@ -98,8 +98,12 @@ def test_synthetic_stage_references_use_expected_format_and_block_missing_codec_
         "resample:1000->8000",
         "codec-round-trip:mulaw",
     )
-    assert serializer.comparison_ready is False
-    assert serializer.blocked_reason == "codec-round-trip-required:mulaw"
+    assert serializer.comparison_ready is True
+    assert serializer.blocked_reason is None
+
+    serializer_pcm = Path(serializer.uri.removeprefix("file://")).read_bytes()
+    resampler_pcm = Path(resampler.uri.removeprefix("file://")).read_bytes()
+    assert serializer_pcm != resampler_pcm
 
 
 def test_synthetic_reference_rejects_frequency_at_or_above_target_nyquist(

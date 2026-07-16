@@ -284,9 +284,10 @@ Offline synthetic artifacts include both the original clean reference and one
 reference per resolved pipeline stage. Each stage reference records the stage
 format, decoded PCM comparison format, transformations, and whether a future
 full-reference scorer may safely use it. PCM stages are generated at their
-expected rate/channels; codec stages such as mu-law remain explicitly blocked
-until a real codec round-trip is implemented, preventing ViSQOL/PESQ from using
-an invalid clean PCM reference.
+expected rate/channels. G.711 mu-law stages at 8 kHz use a deterministic
+PCM16-to-mu-law-to-PCM16 round-trip reference. Unsupported codecs remain
+explicitly blocked, preventing ViSQOL/PESQ from using an invalid clean PCM
+reference. See ITU-T G.711 and RFC 3551 section 4.5.14 for the codec contract.
 
 ```bash
 ruff check .

@@ -12,6 +12,7 @@ from typing import Any
 
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact
 from voxbench.engine_harness.plan import build_stage_plan
+from voxbench.media import mulaw_to_pcm16le, pcm16le_to_mulaw
 
 
 @dataclass(frozen=True)
@@ -142,11 +143,16 @@ def _stage_references(
             frequency_hz=audio_spec.frequency_hz,
         )
         _validate_audio_spec(reference_spec)
-        path = references_root / f"{stage_plan.stage}.wav"
-        _write_sine_wav(path, audio_spec=reference_spec)
-
         encoding = stage_plan.format.get("encoding")
-        comparison_ready = encoding in {"pcm16", "linear16"}
+        codec_round_trip = "mulaw" if encoding == "mulaw" and rate == 8_000 else None
+        path = references_root / f"{stage_plan.stage}.wav"
+        _write_sine_wav(
+            path,
+            audio_spec=reference_spec,
+            codec_round_trip=codec_round_trip,
+        )
+
+        comparison_ready = encoding in {"pcm16", "linear16"} or codec_round_trip is not None
         transformations = _reference_transformations(
             source_spec=audio_spec,
             target_spec=reference_spec,
@@ -230,7 +236,12 @@ def _cadence_metrics(
     ]
 
 
-def _write_sine_wav(path: Path, *, audio_spec: SyntheticAudioSpec) -> None:
+def _write_sine_wav(
+    path: Path,
+    *,
+    audio_spec: SyntheticAudioSpec,
+    codec_round_trip: str | None = None,
+) -> None:
     frame_count = round(audio_spec.sample_rate_hz * audio_spec.duration_seconds)
     frames = bytearray()
     for index in range(frame_count):
@@ -242,11 +253,17 @@ def _write_sine_wav(path: Path, *, audio_spec: SyntheticAudioSpec) -> None:
         for _ in range(audio_spec.channels):
             frames.extend(packed)
 
+    encoded_frames = bytes(frames)
+    if codec_round_trip == "mulaw":
+        encoded_frames = mulaw_to_pcm16le(pcm16le_to_mulaw(encoded_frames))
+    elif codec_round_trip is not None:
+        raise ValueError(f"unsupported reference codec round-trip: {codec_round_trip}")
+
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(audio_spec.channels)
         wav.setsampwidth(2)
         wav.setframerate(audio_spec.sample_rate_hz)
-        wav.writeframes(bytes(frames))
+        wav.writeframes(encoded_frames)
 
 
 def _validate_audio_spec(audio_spec: SyntheticAudioSpec) -> None:
