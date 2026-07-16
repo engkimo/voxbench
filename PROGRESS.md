@@ -1,5 +1,16 @@
 # 進捗
 
+## Overall progress checkpoint (2026-07-16)
+
+- DESIGN Phase 0–5のacceptanceと現実装を照合した全体進捗は約72%。
+- 現在の主目的であるlocal realtime voice demoに限定した完成度は約85%。
+- phase別目安は Phase 0: 100%、Phase 1: 75%、Phase 2: 70%、Phase 3: 90%、
+  Phase 4: 75%、Phase 5: 25%。数値はcommit数ではなくacceptance充足度の評価。
+- 主な残件は、実Asterisk/softphone/provider通話検証、cross-session trend、
+  ViSQOL/PESQと参照音声生成、Postgres/MinIO/OTLPのproduction保存経路、
+  2つ目のengineとscale profile。
+- 実機依存作業を待つ間は、Phase 4後段acceptanceのcross-sessionリーク検出を次に進める。
+
 ## Asterisk RTCP collector operator status (2026-07-16)
 
 - AMI認証成功、RTCP event送信、collector failureをhost-level operational metricで記録する。
