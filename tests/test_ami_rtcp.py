@@ -165,8 +165,11 @@ def test_collector_authenticates_and_forwards_only_safe_aggregate_fields() -> No
     assert count == 1
     assert b"Username: collector" in action
     assert b"Secret: fake-test-secret" in action
-    assert len(transport.batches) == 1
-    payload = transport.batches[0].to_payload()
+    assert len(transport.batches) == 2
+    connected_payload = transport.batches[0].to_payload()
+    assert connected_payload["metrics"][0]["name"] == "asterisk_ami_rtcp_connected"
+    payload = transport.batches[1].to_payload()
+    assert payload["metrics"][0]["name"] == "asterisk_ami_rtcp_events"
     assert payload["rtp_stats"][0]["direction"] == "received"
     assert payload["rtp_stats"][0]["rtt_ms"] == pytest.approx(20.0)
     serialized = repr(payload)

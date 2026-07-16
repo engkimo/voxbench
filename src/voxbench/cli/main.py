@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -280,6 +281,9 @@ def asterisk_ami_rtcp(
     except KeyboardInterrupt:
         typer.echo("Asterisk RTCP collection stopped")
     except AmiError as exc:
+        observer.observe_metric("asterisk_ami_rtcp_failures", 1.0)
+        with suppress(Exception):
+            observer.flush()
         typer.echo(f"Asterisk RTCP collection failed: {exc}", err=True)
         raise typer.Exit(code=1) from None
 

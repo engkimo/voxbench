@@ -251,3 +251,33 @@ def test_live_preview_projects_provider_connection_metrics(tmp_path: Path) -> No
         "failures": 3,
         "exhausted": True,
     }
+
+
+def test_live_preview_projects_asterisk_rtp_collector_metrics(tmp_path: Path) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    run_id = client.post("/runs/observed", json=_observed_run_payload()).json()["run_id"]
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+
+    inactive = client.get("/runs/live-preview").json()[0]["rtp_collector"]
+    assert inactive == {"state": "inactive", "events_collected": 0, "failures": 0}
+
+    observer.observe_metric("asterisk_ami_rtcp_connected", 1)
+    assert observer.flush() == 1
+    connected = client.get("/runs/live-preview").json()[0]["rtp_collector"]
+    assert connected == {"state": "connected", "events_collected": 0, "failures": 0}
+
+    observer.observe_metric("asterisk_ami_rtcp_events", 1)
+    observer.observe_metric("asterisk_ami_rtcp_events", 1)
+    assert observer.flush() == 2
+    collecting = client.get("/runs/live-preview").json()[0]["rtp_collector"]
+    assert collecting == {"state": "collecting", "events_collected": 2, "failures": 0}
+
+    observer.observe_metric("asterisk_ami_rtcp_failures", 1)
+    assert observer.flush() == 1
+    failed = client.get("/runs/live-preview").json()[0]["rtp_collector"]
+    assert failed == {"state": "failed", "events_collected": 2, "failures": 1}
+
+    observer.observe_metric("asterisk_ami_rtcp_connected", 1)
+    assert observer.flush() == 1
+    reconnected = client.get("/runs/live-preview").json()[0]["rtp_collector"]
+    assert reconnected == {"state": "connected", "events_collected": 2, "failures": 1}

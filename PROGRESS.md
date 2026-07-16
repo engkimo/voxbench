@@ -1,5 +1,16 @@
 # 進捗
 
+## Asterisk RTCP collector operator status (2026-07-16)
+
+- AMI認証成功、RTCP event送信、collector failureをhost-level operational metricで記録する。
+- Live preview responseに `rtp_collector` projectionを追加し、状態を
+  `inactive/connected/collecting/failed` に正規化した。
+- event/failureはdelta metricをrun全体で加算するため、同じrunでcollectorを再起動しても
+  countが巻き戻らない。
+- WebのLive previewに専用RTP collector blockを追加し、generic host metric tileから
+  collector metricを分離した。
+- fake AMI統合testとControl Plane projection testでconnected/event/failure遷移を確認した。
+
 ## Asterisk AMI RTCP collector (2026-07-16)
 
 - reporting-only AMI accountから `RTCPReceived` / `RTCPSent` だけを読み取る

@@ -905,7 +905,8 @@ a {
   background: #ffffff;
 }
 
-.providerConnectionSummary.connected {
+.providerConnectionSummary.connected,
+.providerConnectionSummary.collecting {
   border-left-color: #2f8d61;
   background: #f3fbf6;
 }
@@ -916,7 +917,8 @@ a {
   background: #fffaf0;
 }
 
-.providerConnectionSummary.exhausted {
+.providerConnectionSummary.exhausted,
+.providerConnectionSummary.failed {
   border-left-color: #c84b52;
   background: #fff4f4;
 }
@@ -943,12 +945,14 @@ a {
   font-weight: 800;
 }
 
-.providerConnectionSummary.connected .providerConnectionHeader em {
+.providerConnectionSummary.connected .providerConnectionHeader em,
+.providerConnectionSummary.collecting .providerConnectionHeader em {
   color: #176444;
   background: #dff2e7;
 }
 
-.providerConnectionSummary.exhausted .providerConnectionHeader em {
+.providerConnectionSummary.exhausted .providerConnectionHeader em,
+.providerConnectionSummary.failed .providerConnectionHeader em {
   color: #8e2f35;
   background: #ffe3e3;
 }

@@ -192,6 +192,9 @@ The codec RTP clock rate must match the active call. The collector converts AMI
 fixed-fraction loss, timestamp-unit jitter, and seconds RTT to loss percent and
 milliseconds. It never forwards AMI Channel, caller identity, address, or SSRC
 fields. See `docs/demo-live-softphone.md` for the complete local setup.
+Live preview separates these operational metrics into an `RTP collector` block
+with `connected`, `collecting`, or `failed` state and collected-event/failure
+counts; they are not mixed into the generic host metric tiles.
 
 The Web UI provides an `Async run` panel:
 

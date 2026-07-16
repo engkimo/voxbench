@@ -39,6 +39,7 @@ ProviderConnectionState = Literal[
     "exhausted",
     "unobserved",
 ]
+RtpCollectorState = Literal["inactive", "connected", "collecting", "failed"]
 
 DEFAULT_READINESS_ITEMS: tuple[tuple[str, str], ...] = (
     ("ai_phone_setup_complete", "AI phone setup complete"),
@@ -493,6 +494,12 @@ class ProviderConnectionStatusResponse(BaseModel):
     exhausted: bool = False
 
 
+class RtpCollectorStatusResponse(BaseModel):
+    state: RtpCollectorState
+    events_collected: int = 0
+    failures: int = 0
+
+
 class LiveRunStatusResponse(BaseModel):
     run_id: str
     status: str
@@ -506,6 +513,7 @@ class LiveRunStatusResponse(BaseModel):
     manual_blockers: list[str]
     latest_host_metrics: list[HostMetricSnapshotResponse]
     provider_connection: ProviderConnectionStatusResponse
+    rtp_collector: RtpCollectorStatusResponse
     violation_count: int
     tags: list[str]
 
@@ -593,6 +601,7 @@ class StoredRun:
             manual_blockers=self.environment.manual_blockers,
             latest_host_metrics=self.latest_host_metrics(),
             provider_connection=self.provider_connection_status(),
+            rtp_collector=self.rtp_collector_status(),
             violation_count=sum(
                 1 for verification in self.verifications if not verification.passed
             ),
@@ -743,6 +752,43 @@ class StoredRun:
             retries=retries,
             failures=failures,
             exhausted=exhausted,
+        )
+
+    def rtp_collector_status(self) -> RtpCollectorStatusResponse:
+        events_collected = sum(
+            max(0, int(metric.value))
+            for metric in self.metrics
+            if metric.stage is None and metric.name == "asterisk_ami_rtcp_events"
+        )
+        failures = sum(
+            max(0, int(metric.value))
+            for metric in self.metrics
+            if metric.stage is None and metric.name == "asterisk_ami_rtcp_failures"
+        )
+        status_metric_names = {
+            "asterisk_ami_rtcp_connected",
+            "asterisk_ami_rtcp_events",
+            "asterisk_ami_rtcp_failures",
+        }
+        latest_status_metric: MetricArtifact | None = None
+        for metric in self.metrics:
+            if metric.stage is not None or metric.name not in status_metric_names:
+                continue
+            if latest_status_metric is None or metric.ts >= latest_status_metric.ts:
+                latest_status_metric = metric
+        latest_status_name = latest_status_metric.name if latest_status_metric else None
+        if latest_status_name == "asterisk_ami_rtcp_failures":
+            state: RtpCollectorState = "failed"
+        elif latest_status_name == "asterisk_ami_rtcp_events":
+            state = "collecting"
+        elif latest_status_name == "asterisk_ami_rtcp_connected":
+            state = "connected"
+        else:
+            state = "inactive"
+        return RtpCollectorStatusResponse(
+            state=state,
+            events_collected=events_collected,
+            failures=failures,
         )
 
 

@@ -265,6 +265,10 @@ voxbench asterisk-ami-rtcp \
 rate. Use 8000 for PCMU/PCMA and configure the actual clock for other codecs. Stop
 the collector when the call/run ends. The Web RTP quality panel shows direction,
 jitter, loss, RTT, MOS when separately supplied, and each point's relative time.
+Live preview also shows an RTP collector block: `connected` after AMI login,
+`collecting` after the first normalized RTCP event, and `failed` after a safe
+collector failure observation. Its event count is additive across collector
+restarts for the same run.
 
 Relevant Asterisk references:
 

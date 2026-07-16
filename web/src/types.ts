@@ -132,6 +132,12 @@ export type ProviderConnectionStatus = {
   exhausted: boolean
 }
 
+export type RtpCollectorStatus = {
+  state: 'inactive' | 'connected' | 'collecting' | 'failed'
+  events_collected: number
+  failures: number
+}
+
 export type LiveRunStatus = {
   run_id: string
   status: string
@@ -145,6 +151,7 @@ export type LiveRunStatus = {
   manual_blockers: string[]
   latest_host_metrics: HostMetricSnapshot[]
   provider_connection: ProviderConnectionStatus
+  rtp_collector: RtpCollectorStatus
   violation_count: number
   tags: string[]
 }

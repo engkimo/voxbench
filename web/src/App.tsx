@@ -907,12 +907,16 @@ function LivePreviewPanel({
       <div className="liveRunList">
         {runs.map((run) => {
           const connection = run.provider_connection
+          const rtpCollector = run.rtp_collector
           const blocked =
             run.readiness_summary.incomplete_count > 0 ||
             connection.exhausted ||
+            rtpCollector.state === 'failed' ||
             run.status === 'failed'
           const hostMetrics = run.latest_host_metrics.filter(
-            (metric) => !metric.name.startsWith('provider_connect_'),
+            (metric) =>
+              !metric.name.startsWith('provider_connect_') &&
+              !metric.name.startsWith('asterisk_ami_rtcp_'),
           )
           return (
             <article className={blocked ? 'liveRunItem blocked' : 'liveRunItem ready'} key={run.run_id}>
@@ -959,6 +963,24 @@ function LivePreviewPanel({
                     <span>
                       <strong>failures</strong>
                       {connection.failures}
+                    </span>
+                  </div>
+                </div>
+              ) : null}
+              {rtpCollector.state !== 'inactive' ? (
+                <div className={`providerConnectionSummary ${rtpCollector.state}`}>
+                  <div className="providerConnectionHeader">
+                    <strong>RTP collector</strong>
+                    <em>{rtpCollector.state}</em>
+                  </div>
+                  <div className="providerConnectionMetrics">
+                    <span>
+                      <strong>events</strong>
+                      {rtpCollector.events_collected}
+                    </span>
+                    <span>
+                      <strong>failures</strong>
+                      {rtpCollector.failures}
                     </span>
                   </div>
                 </div>

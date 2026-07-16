@@ -173,17 +173,23 @@ class AmiRtcpCollector:
 
         try:
             await self._authenticate(reader, writer)
+            observer.observe_metric("asterisk_ami_rtcp_connected", 1.0)
+            try:
+                await asyncio.to_thread(observer.flush)
+            except Exception as exc:
+                raise AmiConnectionError("VoxBench observation delivery failed") from exc
             collected = 0
             async for event in self._events(reader):
                 stats = rtcp_event_to_stats(event, clock_rate_hz=self.clock_rate_hz)
                 if stats is None:
                     continue
                 observer.observe_rtp_stats(stats)
+                collected += 1
+                observer.observe_metric("asterisk_ami_rtcp_events", 1.0)
                 try:
                     await asyncio.to_thread(observer.flush)
                 except Exception as exc:
                     raise AmiConnectionError("VoxBench observation delivery failed") from exc
-                collected += 1
                 if max_events is not None and collected >= max_events:
                     return collected
             raise AmiConnectionError("AMI connection ended while collecting events")
