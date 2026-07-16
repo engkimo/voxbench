@@ -1,0 +1,16 @@
+[general]
+enabled = yes
+webenabled = no
+port = 5038
+bindaddr = 127.0.0.1
+
+; Keep this account read-only and local. Replace the placeholder only in the
+; installed local copy, never in this repository.
+[voxbench-rtcp]
+secret = REPLACE_WITH_LOCAL_SECRET
+read = reporting
+write = none
+
+; Advanced event filters limit this account to aggregate RTCP events.
+eventfilter(name(RTCPReceived)) =
+eventfilter(name(RTCPSent)) =

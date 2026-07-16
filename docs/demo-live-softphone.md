@@ -173,6 +173,7 @@ then replace `REPLACE_WITH_LOCAL_SECRET` only in the local copy:
 
 - `examples/asterisk/pjsip.conf.example`
 - `examples/asterisk/extensions.conf.example`
+- `examples/asterisk/manager.conf.example`
 
 The example binds SIP to loopback only. Configure the macOS softphone as:
 
@@ -219,6 +220,58 @@ by the bridge.
 
 To compare AGC settings, end the call, restart the bridge with different gain
 arguments, place another call, and select both runs in the Web UI compare view.
+
+## Collect Asterisk RTCP Quality
+
+Asterisk emits aggregate `RTCPReceived` and `RTCPSent` events through AMI. The
+collector reads only those events from a reporting-only account and sends the
+following normalized values to the active run:
+
+- `direction`: `received` or `sent`
+- `loss_pct`: the largest report-block fixed-fraction loss converted to percent
+- `jitter_ms`: the largest report-block interarrival jitter converted from RTP
+  timestamp units with the configured codec clock rate
+- `rtt_ms`: received-event RTT converted from seconds to milliseconds
+
+It does not map Asterisk MES to MOS. It also does not forward Channel, caller ID,
+source/destination address, SSRC, raw SIP, SDP, or packet bodies.
+
+Install `examples/asterisk/manager.conf.example` as part of the local Asterisk
+configuration and replace its secret only in the installed copy. The example
+binds AMI to loopback, grants only the `reporting` read class, grants no write
+permissions, and filters the account to the two RTCP event names. Production use
+requires its own network isolation, authentication, and TLS review.
+
+Set the account values in environment variables. Do not put them on the command
+line or in a run payload:
+
+```bash
+export VOXBENCH_AMI_USERNAME=voxbench-rtcp
+export VOXBENCH_AMI_SECRET='REPLACE_WITH_LOCAL_SECRET'
+```
+
+Start the AudioSocket bridge and place a call. Copy the run ID printed by the
+bridge, then start the collector in a third terminal while that run is active:
+
+```bash
+voxbench asterisk-ami-rtcp \
+  --run-id '<run_id>' \
+  --host 127.0.0.1 \
+  --port 5038 \
+  --clock-rate-hz 8000
+```
+
+`--clock-rate-hz` is the RTP codec clock, not necessarily an audio output sample
+rate. Use 8000 for PCMU/PCMA and configure the actual clock for other codecs. Stop
+the collector when the call/run ends. The Web RTP quality panel shows direction,
+jitter, loss, RTT, MOS when separately supplied, and each point's relative time.
+
+Relevant Asterisk references:
+
+- `https://docs.asterisk.org/Asterisk_22_Documentation/API_Documentation/AMI_Events/RTCPReceived/`
+- `https://docs.asterisk.org/Asterisk_21_Documentation/API_Documentation/AMI_Events/RTCPSent/`
+- `https://docs.asterisk.org/Configuration/Interfaces/Asterisk-Manager-Interface-AMI/AMI-Event-Filtering/`
+- `https://docs.asterisk.org/Configuration/Interfaces/Asterisk-Manager-Interface-AMI/The-Asterisk-Manager-TCP-IP-API/`
 
 ## Run A Provider-Backed Call
 
@@ -302,7 +355,7 @@ removed from the generic host metric tiles to keep the operational signal clear.
 This remains a demo-grade bridge. The dependency-free linear resampler preserves
 phase across streaming chunks, but production integrations should inject their
 existing high-quality resampler. Stateful mid-call recovery, validation of the
-truncation timing against a real provider call, real RTP quality collection, and
+truncation timing and AMI RTCP values against a real provider/Asterisk call, and
 production auth/TLS are still hardening work. The automated suite exercises an
 actual localhost AudioSocket TCP path with a fake provider; a real provider call
 still requires local Asterisk, a softphone, network access, and the selected API

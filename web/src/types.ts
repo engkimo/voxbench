@@ -39,6 +39,8 @@ export type TimelineRtpStat = {
   jitter_ms: number | null
   loss_pct: number | null
   mos: number | null
+  direction: 'received' | 'sent' | null
+  rtt_ms: number | null
 }
 
 export type EnvironmentProfile = 'local' | 'dev' | 'demo' | 'integration' | 'staging'

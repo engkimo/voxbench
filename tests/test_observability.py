@@ -81,7 +81,15 @@ def test_observer_streams_audio_metrics_sip_and_rtp_to_control_plane(tmp_path: P
             summary_alias="local-softphone-invite",
         )
     )
-    observer.observe_rtp_stats(RtpStats(jitter_ms=1.2, loss_pct=0.1, mos=4.3))
+    observer.observe_rtp_stats(
+        RtpStats(
+            jitter_ms=1.2,
+            loss_pct=0.1,
+            mos=4.3,
+            direction="received",
+            rtt_ms=8.5,
+        )
+    )
 
     assert observer.flush() == 7
     assert observer.pending_count == 0
@@ -99,6 +107,8 @@ def test_observer_streams_audio_metrics_sip_and_rtp_to_control_plane(tmp_path: P
     assert agc_metrics["gain_applied"] == pytest.approx(2.0)
     assert len(timeline["lanes"]["sip_ladder"]) == 1
     assert len(timeline["lanes"]["rtp_quality"]) == 1
+    assert timeline["lanes"]["rtp_quality"][0]["direction"] == "received"
+    assert timeline["lanes"]["rtp_quality"][0]["rtt_ms"] == 8.5
     assert timeline["lanes"]["recordings"][0]["stage"] == "agc"
 
     audio_response = client.get(f"/runs/{run_id}/recordings/agc/audio")

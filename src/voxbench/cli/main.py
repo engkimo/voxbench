@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -23,6 +24,8 @@ from voxbench.realtime_providers import (
 )
 from voxbench.registry.service import RegistryService
 from voxbench.telephony import (
+    AmiError,
+    AmiRtcpCollector,
     AudioSocketLoopbackServer,
     AudioSocketRealtimeServer,
     LoopbackCallSession,
@@ -228,6 +231,57 @@ def audiosocket_realtime(
         asyncio.run(server.serve_forever())
     except KeyboardInterrupt:
         typer.echo("AudioSocket realtime bridge stopped")
+
+
+@app.command("asterisk-ami-rtcp")
+def asterisk_ami_rtcp(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    control_plane_url: Annotated[
+        str,
+        typer.Option("--control-plane-url"),
+    ] = "http://127.0.0.1:8000",
+    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 5038,
+    clock_rate_hz: Annotated[
+        int,
+        typer.Option("--clock-rate-hz", min=1, max=384_000),
+    ] = 8_000,
+    username_env: Annotated[
+        str,
+        typer.Option("--username-env"),
+    ] = "VOXBENCH_AMI_USERNAME",
+    secret_env: Annotated[
+        str,
+        typer.Option("--secret-env"),
+    ] = "VOXBENCH_AMI_SECRET",
+) -> None:
+    """Collect aggregate RTCP quality from a read-only Asterisk AMI account."""
+
+    username = os.environ.get(username_env)
+    secret = os.environ.get(secret_env)
+    missing = [
+        name for name, value in ((username_env, username), (secret_env, secret)) if not value
+    ]
+    if missing:
+        raise typer.BadParameter(f"set required environment variable(s): {', '.join(missing)}")
+
+    transport = HttpObservationTransport(control_plane_url)
+    observer = VoxBenchObserver(run_id, transport)
+    collector = AmiRtcpCollector(
+        host=host,
+        port=port,
+        username=username,
+        secret=secret,
+        clock_rate_hz=clock_rate_hz,
+    )
+    typer.echo(f"Collecting Asterisk RTCP quality on {host}:{port} for run {run_id}")
+    try:
+        asyncio.run(collector.collect(observer))
+    except KeyboardInterrupt:
+        typer.echo("Asterisk RTCP collection stopped")
+    except AmiError as exc:
+        typer.echo(f"Asterisk RTCP collection failed: {exc}", err=True)
+        raise typer.Exit(code=1) from None
 
 
 def _single_config_name(config_paths: list[Path]) -> str:

@@ -1,5 +1,17 @@
 # 進捗
 
+## Asterisk AMI RTCP collector (2026-07-16)
+
+- reporting-only AMI accountから `RTCPReceived` / `RTCPSent` だけを読み取る
+  `voxbench asterisk-ami-rtcp` CLIを追加した。
+- RTCP report blockのloss fixed fractionを百分率へ、interarrival jitterを明示した
+  RTP clock rateからmsへ、received RTTを秒からmsへ変換する。
+- 複数report blockは最大値で保守的に集約し、方向とRTTをRTP timeline schema/UIへ追加した。
+- Channel、caller ID、address、SSRC、raw SIP/SDP/packet、AMI secretはControl Planeへ
+  転送しない。MESから根拠のないMOS変換も行わない。
+- bounded AMI parser、fake local AMI server、単位変換・異常値・機密field非混入をtestで固定した。
+- 実Asterisk/softphone callでのRTCP値とcodec clock rateの確認は次の環境検証項目。
+
 ## Mid-call provider stream failure hardening (2026-07-15)
 
 - OpenAI/Geminiのreceive streamをpersistent contractとして宣言し、通話中のclean EOFを

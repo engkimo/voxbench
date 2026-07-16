@@ -534,6 +534,8 @@ def test_ingest_sip_events_and_rtp_stats_into_timeline(tmp_path: Path) -> None:
             "jitter_ms": 3.5,
             "loss_pct": 0.2,
             "mos": 4.1,
+            "direction": "received",
+            "rtt_ms": 12.5,
         },
     )
 
@@ -563,9 +565,22 @@ def test_ingest_sip_events_and_rtp_stats_into_timeline(tmp_path: Path) -> None:
             "jitter_ms": 3.5,
             "loss_pct": 0.2,
             "mos": 4.1,
+            "direction": "received",
+            "rtt_ms": 12.5,
         }
     ]
     assert timeline["lanes"]["rtp_quality"][0]["ts"] >= 0
+
+    invalid_rtp_response = client.post(
+        "/v1/rtp-stats",
+        json={
+            "run_id": run["run_id"],
+            "jitter_ms": -1,
+            "loss_pct": 101,
+            "direction": "sideways",
+        },
+    )
+    assert invalid_rtp_response.status_code == 422
 
 
 def test_sip_rtp_ingest_rejects_unknown_run_and_raw_external_reference(

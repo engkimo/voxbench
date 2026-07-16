@@ -30,6 +30,7 @@ from voxbench.verification import VerificationResult, verify_recordings
 EnvironmentProfile = Literal["local", "dev", "demo", "integration", "staging"]
 ReadinessStatus = Literal["pass", "fail", "unknown"]
 SipDirection = Literal["in", "out"]
+RtpDirection = Literal["received", "sent"]
 LiveDemoProvider = Literal["gemini-live", "openai-realtime"]
 ProviderConnectionState = Literal[
     "not_applicable",
@@ -297,13 +298,15 @@ class TimelineSipEvent(BaseModel):
 
 
 class RtpStatRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     run_id: str
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    jitter_ms: float | None = None
-    loss_pct: float | None = None
-    mos: float | None = None
+    jitter_ms: float | None = Field(default=None, ge=0)
+    loss_pct: float | None = Field(default=None, ge=0, le=100)
+    mos: float | None = Field(default=None, ge=0, le=5)
+    direction: RtpDirection | None = None
+    rtt_ms: float | None = Field(default=None, ge=0)
 
 
 class RtpStatResponse(BaseModel):
@@ -311,6 +314,8 @@ class RtpStatResponse(BaseModel):
     jitter_ms: float | None
     loss_pct: float | None
     mos: float | None
+    direction: RtpDirection | None
+    rtt_ms: float | None
 
 
 class MetricObservationRequest(BaseModel):
@@ -366,9 +371,11 @@ class RtpStatObservationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    jitter_ms: float | None = None
-    loss_pct: float | None = None
-    mos: float | None = None
+    jitter_ms: float | None = Field(default=None, ge=0)
+    loss_pct: float | None = Field(default=None, ge=0, le=100)
+    mos: float | None = Field(default=None, ge=0, le=5)
+    direction: RtpDirection | None = None
+    rtt_ms: float | None = Field(default=None, ge=0)
 
 
 class ObservationBatchRequest(BaseModel):
@@ -404,6 +411,8 @@ class TimelineRtpStat(BaseModel):
     jitter_ms: float | None
     loss_pct: float | None
     mos: float | None
+    direction: RtpDirection | None
+    rtt_ms: float | None
 
 
 class ReadinessSummaryResponse(BaseModel):
@@ -647,6 +656,8 @@ class StoredRun:
                 jitter_ms=stat.jitter_ms,
                 loss_pct=stat.loss_pct,
                 mos=stat.mos,
+                direction=stat.direction,
+                rtt_ms=stat.rtt_ms,
             )
             for stat in self.rtp_stats
         ]
@@ -1197,6 +1208,8 @@ def create_runs_router() -> APIRouter:
             jitter_ms=request.jitter_ms,
             loss_pct=request.loss_pct,
             mos=request.mos,
+            direction=request.direction,
+            rtt_ms=request.rtt_ms,
         )
         stored.rtp_stats.append(stat)
         return stat
@@ -1282,6 +1295,8 @@ def create_runs_router() -> APIRouter:
                 jitter_ms=stat.jitter_ms,
                 loss_pct=stat.loss_pct,
                 mos=stat.mos,
+                direction=stat.direction,
+                rtt_ms=stat.rtt_ms,
             )
             for stat in request.rtp_stats
         )

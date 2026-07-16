@@ -190,3 +190,5 @@ class RtpStat(Base):
     jitter_ms: Mapped[float | None] = mapped_column(nullable=True)
     loss_pct: Mapped[float | None] = mapped_column(nullable=True)
     mos: Mapped[float | None] = mapped_column(nullable=True)
+    direction: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rtt_ms: Mapped[float | None] = mapped_column(nullable=True)

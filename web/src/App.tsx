@@ -1855,7 +1855,9 @@ function RtpQualityPanel({ stats }: { stats: TimelineRtpStat[] }) {
             <article className="rtpStat" key={`${stat.ts}-${index}`}>
               <Fact label="Jitter" value={formatNullableMetric(stat.jitter_ms, ' ms')} />
               <Fact label="Loss" value={formatNullableMetric(stat.loss_pct, '%')} />
+              <Fact label="RTT" value={formatNullableMetric(stat.rtt_ms, ' ms')} />
               <Fact label="MOS" value={formatNullableMetric(stat.mos)} />
+              <Fact label="Direction" value={stat.direction ?? '-'} />
               <Fact label="Time" value={`${stat.ts.toFixed(3)}s`} />
             </article>
           ))}
@@ -1974,6 +1976,7 @@ function rtpSummary(stat: TimelineRtpStat | null) {
   return [
     `jitter ${formatNullableMetric(stat.jitter_ms, ' ms')}`,
     `loss ${formatNullableMetric(stat.loss_pct, '%')}`,
+    `rtt ${formatNullableMetric(stat.rtt_ms, ' ms')}`,
     `mos ${formatNullableMetric(stat.mos)}`,
   ].join(' / ')
 }

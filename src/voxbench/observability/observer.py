@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 SipDirection = Literal["in", "out"]
+RtpDirection = Literal["received", "sent"]
 
 
 def _utc_now() -> datetime:
@@ -86,6 +87,8 @@ class RtpStats:
     jitter_ms: float | None = None
     loss_pct: float | None = None
     mos: float | None = None
+    direction: RtpDirection | None = None
+    rtt_ms: float | None = None
     ts: datetime = field(default_factory=_utc_now)
 
     def to_payload(self) -> dict[str, Any]:
@@ -94,6 +97,8 @@ class RtpStats:
             "jitter_ms": self.jitter_ms,
             "loss_pct": self.loss_pct,
             "mos": self.mos,
+            "direction": self.direction,
+            "rtt_ms": self.rtt_ms,
         }
 
 

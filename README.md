@@ -23,11 +23,14 @@ Implemented so far:
   metrics plus structured SIP/RTP timeline points
 - An Asterisk AudioSocket PCM loopback CLI for placing a real local softphone
   call through observed AGC/limiter stages
+- A read-only Asterisk AMI RTCP collector that normalizes aggregate jitter,
+  packet loss, RTT, and media direction without storing channel/address/SSRC data
 - A provider-agnostic `voxbench.observability` library boundary for existing
   direct-provider, Pipecat, and custom telephony applications
 
-This implementation intentionally does not include real SIP/RTP/live-host integration,
-cross-session leak trend analysis, persistent production job leasing, or the scale profile.
+This implementation intentionally does not include SIP packet capture, production
+live-host hardening, cross-session leak trend analysis, persistent production job
+leasing, or the scale profile.
 
 ## Install for development
 
@@ -174,6 +177,21 @@ curl -X POST http://127.0.0.1:8000/v1/rtp-stats \
 
 `GET /runs/{run_id}/timeline` includes these points in `lanes.sip_ladder` and
 `lanes.rtp_quality`.
+
+For a local Asterisk call, install `examples/asterisk/manager.conf.example`, set
+the AMI credentials only in environment variables, and collect RTCP quality into
+an active run:
+
+```bash
+export VOXBENCH_AMI_USERNAME=voxbench-rtcp
+export VOXBENCH_AMI_SECRET='REPLACE_WITH_LOCAL_SECRET'
+voxbench asterisk-ami-rtcp --run-id '<run_id>' --clock-rate-hz 8000
+```
+
+The codec RTP clock rate must match the active call. The collector converts AMI
+fixed-fraction loss, timestamp-unit jitter, and seconds RTT to loss percent and
+milliseconds. It never forwards AMI Channel, caller identity, address, or SSRC
+fields. See `docs/demo-live-softphone.md` for the complete local setup.
 
 The Web UI provides an `Async run` panel:
 

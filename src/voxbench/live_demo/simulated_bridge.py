@@ -36,6 +36,8 @@ class SimulatedRtpStat:
     jitter_ms: float | None = None
     loss_pct: float | None = None
     mos: float | None = None
+    direction: Literal["received", "sent"] | None = None
+    rtt_ms: float | None = None
 
 
 @dataclass(frozen=True)
