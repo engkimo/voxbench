@@ -1,5 +1,16 @@
 # 進捗
 
+## Phase 2 Full-reference scorer input gate (2026-07-16)
+
+- `select_full_reference_candidates(...)` をverification public APIへ追加した。
+- `comparison_ready` なstage referenceと同stage recordingをpairにし、decoded
+  `encoding/rate/channels` が一致する候補だけをfuture scorerへ渡す。
+- unsupported codec、recording欠落、duplicate reference、format mismatchは
+  scorerを呼ばずsafe block reasonへ正規化する。
+- Synthetic stage recordingもresolved output rate/channelsで生成し、8 kHz μ-lawは
+  round-trip後のdecoded PCMを保存してreferenceと比較条件を揃えた。
+- candidate/block ordering、μ-law transformation、各block reasonをtestで固定した。
+
 ## Phase 2 G.711 mu-law reference round-trip (2026-07-16)
 
 - dependency-freeのG.711 μ-law sample/buffer encode/decode helperを追加した。

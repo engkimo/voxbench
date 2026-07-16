@@ -288,6 +288,10 @@ expected rate/channels. G.711 mu-law stages at 8 kHz use a deterministic
 PCM16-to-mu-law-to-PCM16 round-trip reference. Unsupported codecs remain
 explicitly blocked, preventing ViSQOL/PESQ from using an invalid clean PCM
 reference. See ITU-T G.711 and RFC 3551 section 4.5.14 for the codec contract.
+`select_full_reference_candidates(...)` then pairs only ready references with a
+stage recording whose decoded `encoding`, `rate`, and `channels` match. Missing
+recordings, unsupported codecs, duplicate references, and format mismatches are
+returned as safe block reasons before any external scorer is invoked.
 
 ```bash
 ruff check .

@@ -76,27 +76,41 @@ def generate_synthetic_artifacts(
 
     recordings = []
     metrics = []
+    stage_plans = {plan.stage: plan for plan in build_stage_plan(resolved_config)}
     for stage in resolved_config["spec"]["media"]["pipeline"]:
         stage_name = stage["type"]
+        stage_format = stage_plans[stage_name].format
+        rate = stage_format.get("rate") or stage_format.get("output_rate")
+        channels = stage_format.get("channels")
+        if not isinstance(rate, int) or not isinstance(channels, int):
+            raise ValueError(f"stage '{stage_name}' output recording requires rate and channels")
         degradation = degradations.get(stage_name, SyntheticStageDegradation())
         stage_spec = SyntheticAudioSpec(
-            sample_rate_hz=audio_spec.sample_rate_hz,
-            channels=audio_spec.channels,
+            sample_rate_hz=rate,
+            channels=channels,
             duration_seconds=audio_spec.duration_seconds * degradation.duration_scale,
             amplitude=round(audio_spec.amplitude * degradation.level_scale),
             frequency_hz=audio_spec.frequency_hz,
         )
         _validate_audio_spec(stage_spec)
         stage_path = output_root / f"{stage_name}.wav"
-        _write_sine_wav(stage_path, audio_spec=stage_spec)
+        stage_encoding = stage_format.get("encoding")
+        codec_round_trip = (
+            "mulaw" if stage_encoding == "mulaw" and rate == 8_000 else None
+        )
+        _write_sine_wav(
+            stage_path,
+            audio_spec=stage_spec,
+            codec_round_trip=codec_round_trip,
+        )
         recordings.append(
             RecordingArtifact(
                 stage=stage_name,
                 uri=stage_path.as_uri(),
                 format={
                     "encoding": "pcm16",
-                    "rate": audio_spec.sample_rate_hz,
-                    "channels": audio_spec.channels,
+                    "rate": rate,
+                    "channels": channels,
                 },
                 duration_ms=stage_spec.duration_seconds * 1000.0,
             )
