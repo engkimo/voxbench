@@ -8,6 +8,7 @@ import pytest
 from voxbench.verification import (
     FullReferenceBlock,
     FullReferenceCandidate,
+    FullReferenceMeasurement,
     FullReferenceScorerContract,
     FullReferenceScorerReadiness,
     FullReferenceSelection,
@@ -185,6 +186,33 @@ def test_invalid_score_never_becomes_a_metric(value: float, reason_alias: str) -
     assert report.results[0].score is None
     assert report.results[0].reason_alias == reason_alias
     assert full_reference_scores_to_metrics(report) == []
+
+
+class MeasurementScorer(FakeScorer):
+    def score(self, candidate: FullReferenceCandidate) -> FullReferenceMeasurement:
+        self.calls.append(candidate.stage)
+        return FullReferenceMeasurement(
+            score=4.0,
+            transformations=(
+                "visqol-mode:speech",
+                "resample:8000->16000",
+                "file:///Users/private/model",
+            ),
+        )
+
+
+def test_measurement_transformations_are_auditable_and_sanitized() -> None:
+    report = score_full_reference_selection(
+        FullReferenceSelection(candidates=(_candidate("agc"),), blocked=()),
+        MeasurementScorer(values={}),
+    )
+
+    assert report.results[0].transformations == (
+        "visqol-mode:speech",
+        "resample:8000->16000",
+        "scorer-input-transform",
+    )
+    assert "private" not in repr(report)
 
 
 @pytest.mark.parametrize(

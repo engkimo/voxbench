@@ -298,7 +298,25 @@ reports readiness before any candidate is read. Each result is explicitly
 `scored`, `unavailable`, `blocked`, or `failed`; raw dependency errors and unsafe
 paths/URLs are discarded. Only successful finite in-range scores become numeric
 metrics, so a missing or failed scorer is never represented as a misleading zero.
-The actual ViSQOL binary/library adapter remains optional follow-up work.
+
+`VisqolCliScorer` is an optional adapter for an explicitly installed official
+ViSQOL binary. `speech` mode prepares both reference and degraded inputs at
+16 kHz; `audio` mode prepares both at 48 kHz. The stage-native WAVs are not
+overwritten, scorer inputs live only in a temporary directory, and the selected
+mode plus any resampling are retained in the score result transformations. The
+binary's stdout/stderr and raw process errors are discarded. If the binary is
+absent, the candidate is reported as `unavailable`. VoxBench does not install or
+redistribute ViSQOL; build/install it separately according to the
+[official Google ViSQOL documentation](https://github.com/google/visqol).
+
+```python
+from pathlib import Path
+
+from voxbench.verification import VisqolCliScorer, score_full_reference_selection
+
+scorer = VisqolCliScorer(binary=Path("/path/to/visqol"), mode="speech")
+report = score_full_reference_selection(selection, scorer)
+```
 
 ```bash
 ruff check .

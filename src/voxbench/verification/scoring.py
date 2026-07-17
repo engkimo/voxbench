@@ -18,6 +18,7 @@ FullReferenceScoreState = Literal["scored", "unavailable", "blocked", "failed"]
 
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _SAFE_REASON = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
+_SAFE_TRANSFORMATION = re.compile(r"^[a-z0-9][a-z0-9_.:>-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,12 @@ class FullReferenceScorerReadiness:
     reason_alias: str | None = None
 
 
+@dataclass(frozen=True)
+class FullReferenceMeasurement:
+    score: float
+    transformations: tuple[str, ...] = ()
+
+
 class FullReferenceScorer(Protocol):
     """Optional scorer adapter implemented by a dependency-specific module."""
 
@@ -53,7 +60,10 @@ class FullReferenceScorer(Protocol):
 
     def readiness(self) -> FullReferenceScorerReadiness: ...
 
-    def score(self, candidate: FullReferenceCandidate) -> float: ...
+    def score(
+        self,
+        candidate: FullReferenceCandidate,
+    ) -> float | FullReferenceMeasurement: ...
 
 
 @dataclass(frozen=True)
@@ -64,6 +74,7 @@ class FullReferenceScoreResult:
     state: FullReferenceScoreState
     score: float | None
     reason_alias: str | None
+    transformations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -141,7 +152,18 @@ def _score_candidate(
 ) -> FullReferenceScoreResult:
     contract = scorer.contract
     try:
-        score = float(scorer.score(candidate))
+        raw_measurement = scorer.score(candidate)
+        if isinstance(raw_measurement, FullReferenceMeasurement):
+            score = float(raw_measurement.score)
+            transformations = tuple(
+                transformation
+                if _SAFE_TRANSFORMATION.fullmatch(transformation)
+                else "scorer-input-transform"
+                for transformation in raw_measurement.transformations
+            )
+        else:
+            score = float(raw_measurement)
+            transformations = ()
     except Exception:  # Raw binary/library/path errors are intentionally discarded.
         return _result(
             candidate.stage,
@@ -155,6 +177,7 @@ def _score_candidate(
             contract,
             state="failed",
             reason_alias="score-not-finite",
+            transformations=transformations,
         )
     if not contract.minimum_score <= score <= contract.maximum_score:
         return _result(
@@ -162,8 +185,15 @@ def _score_candidate(
             contract,
             state="failed",
             reason_alias="score-out-of-range",
+            transformations=transformations,
         )
-    return _result(candidate.stage, contract, state="scored", score=score)
+    return _result(
+        candidate.stage,
+        contract,
+        state="scored",
+        score=score,
+        transformations=transformations,
+    )
 
 
 def _result(
@@ -173,6 +203,7 @@ def _result(
     state: FullReferenceScoreState,
     score: float | None = None,
     reason_alias: str | None = None,
+    transformations: tuple[str, ...] = (),
 ) -> FullReferenceScoreResult:
     return FullReferenceScoreResult(
         stage=stage,
@@ -181,6 +212,7 @@ def _result(
         state=state,
         score=score,
         reason_alias=reason_alias,
+        transformations=transformations,
     )
 
 

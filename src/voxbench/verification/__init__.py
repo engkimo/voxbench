@@ -8,6 +8,7 @@ from voxbench.verification.full_reference import (
     select_full_reference_candidates,
 )
 from voxbench.verification.scoring import (
+    FullReferenceMeasurement,
     FullReferenceScorer,
     FullReferenceScorerContract,
     FullReferenceScoreResult,
@@ -17,10 +18,13 @@ from voxbench.verification.scoring import (
     full_reference_scores_to_metrics,
     score_full_reference_selection,
 )
+from voxbench.verification.visqol import VISQOL_CONTRACT, VisqolCliScorer, VisqolMode
 
 __all__ = [
+    "VISQOL_CONTRACT",
     "FullReferenceBlock",
     "FullReferenceCandidate",
+    "FullReferenceMeasurement",
     "FullReferenceScoreResult",
     "FullReferenceScoreState",
     "FullReferenceScorer",
@@ -29,6 +33,8 @@ __all__ = [
     "FullReferenceScoringReport",
     "FullReferenceSelection",
     "VerificationResult",
+    "VisqolCliScorer",
+    "VisqolMode",
     "full_reference_scores_to_metrics",
     "score_full_reference_selection",
     "select_full_reference_candidates",

@@ -1,5 +1,21 @@
 # 進捗
 
+## Phase 2 Optional ViSQOL CLI adapter (2026-07-17)
+
+- official ViSQOL binaryを明示pathで利用するoptional `VisqolCliScorer` を追加した。
+  package/binary/modelはcore dependencyに含めず、未導入時は `unavailable` とする。
+- official contractに合わせ、speech modeではreference/degraded両方を16 kHz、audio
+  modeでは両方を48 kHzへ同一resampleし、一時mono PCM16 WAVとして実行する。
+- stage-native artifactは上書きせず、一時directoryはstage score後に削除する。
+  modeとresample履歴はscore resultへ保持し、8 kHz stageの帯域制限由来を監査可能にした。
+- subprocessはshellを使わず、stdout/stderrを破棄する。binary/path/processのraw errorは
+  reportへ保存せず、既存scorer boundaryでsafe stateへ正規化する。
+- fake CLI testでspeech/audio mode、8→16 kHz両側変換、temp cleanup、binary欠落、
+  WAV format mismatch、process failure秘匿を固定した。実ViSQOL binaryでのscore校正は
+  environment validationとして残る。
+- 全体acceptance進捗の目安は約76%、Phase 2は約82%。実Asterisk/provider通話と
+  production保存経路は引き続き全体進捗の主要gap。
+
 ## Phase 2 Full-reference scorer execution contract (2026-07-17)
 
 - optional full-reference scorer向けに、safe scorer/metric alias、score range、readiness、
