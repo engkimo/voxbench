@@ -353,6 +353,14 @@ voxbench synthetic-visqol \
   --mode speech
 ```
 
+Because one MOS-LQO value is not a regression conclusion,
+`aggregate_full_reference_reports(...)` combines multiple reports only within a
+declared safe treatment alias and identical scorer contract. The default minimum
+is three scored samples. It reports mean, median, min/max, and population standard
+deviation only after that minimum is met. Missing or non-scored samples make the
+stage `partial`; differing transformation chains make it `incomparable`; too few
+otherwise-valid samples remain `insufficient`.
+
 ```bash
 ruff check .
 pytest

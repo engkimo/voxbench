@@ -1,5 +1,11 @@
 """Signal invariant verification APIs."""
 
+from voxbench.verification.aggregation import (
+    FullReferenceAggregateState,
+    FullReferenceStageAggregate,
+    FullReferenceTreatmentReport,
+    aggregate_full_reference_reports,
+)
 from voxbench.verification.core import VerificationResult, verify_recordings
 from voxbench.verification.full_reference import (
     FullReferenceBlock,
@@ -27,6 +33,7 @@ from voxbench.verification.visqol import (
 
 __all__ = [
     "VISQOL_CONTRACT",
+    "FullReferenceAggregateState",
     "FullReferenceBlock",
     "FullReferenceCandidate",
     "FullReferenceMeasurement",
@@ -37,9 +44,12 @@ __all__ = [
     "FullReferenceScorerReadiness",
     "FullReferenceScoringReport",
     "FullReferenceSelection",
+    "FullReferenceStageAggregate",
+    "FullReferenceTreatmentReport",
     "VerificationResult",
     "VisqolCliScorer",
     "VisqolMode",
+    "aggregate_full_reference_reports",
     "build_visqol_candidate",
     "full_reference_scores_to_metrics",
     "score_full_reference_selection",

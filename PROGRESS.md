@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 2 Full-reference treatment aggregation (2026-07-17)
+
+- `aggregate_full_reference_reports(...)` を追加し、同一treatment/scorer contractの
+  stage scoreを複数sampleで集約できるようにした。treatmentはsafe aliasに限定する。
+- 既定3件を満たすまでmean/median/min/max/population stddevを公開せず、単一MOS-LQOを
+  regression判定へ誤用しにくくした。
+- 状態は `aggregated/insufficient/partial/incomparable`。欠測・block・unavailable・failed
+  混在をpartial、reference/scorer transformation chain不一致をincomparableとする。
+- scorer contract混在、同report内のstage重複はhard error。safe payloadはcount、統計値、
+  transformationだけでsample IDやartifact pathを持たない。
+- 3 sample統計、minimum不足、unavailable混在、missing stage、変換不一致、contract/duplicate
+  rejectionをtestで固定した。全体進捗目安は約78%、Phase 2は約88%。
+
 ## Phase 2 Synthetic full-reference orchestration (2026-07-17)
 
 - `run_synthetic_verification(...)` でconfigに対するartifact生成、signal invariant検証、
