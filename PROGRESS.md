@@ -1,5 +1,16 @@
 # 進捗
 
+## Phase 2 ViSQOL score CLI (2026-07-17)
+
+- matching local mono PCM16 WAV pairをoptional official ViSQOL binaryで評価する
+  `voxbench visqol-score` を追加した。
+- WAV headerからrateを取得し、reference/degradedのencoding/rate/channels一致を
+  process実行前に検証する。speech/audioのscorer入力変換はadapterと共有する。
+- stdoutはscore/state/safe reason/transformationsだけのpath-free JSONとし、成功0、
+  scorer failure 1、binary unavailableまたはCLI input error 2のexit codeを返す。
+- real subprocessを使うfake binary CLI testで8→16 kHz score、missing binary、
+  mismatched WAV rejectionをend-to-end確認した。
+
 ## Phase 2 Optional ViSQOL CLI adapter (2026-07-17)
 
 - official ViSQOL binaryを明示pathで利用するoptional `VisqolCliScorer` を追加した。

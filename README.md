@@ -318,6 +318,19 @@ scorer = VisqolCliScorer(binary=Path("/path/to/visqol"), mode="speech")
 report = score_full_reference_selection(selection, scorer)
 ```
 
+To score an existing matching mono PCM16 WAV pair and receive a path-free JSON
+result, use the CLI. It exits `0` when scored, `2` when the optional binary is
+unavailable or CLI input is invalid, and `1` for a scorer execution failure.
+
+```bash
+voxbench visqol-score \
+  --reference artifacts/reference.wav \
+  --degraded artifacts/recording.wav \
+  --binary /path/to/visqol \
+  --mode speech \
+  --stage serializer
+```
+
 ```bash
 ruff check .
 pytest

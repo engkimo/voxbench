@@ -18,7 +18,12 @@ from voxbench.verification.scoring import (
     full_reference_scores_to_metrics,
     score_full_reference_selection,
 )
-from voxbench.verification.visqol import VISQOL_CONTRACT, VisqolCliScorer, VisqolMode
+from voxbench.verification.visqol import (
+    VISQOL_CONTRACT,
+    VisqolCliScorer,
+    VisqolMode,
+    build_visqol_candidate,
+)
 
 __all__ = [
     "VISQOL_CONTRACT",
@@ -35,6 +40,7 @@ __all__ = [
     "VerificationResult",
     "VisqolCliScorer",
     "VisqolMode",
+    "build_visqol_candidate",
     "full_reference_scores_to_metrics",
     "score_full_reference_selection",
     "select_full_reference_candidates",

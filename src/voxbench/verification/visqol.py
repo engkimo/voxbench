@@ -37,6 +37,28 @@ _MODE_SAMPLE_RATES: dict[VisqolMode, int] = {
 }
 
 
+def build_visqol_candidate(
+    *,
+    stage: str,
+    reference_path: Path,
+    degraded_path: Path,
+) -> FullReferenceCandidate:
+    """Build a validated candidate from two matching local mono PCM16 WAV files."""
+
+    reference_format = _inspect_pcm16_mono_wav(reference_path)
+    degraded_format = _inspect_pcm16_mono_wav(degraded_path)
+    if reference_format != degraded_format:
+        raise ValueError("reference and degraded WAV formats must match")
+    return FullReferenceCandidate(
+        stage=stage,
+        reference_uri=reference_path.resolve().as_uri(),
+        degraded_uri=degraded_path.resolve().as_uri(),
+        comparison_format=reference_format,
+        degraded_format=degraded_format,
+        transformations=(),
+    )
+
+
 @dataclass(frozen=True)
 class VisqolCliScorer:
     """Run an explicitly installed ViSQOL binary without making it a core dependency."""
@@ -137,6 +159,23 @@ def _read_pcm16_mono_wav(uri: str, *, expected_rate: int) -> bytes:
         if wav.getframerate() != expected_rate:
             raise ValueError("WAV sample rate does not match candidate metadata")
         return wav.readframes(wav.getnframes())
+
+
+def _inspect_pcm16_mono_wav(path: Path) -> dict[str, int | str]:
+    try:
+        with wave.open(str(path), "rb") as wav:
+            if (
+                wav.getcomptype() != "NONE"
+                or wav.getnchannels() != 1
+                or wav.getsampwidth() != 2
+            ):
+                raise ValueError("WAV input must be uncompressed mono PCM16")
+            sample_rate = wav.getframerate()
+    except wave.Error as exc:
+        raise ValueError("input is not a readable WAV file") from exc
+    if sample_rate <= 0:
+        raise ValueError("WAV sample rate must be positive")
+    return {"encoding": "pcm16", "rate": sample_rate, "channels": 1}
 
 
 def _local_file_uri_path(uri: str) -> Path:

@@ -32,6 +32,13 @@ from voxbench.telephony import (
     LoopbackCallSession,
     RealtimeCallSession,
 )
+from voxbench.verification import (
+    FullReferenceSelection,
+    VisqolCliScorer,
+    VisqolMode,
+    build_visqol_candidate,
+    score_full_reference_selection,
+)
 
 app = typer.Typer(no_args_is_help=True)
 
@@ -286,6 +293,65 @@ def asterisk_ami_rtcp(
             observer.flush()
         typer.echo(f"Asterisk RTCP collection failed: {exc}", err=True)
         raise typer.Exit(code=1) from None
+
+
+@app.command("visqol-score")
+def visqol_score(
+    reference: Annotated[
+        Path,
+        typer.Option("--reference", exists=True, file_okay=True, dir_okay=False),
+    ],
+    degraded: Annotated[
+        Path,
+        typer.Option("--degraded", exists=True, file_okay=True, dir_okay=False),
+    ],
+    binary: Annotated[Path, typer.Option("--binary")],
+    mode: Annotated[VisqolMode, typer.Option("--mode")] = "speech",
+    stage: Annotated[str, typer.Option("--stage")] = "full-reference",
+    timeout_seconds: Annotated[
+        float,
+        typer.Option("--timeout-seconds", min=0.1, max=600.0),
+    ] = 120.0,
+) -> None:
+    """Score matching local WAVs with an optional official ViSQOL binary."""
+
+    try:
+        candidate = build_visqol_candidate(
+            stage=stage,
+            reference_path=reference,
+            degraded_path=degraded,
+        )
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(
+            "reference and degraded must be matching uncompressed mono PCM16 WAV files"
+        ) from exc
+    report = score_full_reference_selection(
+        FullReferenceSelection(candidates=(candidate,), blocked=()),
+        VisqolCliScorer(
+            binary=binary,
+            mode=mode,
+            timeout_seconds=timeout_seconds,
+        ),
+    )
+    result = report.results[0]
+    typer.echo(
+        json.dumps(
+            {
+                "metric_name": result.metric_name,
+                "reason_alias": result.reason_alias,
+                "score": result.score,
+                "scorer": result.scorer,
+                "stage": result.stage,
+                "state": result.state,
+                "transformations": list(result.transformations),
+            },
+            sort_keys=True,
+        )
+    )
+    if result.state == "unavailable":
+        raise typer.Exit(code=2)
+    if result.state != "scored":
+        raise typer.Exit(code=1)
 
 
 def _single_config_name(config_paths: list[Path]) -> str:
