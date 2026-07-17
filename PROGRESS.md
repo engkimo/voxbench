@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 2 Full-reference scorer execution contract (2026-07-17)
+
+- optional full-reference scorer向けに、safe scorer/metric alias、score range、readiness、
+  stage単位の実行protocolをverification public APIへ追加した。
+- 結果は `scored/unavailable/blocked/failed` を区別し、dependency未導入、入力block、
+  scorer例外を偽の0点やpassへ変換しない。
+- scorer例外のraw message、path、URL、tokenは保持せずsafe reason aliasへ正規化する。
+  unsafeなreadiness/block reasonも固定fallbackへ置換する。
+- 1 stageの失敗後も後続stageをscoreし、finiteかつ宣言range内の成功値だけを
+  `MetricArtifact` へ変換する。NaN、infinity、range外はmetric化しない。
+- fake scorer testで成功/失敗分離、optional dependency未導入、例外秘匿、range、
+  metric timestampを固定した。ViSQOL本体adapterと48/16 kHz入力変換は次slice。
+
 ## Phase 2 Full-reference scorer input gate (2026-07-16)
 
 - `select_full_reference_candidates(...)` をverification public APIへ追加した。

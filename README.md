@@ -292,6 +292,13 @@ reference. See ITU-T G.711 and RFC 3551 section 4.5.14 for the codec contract.
 stage recording whose decoded `encoding`, `rate`, and `channels` match. Missing
 recordings, unsupported codecs, duplicate references, and format mismatches are
 returned as safe block reasons before any external scorer is invoked.
+`score_full_reference_selection(...)` provides the next optional-dependency
+boundary. A scorer declares its safe name, metric name, and numeric range, then
+reports readiness before any candidate is read. Each result is explicitly
+`scored`, `unavailable`, `blocked`, or `failed`; raw dependency errors and unsafe
+paths/URLs are discarded. Only successful finite in-range scores become numeric
+metrics, so a missing or failed scorer is never represented as a misleading zero.
+The actual ViSQOL binary/library adapter remains optional follow-up work.
 
 ```bash
 ruff check .
