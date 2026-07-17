@@ -361,6 +361,13 @@ deviation only after that minimum is met. Missing or non-scored samples make the
 stage `partial`; differing transformation chains make it `incomparable`; too few
 otherwise-valid samples remain `insufficient`.
 
+Treatment aggregates can be compared with an explicit
+`FullReferenceRegressionPolicy`. The caller supplies a finite non-negative stable
+tolerance and metric direction. A stage becomes `improved`, `stable`, or
+`regressed` only when both sides are fully aggregated under the same scorer
+contract and transformation chain. Missing, partial, insufficient, or
+incomparable data remains `indeterminate` with a safe reason alias.
+
 `synthetic-visqol-treatment` runs that policy end to end. It creates
 `sample-001`, `sample-002`, and so on, varies source frequency while retaining
 the same config and scorer treatment, persists each verification report, and

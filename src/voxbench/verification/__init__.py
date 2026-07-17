@@ -13,6 +13,13 @@ from voxbench.verification.full_reference import (
     FullReferenceSelection,
     select_full_reference_candidates,
 )
+from voxbench.verification.regression import (
+    FullReferenceRegressionPolicy,
+    FullReferenceRegressionReport,
+    FullReferenceRegressionState,
+    FullReferenceStageRegression,
+    compare_full_reference_treatments,
+)
 from voxbench.verification.scoring import (
     FullReferenceMeasurement,
     FullReferenceScorer,
@@ -37,6 +44,9 @@ __all__ = [
     "FullReferenceBlock",
     "FullReferenceCandidate",
     "FullReferenceMeasurement",
+    "FullReferenceRegressionPolicy",
+    "FullReferenceRegressionReport",
+    "FullReferenceRegressionState",
     "FullReferenceScoreResult",
     "FullReferenceScoreState",
     "FullReferenceScorer",
@@ -45,12 +55,14 @@ __all__ = [
     "FullReferenceScoringReport",
     "FullReferenceSelection",
     "FullReferenceStageAggregate",
+    "FullReferenceStageRegression",
     "FullReferenceTreatmentReport",
     "VerificationResult",
     "VisqolCliScorer",
     "VisqolMode",
     "aggregate_full_reference_reports",
     "build_visqol_candidate",
+    "compare_full_reference_treatments",
     "full_reference_scores_to_metrics",
     "score_full_reference_selection",
     "select_full_reference_candidates",

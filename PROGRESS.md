@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 2 Treatment regression policy (2026-07-17)
+
+- aggregate済みbaseline/currentを比較する `compare_full_reference_treatments(...)` と
+  明示的 `FullReferenceRegressionPolicy` を追加した。
+- finite/non-negativeなstable toleranceとhigher/lower-is-better方向をcallerが指定する。
+  toleranceを暗黙の統計的有意差として扱わない。
+- 両側がaggregated、同一scorer contract、同一stage transformation chainの場合だけ
+  `improved/stable/regressed` を返す。
+- missing stage、partial/insufficient aggregate、contract/transform mismatch、mean欠落は
+  score差を判定せずsafe reason付き `indeterminate` とする。
+- 境界、方向反転、各indeterminate reason、contract mismatch、不正toleranceをtest固定した。
+  全体進捗目安は約80%、Phase 2は約94%。
+
 ## Phase 2 Synthetic ViSQOL treatment CLI (2026-07-17)
 
 - `run_synthetic_treatment(...)` と `voxbench synthetic-visqol-treatment` を追加した。
