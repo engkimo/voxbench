@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,7 +17,9 @@ from voxbench.synthetic_caller.offline import (
 from voxbench.verification import (
     FullReferenceScorer,
     FullReferenceScoringReport,
+    FullReferenceTreatmentReport,
     VerificationResult,
+    aggregate_full_reference_reports,
     full_reference_scores_to_metrics,
     score_full_reference_selection,
     select_full_reference_candidates,
@@ -25,6 +27,7 @@ from voxbench.verification import (
 )
 
 SyntheticVerificationState = Literal["complete", "partial", "failed"]
+SyntheticTreatmentState = Literal["complete", "partial", "failed"]
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,23 @@ class SyntheticVerificationRun:
         }
 
 
+@dataclass(frozen=True)
+class SyntheticTreatmentRun:
+    treatment: str
+    state: SyntheticTreatmentState
+    samples: tuple[SyntheticVerificationRun, ...]
+    aggregate: FullReferenceTreatmentReport
+
+    def safe_payload(self) -> dict[str, Any]:
+        return {
+            "aggregate": self.aggregate.safe_payload(),
+            "sample_count": len(self.samples),
+            "sample_states": [sample.state for sample in self.samples],
+            "state": self.state,
+            "treatment": self.treatment,
+        }
+
+
 def run_synthetic_verification(
     *,
     resolved_config: dict[str, Any],
@@ -133,6 +153,68 @@ def write_synthetic_verification_report(
     run: SyntheticVerificationRun,
     path: Path,
 ) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(run.safe_payload(), handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def run_synthetic_treatment(
+    *,
+    treatment: str,
+    sample_count: int,
+    minimum_samples: int,
+    resolved_config: dict[str, Any],
+    output_root: Path,
+    audio_spec: SyntheticAudioSpec,
+    scorer: FullReferenceScorer,
+    frequency_step_hz: float = 100.0,
+) -> SyntheticTreatmentRun:
+    """Run comparable content samples and aggregate their stage scores."""
+
+    if sample_count < 2:
+        raise ValueError("sample_count must be at least 2")
+    if frequency_step_hz < 0:
+        raise ValueError("frequency_step_hz must be non-negative")
+    samples = []
+    for index in range(sample_count):
+        sample_root = output_root / f"sample-{index + 1:03d}"
+        sample = run_synthetic_verification(
+            resolved_config=resolved_config,
+            output_root=sample_root,
+            audio_spec=replace(
+                audio_spec,
+                frequency_hz=audio_spec.frequency_hz + index * frequency_step_hz,
+            ),
+            scorer=scorer,
+        )
+        write_synthetic_verification_report(
+            sample,
+            sample_root / "verification-report.json",
+        )
+        samples.append(sample)
+    aggregate = aggregate_full_reference_reports(
+        treatment=treatment,
+        reports=tuple(sample.full_reference for sample in samples),
+        minimum_samples=minimum_samples,
+    )
+    if any(sample.state == "failed" for sample in samples):
+        state: SyntheticTreatmentState = "failed"
+    elif any(sample.state == "partial" for sample in samples) or any(
+        stage.state != "aggregated" for stage in aggregate.stages
+    ):
+        state = "partial"
+    else:
+        state = "complete"
+    return SyntheticTreatmentRun(
+        treatment=treatment,
+        state=state,
+        samples=tuple(samples),
+        aggregate=aggregate,
+    )
+
+
+def write_synthetic_treatment_report(run: SyntheticTreatmentRun, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(run.safe_payload(), handle, indent=2, sort_keys=True)

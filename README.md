@@ -361,6 +361,28 @@ deviation only after that minimum is met. Missing or non-scored samples make the
 stage `partial`; differing transformation chains make it `incomparable`; too few
 otherwise-valid samples remain `insufficient`.
 
+`synthetic-visqol-treatment` runs that policy end to end. It creates
+`sample-001`, `sample-002`, and so on, varies source frequency while retaining
+the same config and scorer treatment, persists each verification report, and
+writes a path-free `treatment-report.json`. The command exits `0` only when all
+stages are aggregated, `2` for an incomplete/insufficient treatment, and `1`
+for a failed sample.
+
+```bash
+voxbench synthetic-visqol-treatment \
+  --config examples/configs/valid-baseline.json \
+  --manifest examples/manifests/engine/asterisk.json \
+  --manifest examples/manifests/provider/gemini.json \
+  --manifest examples/manifests/processor/resampler.json \
+  --manifest examples/manifests/processor/agc.json \
+  --manifest examples/manifests/processor/limiter.json \
+  --manifest examples/manifests/processor/serializer.json \
+  --output-root artifacts/baseline-treatment \
+  --binary /path/to/visqol \
+  --treatment baseline-speech \
+  --sample-count 3
+```
+
 ```bash
 ruff check .
 pytest

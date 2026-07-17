@@ -1,5 +1,17 @@
 # 進捗
 
+## Phase 2 Synthetic ViSQOL treatment CLI (2026-07-17)
+
+- `run_synthetic_treatment(...)` と `voxbench synthetic-visqol-treatment` を追加した。
+- 同一config/scorer treatmentのままsource frequencyをsampleごとに変え、異なるcontentの
+  `sample-NNN` artifactと個別 `verification-report.json` を生成する。
+- 全sampleのstage scoreを既存aggregation contractでまとめ、path-free
+  `treatment-report.json` にsample stateとstage統計を保存する。
+- 全stage aggregatedのみcomplete/exit 0。minimum不足・sample partial・aggregate不完全は
+  partial/exit 2、sample failureはfailed/exit 1とする。
+- 3 sample × 4 stageのfake executable統合test、個別/aggregate report永続化、mean、
+  minimum不足時の統計抑止を固定した。全体進捗目安は約79%、Phase 2は約91%。
+
 ## Phase 2 Full-reference treatment aggregation (2026-07-17)
 
 - `aggregate_full_reference_reports(...)` を追加し、同一treatment/scorer contractの

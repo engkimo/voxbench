@@ -26,7 +26,9 @@ from voxbench.realtime_providers import (
 from voxbench.registry.service import RegistryService
 from voxbench.synthetic_caller import (
     SyntheticAudioSpec,
+    run_synthetic_treatment,
     run_synthetic_verification,
+    write_synthetic_treatment_report,
     write_synthetic_verification_report,
 )
 from voxbench.telephony import (
@@ -418,6 +420,79 @@ def synthetic_visqol(
     )
     report_path = output_root / "verification-report.json"
     write_synthetic_verification_report(run, report_path)
+    typer.echo(json.dumps(run.safe_payload(), sort_keys=True))
+    if run.state == "partial":
+        raise typer.Exit(code=2)
+    if run.state == "failed":
+        raise typer.Exit(code=1)
+
+
+@app.command("synthetic-visqol-treatment")
+def synthetic_visqol_treatment(
+    config: Annotated[
+        list[Path],
+        typer.Option("--config", "-c", exists=True, file_okay=True, dir_okay=False),
+    ],
+    manifest: Annotated[
+        list[Path],
+        typer.Option("--manifest", "-m", exists=True, file_okay=True, dir_okay=False),
+    ],
+    output_root: Annotated[Path, typer.Option("--output-root")],
+    binary: Annotated[Path, typer.Option("--binary")],
+    treatment: Annotated[str, typer.Option("--treatment")],
+    name: Annotated[str | None, typer.Option("--name")] = None,
+    mode: Annotated[VisqolMode, typer.Option("--mode")] = "speech",
+    sample_count: Annotated[int, typer.Option("--sample-count", min=2, max=50)] = 3,
+    minimum_samples: Annotated[
+        int,
+        typer.Option("--minimum-samples", min=2, max=50),
+    ] = 3,
+    duration_seconds: Annotated[
+        float,
+        typer.Option("--duration-seconds", min=0.01, max=60.0),
+    ] = 5.0,
+    frequency_hz: Annotated[
+        float,
+        typer.Option("--frequency-hz", min=0.01),
+    ] = 800.0,
+    frequency_step_hz: Annotated[
+        float,
+        typer.Option("--frequency-step-hz", min=0.0),
+    ] = 100.0,
+    timeout_seconds: Annotated[
+        float,
+        typer.Option("--timeout-seconds", min=0.1, max=600.0),
+    ] = 120.0,
+) -> None:
+    """Run and aggregate several comparable synthetic ViSQOL samples."""
+
+    service = RegistryService.from_files(config_paths=config, manifest_paths=manifest)
+    target = name or _single_config_name(config)
+    resolved = service.resolve_config(target)
+    try:
+        run = run_synthetic_treatment(
+            treatment=treatment,
+            sample_count=sample_count,
+            minimum_samples=minimum_samples,
+            resolved_config=resolved.resolved,
+            output_root=output_root,
+            audio_spec=SyntheticAudioSpec(
+                sample_rate_hz=24_000,
+                channels=1,
+                duration_seconds=duration_seconds,
+                amplitude=10_000,
+                frequency_hz=frequency_hz,
+            ),
+            scorer=VisqolCliScorer(
+                binary=binary,
+                mode=mode,
+                timeout_seconds=timeout_seconds,
+            ),
+            frequency_step_hz=frequency_step_hz,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    write_synthetic_treatment_report(run, output_root / "treatment-report.json")
     typer.echo(json.dumps(run.safe_payload(), sort_keys=True))
     if run.state == "partial":
         raise typer.Exit(code=2)
