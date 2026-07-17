@@ -368,6 +368,19 @@ tolerance and metric direction. A stage becomes `improved`, `stable`, or
 contract and transformation chain. Missing, partial, insufficient, or
 incomparable data remains `indeterminate` with a safe reason alias.
 
+Persisted reports can be compared without regenerating audio. The loader accepts
+both a standalone aggregate payload and `synthetic-visqol-treatment`'s wrapper,
+with a 1 MB bound and strict validation of aliases, score range, finite
+statistics, counts, and transformations. The CLI exits `1` if any stage
+regressed, `2` if any stage is indeterminate, and `0` otherwise.
+
+```bash
+voxbench visqol-compare-treatments \
+  --baseline artifacts/baseline/treatment-report.json \
+  --current artifacts/candidate/treatment-report.json \
+  --stable-tolerance 0.1
+```
+
 `synthetic-visqol-treatment` runs that policy end to end. It creates
 `sample-001`, `sample-002`, and so on, varies source frequency while retaining
 the same config and scorer treatment, persists each verification report, and

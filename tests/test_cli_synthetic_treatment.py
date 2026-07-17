@@ -7,6 +7,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from voxbench.cli.main import app
+from voxbench.verification import load_full_reference_treatment_report
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFESTS = (
@@ -71,6 +72,9 @@ def test_synthetic_treatment_cli_persists_samples_and_aggregates(tmp_path: Path)
     assert all(stage["mean"] == 4.2 for stage in payload["aggregate"]["stages"])
     root = tmp_path / "treatment"
     assert json.loads((root / "treatment-report.json").read_text()) == payload
+    loaded = load_full_reference_treatment_report(root / "treatment-report.json")
+    assert loaded.treatment == "baseline-speech"
+    assert all(stage.state == "aggregated" for stage in loaded.stages)
     for index in range(1, 4):
         assert (root / f"sample-{index:03d}/verification-report.json").exists()
     assert str(tmp_path) not in result.stdout

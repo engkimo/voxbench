@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from voxbench.verification import (
@@ -7,6 +10,8 @@ from voxbench.verification import (
     FullReferenceScoreResult,
     FullReferenceScoringReport,
     aggregate_full_reference_reports,
+    load_full_reference_treatment_report,
+    write_full_reference_treatment_report,
 )
 
 CONTRACT = FullReferenceScorerContract(
@@ -156,3 +161,30 @@ def test_treatment_requires_a_safe_alias(treatment: str) -> None:
             treatment=treatment,
             reports=(_report(_result()),),
         )
+
+
+def test_treatment_report_round_trips_through_strict_loader(tmp_path: Path) -> None:
+    treatment = aggregate_full_reference_reports(
+        treatment="baseline-speech",
+        reports=tuple(_report(_result(score=score)) for score in (4.0, 4.1, 4.2)),
+    )
+    path = tmp_path / "treatment.json"
+
+    write_full_reference_treatment_report(treatment, path)
+    loaded = load_full_reference_treatment_report(path)
+
+    assert loaded == treatment
+
+
+def test_treatment_report_loader_rejects_inconsistent_counts(tmp_path: Path) -> None:
+    treatment = aggregate_full_reference_reports(
+        treatment="baseline-speech",
+        reports=tuple(_report(_result()) for _ in range(3)),
+    )
+    payload = treatment.safe_payload()
+    payload["stages"][0]["missing_count"] = 99
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="counts are inconsistent"):
+        load_full_reference_treatment_report(path)

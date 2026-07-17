@@ -1,5 +1,16 @@
 # 進捗
 
+## Phase 2 Persisted treatment comparison CLI (2026-07-17)
+
+- treatment reportにscorer score rangeを追加し、bounded strict loaderとwriterを追加した。
+- loaderはstandalone aggregateとsynthetic treatment wrapperの両方を読み、1 MB上限、
+  alias、state、finite stats、count合計、transformations、contractを検証する。
+- `voxbench visqol-compare-treatments` を追加し、persist済みbaseline/currentを明示toleranceと
+  metric方向で比較する。regressionあり=1、indeterminateあり=2、それ以外=0。
+- CLI JSONはreport pathを含まず、invalid/unsafe reportのraw内容も表示しない。
+- round-trip、count不整合、wrapper読込、regression/indeterminate exitをtest固定した。
+  全体進捗目安は約81%、Phase 2は約96%。
+
 ## Phase 2 Treatment regression policy (2026-07-17)
 
 - aggregate済みbaseline/currentを比較する `compare_full_reference_treatments(...)` と

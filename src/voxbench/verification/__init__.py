@@ -5,6 +5,8 @@ from voxbench.verification.aggregation import (
     FullReferenceStageAggregate,
     FullReferenceTreatmentReport,
     aggregate_full_reference_reports,
+    load_full_reference_treatment_report,
+    write_full_reference_treatment_report,
 )
 from voxbench.verification.core import VerificationResult, verify_recordings
 from voxbench.verification.full_reference import (
@@ -64,7 +66,9 @@ __all__ = [
     "build_visqol_candidate",
     "compare_full_reference_treatments",
     "full_reference_scores_to_metrics",
+    "load_full_reference_treatment_report",
     "score_full_reference_selection",
     "select_full_reference_candidates",
     "verify_recordings",
+    "write_full_reference_treatment_report",
 ]

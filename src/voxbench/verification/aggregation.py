@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import math
 import re
 import statistics
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from voxbench.verification.scoring import (
@@ -20,6 +23,8 @@ FullReferenceAggregateState = Literal[
 ]
 
 _SAFE_TREATMENT = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_SAFE_TRANSFORMATION = re.compile(r"^[a-z0-9][a-z0-9_.:>-]{0,127}$")
+_MAX_REPORT_BYTES = 1_000_000
 
 
 @dataclass(frozen=True)
@@ -54,6 +59,10 @@ class FullReferenceTreatmentReport:
         return {
             "metric_name": self.contract.metric_name,
             "minimum_samples": self.minimum_samples,
+            "score_range": {
+                "maximum": self.contract.maximum_score,
+                "minimum": self.contract.minimum_score,
+            },
             "scorer": self.contract.scorer,
             "stages": [
                 {
@@ -76,6 +85,61 @@ class FullReferenceTreatmentReport:
             ],
             "treatment": self.treatment,
         }
+
+
+def write_full_reference_treatment_report(
+    report: FullReferenceTreatmentReport,
+    path: Path,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(report.safe_payload(), handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def load_full_reference_treatment_report(path: Path) -> FullReferenceTreatmentReport:
+    """Load a bounded path-free treatment report with strict field validation."""
+
+    if path.stat().st_size > _MAX_REPORT_BYTES:
+        raise ValueError("treatment report exceeds size limit")
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError("treatment report root must be an object")
+    if "aggregate" in payload:
+        payload = payload["aggregate"]
+        if not isinstance(payload, dict):
+            raise ValueError("treatment report aggregate must be an object")
+    treatment = payload.get("treatment")
+    if not isinstance(treatment, str) or not _SAFE_TREATMENT.fullmatch(treatment):
+        raise ValueError("treatment report has an invalid treatment alias")
+    minimum_samples = payload.get("minimum_samples")
+    if not _non_negative_int(minimum_samples) or minimum_samples < 2:
+        raise ValueError("treatment report has invalid minimum_samples")
+    score_range = payload.get("score_range")
+    if not isinstance(score_range, dict):
+        raise ValueError("treatment report has invalid score_range")
+    contract = FullReferenceScorerContract(
+        scorer=payload.get("scorer"),
+        metric_name=payload.get("metric_name"),
+        minimum_score=_finite_number(score_range.get("minimum"), "score minimum"),
+        maximum_score=_finite_number(score_range.get("maximum"), "score maximum"),
+    )
+    raw_stages = payload.get("stages")
+    if not isinstance(raw_stages, list):
+        raise ValueError("treatment report stages must be an array")
+    stages = tuple(
+        _load_stage(treatment=treatment, contract=contract, payload=stage)
+        for stage in raw_stages
+    )
+    if len({stage.stage for stage in stages}) != len(stages):
+        raise ValueError("treatment report contains duplicate stages")
+    return FullReferenceTreatmentReport(
+        treatment=treatment,
+        minimum_samples=minimum_samples,
+        contract=contract,
+        stages=stages,
+    )
 
 
 def aggregate_full_reference_reports(
@@ -179,3 +243,90 @@ def _aggregate_stage(
         population_stddev=statistics.pstdev(numeric_scores) if enough_scores else None,
         transformations=(next(iter(transformation_sets)) if len(transformation_sets) == 1 else ()),
     )
+
+
+def _load_stage(
+    *,
+    treatment: str,
+    contract: FullReferenceScorerContract,
+    payload: Any,
+) -> FullReferenceStageAggregate:
+    if not isinstance(payload, dict):
+        raise ValueError("treatment stage must be an object")
+    stage = payload.get("stage")
+    if not isinstance(stage, str) or not _SAFE_TREATMENT.fullmatch(stage):
+        raise ValueError("treatment report has an invalid stage alias")
+    state = payload.get("state")
+    if state not in {"aggregated", "insufficient", "partial", "incomparable"}:
+        raise ValueError("treatment report has an invalid aggregate state")
+    count_names = (
+        "samples_total",
+        "scored_count",
+        "unavailable_count",
+        "blocked_count",
+        "failed_count",
+        "missing_count",
+    )
+    counts = {name: payload.get(name) for name in count_names}
+    if not all(_non_negative_int(value) for value in counts.values()):
+        raise ValueError("treatment report has an invalid sample count")
+    if (
+        counts["scored_count"]
+        + counts["unavailable_count"]
+        + counts["blocked_count"]
+        + counts["failed_count"]
+        + counts["missing_count"]
+        != counts["samples_total"]
+    ):
+        raise ValueError("treatment report sample counts are inconsistent")
+    transformations = payload.get("transformations")
+    if not isinstance(transformations, list) or not all(
+        isinstance(value, str) and _SAFE_TRANSFORMATION.fullmatch(value)
+        for value in transformations
+    ):
+        raise ValueError("treatment report has invalid transformations")
+    stats = {
+        name: _optional_finite_number(payload.get(name), name)
+        for name in ("mean", "median", "minimum", "maximum", "population_stddev")
+    }
+    if state == "aggregated" and any(value is None for value in stats.values()):
+        raise ValueError("aggregated stage must contain complete statistics")
+    if payload.get("scorer", contract.scorer) != contract.scorer or payload.get(
+        "metric_name", contract.metric_name
+    ) != contract.metric_name:
+        raise ValueError("stage scorer metadata does not match report contract")
+    return FullReferenceStageAggregate(
+        treatment=treatment,
+        stage=stage,
+        scorer=contract.scorer,
+        metric_name=contract.metric_name,
+        state=state,
+        samples_total=counts["samples_total"],
+        scored_count=counts["scored_count"],
+        unavailable_count=counts["unavailable_count"],
+        blocked_count=counts["blocked_count"],
+        failed_count=counts["failed_count"],
+        missing_count=counts["missing_count"],
+        mean=stats["mean"],
+        median=stats["median"],
+        minimum=stats["minimum"],
+        maximum=stats["maximum"],
+        population_stddev=stats["population_stddev"],
+        transformations=tuple(transformations),
+    )
+
+
+def _non_negative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _finite_number(value: object, field: str) -> float:
+    if not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(value):
+        raise ValueError(f"treatment report has invalid {field}")
+    return float(value)
+
+
+def _optional_finite_number(value: object, field: str) -> float | None:
+    if value is None:
+        return None
+    return _finite_number(value, field)

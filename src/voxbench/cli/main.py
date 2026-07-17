@@ -40,10 +40,13 @@ from voxbench.telephony import (
     RealtimeCallSession,
 )
 from voxbench.verification import (
+    FullReferenceRegressionPolicy,
     FullReferenceSelection,
     VisqolCliScorer,
     VisqolMode,
     build_visqol_candidate,
+    compare_full_reference_treatments,
+    load_full_reference_treatment_report,
     score_full_reference_selection,
 )
 
@@ -498,6 +501,44 @@ def synthetic_visqol_treatment(
         raise typer.Exit(code=2)
     if run.state == "failed":
         raise typer.Exit(code=1)
+
+
+@app.command("visqol-compare-treatments")
+def visqol_compare_treatments(
+    baseline: Annotated[
+        Path,
+        typer.Option("--baseline", exists=True, file_okay=True, dir_okay=False),
+    ],
+    current: Annotated[
+        Path,
+        typer.Option("--current", exists=True, file_okay=True, dir_okay=False),
+    ],
+    stable_tolerance: Annotated[
+        float,
+        typer.Option("--stable-tolerance", min=0.0),
+    ],
+    lower_is_better: Annotated[bool, typer.Option("--lower-is-better")] = False,
+) -> None:
+    """Compare two persisted aggregate treatment reports."""
+
+    try:
+        baseline_report = load_full_reference_treatment_report(baseline)
+        current_report = load_full_reference_treatment_report(current)
+        report = compare_full_reference_treatments(
+            baseline=baseline_report,
+            current=current_report,
+            policy=FullReferenceRegressionPolicy(
+                stable_tolerance=stable_tolerance,
+                higher_is_better=not lower_is_better,
+            ),
+        )
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter("treatment report is invalid or unsafe") from exc
+    typer.echo(json.dumps(report.safe_payload(), sort_keys=True))
+    if any(stage.state == "regressed" for stage in report.stages):
+        raise typer.Exit(code=1)
+    if any(stage.state == "indeterminate" for stage in report.stages):
+        raise typer.Exit(code=2)
 
 
 def _single_config_name(config_paths: list[Path]) -> str:
