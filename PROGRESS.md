@@ -1,5 +1,21 @@
 # 進捗
 
+## Phase 2 Synthetic full-reference orchestration (2026-07-17)
+
+- `run_synthetic_verification(...)` でconfigに対するartifact生成、signal invariant検証、
+  full-reference candidate選択、全stage scoring、score metric結合を1つにつないだ。
+- run stateは `complete/partial/failed`。invariant failureまたはscorer failureはfailed、
+  binary unavailable/input blockはpartialとし、未評価をpass扱いしない。
+- safe reportはinvariant observation、score、safe reason、reference生成からscorer入力までの
+  transformation chainを保持し、artifact URI、absolute path、config secret reference、
+  process outputは含めない。
+- `voxbench synthetic-visqol` を追加し、既定5秒のstage artifactと
+  `verification-report.json` を生成する。complete=0、failed=1、partial=2。
+- fake executableを実processとして4 stageで起動するCLI統合testを追加し、score、metric、
+  μ-law/reference/ViSQOL resample履歴、missing binary時のpartial report永続化を固定した。
+- 全体acceptance進捗の目安は約77%、Phase 2は約86%。次は複数sample/treatmentのscore集約と
+  実official binaryによる校正。
+
 ## Phase 2 ViSQOL score CLI (2026-07-17)
 
 - matching local mono PCM16 WAV pairをoptional official ViSQOL binaryで評価する

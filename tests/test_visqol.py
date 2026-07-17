@@ -108,6 +108,7 @@ def test_visqol_speech_adapter_resamples_both_inputs_and_cleans_temporary_wavs(
     assert result.state == "scored"
     assert result.score == 4.25
     assert result.transformations == (
+        "codec-round-trip:mulaw",
         "visqol-mode:speech",
         "resample:8000->16000",
     )
@@ -145,7 +146,10 @@ def test_visqol_audio_adapter_uses_48khz_without_speech_flag(tmp_path: Path) -> 
         ),
     )
 
-    assert report.results[0].transformations == ("visqol-mode:audio",)
+    assert report.results[0].transformations == (
+        "codec-round-trip:mulaw",
+        "visqol-mode:audio",
+    )
     assert "--use_speech_mode" not in observed_command
 
 

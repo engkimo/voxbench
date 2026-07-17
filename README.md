@@ -331,6 +331,28 @@ voxbench visqol-score \
   --stage serializer
 ```
 
+For an end-to-end deterministic run, `synthetic-visqol` resolves a config,
+generates stage-native references and recordings, evaluates signal invariants,
+scores every eligible stage, and writes `verification-report.json` under the
+output root. The persisted report contains stage names, observations, scores,
+safe reasons, and the complete reference/scorer transformation chain, but no
+artifact URI, config secret reference, binary output, or absolute path. The
+default duration is five seconds, within ViSQOL's documented practical guidance.
+
+```bash
+voxbench synthetic-visqol \
+  --config examples/configs/valid-baseline.json \
+  --manifest examples/manifests/engine/asterisk.json \
+  --manifest examples/manifests/provider/gemini.json \
+  --manifest examples/manifests/processor/resampler.json \
+  --manifest examples/manifests/processor/agc.json \
+  --manifest examples/manifests/processor/limiter.json \
+  --manifest examples/manifests/processor/serializer.json \
+  --output-root artifacts/synthetic-visqol \
+  --binary /path/to/visqol \
+  --mode speech
+```
+
 ```bash
 ruff check .
 pytest

@@ -108,6 +108,7 @@ def score_full_reference_selection(
                 contract,
                 state="unavailable",
                 reason_alias=reason_alias,
+                transformations=_safe_transformations(candidate.transformations),
             )
             for candidate in selection.candidates
         )
@@ -151,25 +152,24 @@ def _score_candidate(
     scorer: FullReferenceScorer,
 ) -> FullReferenceScoreResult:
     contract = scorer.contract
+    transformations = _safe_transformations(candidate.transformations)
     try:
         raw_measurement = scorer.score(candidate)
         if isinstance(raw_measurement, FullReferenceMeasurement):
             score = float(raw_measurement.score)
-            transformations = tuple(
-                transformation
-                if _SAFE_TRANSFORMATION.fullmatch(transformation)
-                else "scorer-input-transform"
-                for transformation in raw_measurement.transformations
+            transformations += _safe_transformations(
+                raw_measurement.transformations,
+                fallback="scorer-input-transform",
             )
         else:
             score = float(raw_measurement)
-            transformations = ()
     except Exception:  # Raw binary/library/path errors are intentionally discarded.
         return _result(
             candidate.stage,
             contract,
             state="failed",
             reason_alias="scorer-error",
+            transformations=transformations,
         )
     if not math.isfinite(score):
         return _result(
@@ -220,3 +220,16 @@ def _safe_reason(reason: str | None, *, fallback: str) -> str:
     if reason is not None and _SAFE_REASON.fullmatch(reason):
         return reason
     return fallback
+
+
+def _safe_transformations(
+    transformations: tuple[str, ...],
+    *,
+    fallback: str = "reference-transform",
+) -> tuple[str, ...]:
+    return tuple(
+        transformation
+        if isinstance(transformation, str) and _SAFE_TRANSFORMATION.fullmatch(transformation)
+        else fallback
+        for transformation in transformations
+    )

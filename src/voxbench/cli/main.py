@@ -24,6 +24,11 @@ from voxbench.realtime_providers import (
     connect_with_retry,
 )
 from voxbench.registry.service import RegistryService
+from voxbench.synthetic_caller import (
+    SyntheticAudioSpec,
+    run_synthetic_verification,
+    write_synthetic_verification_report,
+)
 from voxbench.telephony import (
     AmiError,
     AmiRtcpCollector,
@@ -351,6 +356,72 @@ def visqol_score(
     if result.state == "unavailable":
         raise typer.Exit(code=2)
     if result.state != "scored":
+        raise typer.Exit(code=1)
+
+
+@app.command("synthetic-visqol")
+def synthetic_visqol(
+    config: Annotated[
+        list[Path],
+        typer.Option("--config", "-c", exists=True, file_okay=True, dir_okay=False),
+    ],
+    manifest: Annotated[
+        list[Path],
+        typer.Option("--manifest", "-m", exists=True, file_okay=True, dir_okay=False),
+    ],
+    output_root: Annotated[Path, typer.Option("--output-root")],
+    binary: Annotated[Path, typer.Option("--binary")],
+    name: Annotated[str | None, typer.Option("--name")] = None,
+    mode: Annotated[VisqolMode, typer.Option("--mode")] = "speech",
+    sample_rate_hz: Annotated[
+        int,
+        typer.Option("--sample-rate-hz", min=1),
+    ] = 24_000,
+    channels: Annotated[int, typer.Option("--channels", min=1)] = 1,
+    duration_seconds: Annotated[
+        float,
+        typer.Option("--duration-seconds", min=0.01, max=60.0),
+    ] = 5.0,
+    amplitude: Annotated[
+        int,
+        typer.Option("--amplitude", min=1, max=32_767),
+    ] = 10_000,
+    frequency_hz: Annotated[
+        float,
+        typer.Option("--frequency-hz", min=0.01),
+    ] = 1_000.0,
+    timeout_seconds: Annotated[
+        float,
+        typer.Option("--timeout-seconds", min=0.1, max=600.0),
+    ] = 120.0,
+) -> None:
+    """Generate and score every eligible synthetic stage with ViSQOL."""
+
+    service = RegistryService.from_files(config_paths=config, manifest_paths=manifest)
+    target = name or _single_config_name(config)
+    resolved = service.resolve_config(target)
+    run = run_synthetic_verification(
+        resolved_config=resolved.resolved,
+        output_root=output_root,
+        audio_spec=SyntheticAudioSpec(
+            sample_rate_hz=sample_rate_hz,
+            channels=channels,
+            duration_seconds=duration_seconds,
+            amplitude=amplitude,
+            frequency_hz=frequency_hz,
+        ),
+        scorer=VisqolCliScorer(
+            binary=binary,
+            mode=mode,
+            timeout_seconds=timeout_seconds,
+        ),
+    )
+    report_path = output_root / "verification-report.json"
+    write_synthetic_verification_report(run, report_path)
+    typer.echo(json.dumps(run.safe_payload(), sort_keys=True))
+    if run.state == "partial":
+        raise typer.Exit(code=2)
+    if run.state == "failed":
         raise typer.Exit(code=1)
 
 
