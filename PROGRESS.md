@@ -1,5 +1,19 @@
 # 進捗
 
+## Phase 1/5 MinIO recording sink boundary (2026-07-18)
+
+- 既存 `RecordingSink` protocolへ適合する `MinioRecordingSink` と
+  official minio-py `fput_object`互換client protocolを追加した。
+- stage WAVをbounded temporary directoryへ生成し、`audio/wav`としてobject storeへupload、
+  完了/例外後にlocal temporary artifactを削除する。
+- artifact URIは `s3://bucket/prefix/run/stage.wav` のみ。endpoint、access key、secret、
+  upload responseは保存しない。
+- DNS-style bucket、IP形式拒否、safe prefix/run/stage segmentを検証し、`../`、slash、URL等の
+  object-key injectionを拒否する。bucket作成はruntime sinkが暗黙実行せずprovisioning責務。
+- optional `.[storage]` に公式MinIO Python SDK 7.2系を追加した。
+- fake clientでWAV header/frame、upload args、temp cleanup、credential非混入、unsafe keyをtest。
+  全体進捗目安は約83%。Control Plane選択/remote取得と実MinIO統合は次slice。
+
 ## Phase 2 ViSQOL repeatability calibration report (2026-07-18)
 
 - 複数のbaseline treatment aggregateからrepeatabilityを記述する

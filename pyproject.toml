@@ -25,6 +25,9 @@ live = [
   "google-genai>=1.0.0",
   "websockets>=14.2",
 ]
+storage = [
+  "minio>=7.2.20,<8",
+]
 dev = [
   "httpx>=0.28.0",
   "pytest>=9.0.0",

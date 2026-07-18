@@ -117,6 +117,15 @@ PY
 The response includes `run_id`, `conversation_id`, recording artifact URIs, and spans.
 Local development stores WAV tap artifacts under `artifacts/recordings/`.
 
+The engine harness also exposes `MinioRecordingSink` for an injected official
+MinIO Python client. Install `.[storage]`, provision the bucket separately, and
+pass `minio.Minio(...)` as the client. Stage WAVs are uploaded with
+`content_type="audio/wav"`; returned artifacts use only
+`s3://<bucket>/<prefix>/<run>/<stage>.wav`. Endpoint and credentials never enter
+the artifact URI. Bucket, prefix, run, and stage values are validated as safe
+object-key components. Control-plane sink selection and authenticated remote
+audio retrieval remain follow-up integration work; the default API stays local.
+
 ## Run the Web UI
 
 ```bash
