@@ -8,6 +8,12 @@ from voxbench.verification.aggregation import (
     load_full_reference_treatment_report,
     write_full_reference_treatment_report,
 )
+from voxbench.verification.calibration import (
+    FullReferenceRepeatabilityReport,
+    FullReferenceRepeatabilityState,
+    FullReferenceStageRepeatability,
+    analyze_full_reference_repeatability,
+)
 from voxbench.verification.core import VerificationResult, verify_recordings
 from voxbench.verification.full_reference import (
     FullReferenceBlock,
@@ -49,6 +55,8 @@ __all__ = [
     "FullReferenceRegressionPolicy",
     "FullReferenceRegressionReport",
     "FullReferenceRegressionState",
+    "FullReferenceRepeatabilityReport",
+    "FullReferenceRepeatabilityState",
     "FullReferenceScoreResult",
     "FullReferenceScoreState",
     "FullReferenceScorer",
@@ -58,11 +66,13 @@ __all__ = [
     "FullReferenceSelection",
     "FullReferenceStageAggregate",
     "FullReferenceStageRegression",
+    "FullReferenceStageRepeatability",
     "FullReferenceTreatmentReport",
     "VerificationResult",
     "VisqolCliScorer",
     "VisqolMode",
     "aggregate_full_reference_reports",
+    "analyze_full_reference_repeatability",
     "build_visqol_candidate",
     "compare_full_reference_treatments",
     "full_reference_scores_to_metrics",

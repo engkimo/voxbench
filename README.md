@@ -381,6 +381,19 @@ voxbench visqol-compare-treatments \
   --stable-tolerance 0.1
 ```
 
+Before choosing that tolerance, repeated baseline reports can be summarized with
+`visqol-calibrate-repeatability`. At least three reports are required. The output
+contains mean-of-means, minimum/maximum treatment mean, observed maximum pairwise
+delta, and population standard deviation. It deliberately does not emit a
+recommended tolerance or statistical-significance claim.
+
+```bash
+voxbench visqol-calibrate-repeatability \
+  --report artifacts/baseline-1/treatment-report.json \
+  --report artifacts/baseline-2/treatment-report.json \
+  --report artifacts/baseline-3/treatment-report.json
+```
+
 `synthetic-visqol-treatment` runs that policy end to end. It creates
 `sample-001`, `sample-002`, and so on, varies source frequency while retaining
 the same config and scorer treatment, persists each verification report, and

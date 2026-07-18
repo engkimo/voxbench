@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 2 ViSQOL repeatability calibration report (2026-07-18)
+
+- 複数のbaseline treatment aggregateからrepeatabilityを記述する
+  `analyze_full_reference_repeatability(...)` を追加した。
+- 3 repeat以上かつ同一contract/stage/transformation、全入力aggregatedの場合だけ、
+  mean-of-means、min/max mean、observed max pairwise delta、population stddevを返す。
+- repeat不足、stage欠落、未集約、contract/transform mismatchは統計を抑止し
+  safe reason付き `indeterminate` とする。
+- `voxbench visqol-calibrate-repeatability` を追加。report pathを出力せず、観測値のみを返す。
+  自動toleranceや統計的有意差は生成しない。
+- 完全/不足/欠落/未集約/変換・contract不一致とCLI exitをtest固定した。
+  全体進捗目安は約82%、Phase 2は約98%。
+
 ## Phase 2 Persisted treatment comparison CLI (2026-07-17)
 
 - treatment reportにscorer score rangeを追加し、bounded strict loaderとwriterを追加した。

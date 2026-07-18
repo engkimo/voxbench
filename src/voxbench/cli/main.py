@@ -44,6 +44,7 @@ from voxbench.verification import (
     FullReferenceSelection,
     VisqolCliScorer,
     VisqolMode,
+    analyze_full_reference_repeatability,
     build_visqol_candidate,
     compare_full_reference_treatments,
     load_full_reference_treatment_report,
@@ -538,6 +539,31 @@ def visqol_compare_treatments(
     if any(stage.state == "regressed" for stage in report.stages):
         raise typer.Exit(code=1)
     if any(stage.state == "indeterminate" for stage in report.stages):
+        raise typer.Exit(code=2)
+
+
+@app.command("visqol-calibrate-repeatability")
+def visqol_calibrate_repeatability(
+    report: Annotated[
+        list[Path],
+        typer.Option("--report", exists=True, file_okay=True, dir_okay=False),
+    ],
+    minimum_repeats: Annotated[
+        int,
+        typer.Option("--minimum-repeats", min=3, max=50),
+    ] = 3,
+) -> None:
+    """Describe repeated baseline variation without selecting a tolerance."""
+
+    try:
+        calibration = analyze_full_reference_repeatability(
+            reports=tuple(load_full_reference_treatment_report(path) for path in report),
+            minimum_repeats=minimum_repeats,
+        )
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter("treatment report is invalid or unsafe") from exc
+    typer.echo(json.dumps(calibration.safe_payload(), sort_keys=True))
+    if any(stage.state == "indeterminate" for stage in calibration.stages):
         raise typer.Exit(code=2)
 
 
