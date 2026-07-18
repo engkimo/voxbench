@@ -123,8 +123,11 @@ pass `minio.Minio(...)` as the client. Stage WAVs are uploaded with
 `content_type="audio/wav"`; returned artifacts use only
 `s3://<bucket>/<prefix>/<run>/<stage>.wav`. Endpoint and credentials never enter
 the artifact URI. Bucket, prefix, run, and stage values are validated as safe
-object-key components. Control-plane sink selection and authenticated remote
-audio retrieval remain follow-up integration work; the default API stays local.
+object-key components. `create_app(recording_sink=...)` injects this deployment
+choice without putting endpoint or credentials in run payloads. The default API
+stays local. Environment-driven startup construction and authenticated remote
+audio retrieval remain follow-up work; a remote recording currently returns 404
+from the local-only audio endpoint instead of exposing a storage URL.
 
 ## Run the Web UI
 

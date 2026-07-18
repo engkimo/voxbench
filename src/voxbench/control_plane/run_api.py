@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from voxbench.engine_harness.harness import EngineHarness
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact, SpanArtifact
-from voxbench.engine_harness.storage import LocalRecordingSink
+from voxbench.engine_harness.storage import LocalRecordingSink, RecordingSink
 from voxbench.live_demo.simulated_bridge import run_simulated_live_bridge
 from voxbench.realtime_providers import GeminiLiveProvider, OpenAIRealtimeProvider
 from voxbench.registry.errors import RegistryError
@@ -839,11 +839,13 @@ class RunAudioBuffer:
 @dataclass
 class RunApiState:
     artifact_root: Path = Path("artifacts/recordings")
+    recording_sink: RecordingSink | None = None
     repository: InMemoryRunRepository = field(default_factory=InMemoryRunRepository)
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def create_harness(self) -> EngineHarness:
-        return EngineHarness(recording_sink=LocalRecordingSink(self.artifact_root))
+        sink = self.recording_sink or LocalRecordingSink(self.artifact_root)
+        return EngineHarness(recording_sink=sink)
 
 
 def get_run_api_state(request: Request) -> RunApiState:

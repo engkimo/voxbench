@@ -1,5 +1,16 @@
 # 進捗
 
+## Phase 1/5 Control Plane recording sink injection (2026-07-18)
+
+- `RunApiState` と `create_app(...)` にoptional `RecordingSink` injectionを追加した。
+  未指定時は従来どおりlocal sinkを使うため既存API/test互換を維持する。
+- MinIO client/credentialはdeployment startup側だけに保持し、run request payload、stored run、
+  response/timelineへ渡さず、recordingにはcredential-free `s3://` URIだけを保存する。
+- injected MinIO sinkで `POST /runs` の4 stage uploadとresponse URIを統合testした。
+- local-only audio endpointはremote artifactにpresigned URLを返さず404を維持する。
+  authenticated object read/proxyが実装されるまで安全側へ倒す。
+- 全体進捗目安は約84%。次はenv-driven startup factoryとbucket readiness、またはremote proxy。
+
 ## Phase 1/5 MinIO recording sink boundary (2026-07-18)
 
 - 既存 `RecordingSink` protocolへ適合する `MinioRecordingSink` と
