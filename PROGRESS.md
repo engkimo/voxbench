@@ -1,5 +1,17 @@
 # 進捗
 
+## Phase 1/5 bounded MinIO bucket readiness probe (2026-07-18)
+
+- `VOXBENCH_MINIO_PROBE_BUCKET=true` の明示時だけ、process startupでbucket existenceを1回確認する
+  opt-in probeを追加した。既定falseではnetwork requestを行わず `configured` を維持する。
+- `VOXBENCH_MINIO_PROBE_TIMEOUT_MS` を10〜10,000msに制限し、daemon workerの待機をboundedにした。
+- bucket存在時は `ready`、bucket無しは `unavailable/bucket-not-found`、SDK例外は
+  `unavailable/bucket-probe-failed`、timeoutは `unavailable/bucket-probe-timeout` とする。
+- raw SDK message、endpoint、credentialをreadinessへ入れず、probe失敗ではstartupを落とさない。
+- bucket auto-create/retryは行わず、provisioning責務をruntimeから分離したままにする。
+- success/missing/error sanitization/timeout/invalid probe configをtest固定した。
+  全体進捗目安は約86%。次はauthenticated remote audio proxy、またはproduction persistence連携。
+
 ## Phase 1/5 environment-driven recording storage startup (2026-07-18)
 
 - `create_app_from_env(...)` とmodule-level ASGI appを追加し、録音sinkをprocess environmentの

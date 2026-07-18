@@ -135,6 +135,8 @@ export VOXBENCH_MINIO_SECRET_KEY='<secret-key>'
 export VOXBENCH_MINIO_BUCKET=voxbench-recordings
 export VOXBENCH_MINIO_PREFIX=recordings       # optional; default: recordings
 export VOXBENCH_MINIO_SECURE=true             # optional; true or false
+export VOXBENCH_MINIO_PROBE_BUCKET=false      # optional; default: false
+export VOXBENCH_MINIO_PROBE_TIMEOUT_MS=2000   # optional; 10..10000
 uvicorn voxbench.control_plane.app:app --reload
 ```
 
@@ -142,10 +144,18 @@ These values are read only from the process environment; run request models
 forbid unknown fields, so storage credentials cannot be supplied in a run
 payload. `GET /storage/readiness` returns only the mode, safe bucket/prefix
 aliases, TLS choice, and a fixed reason alias. MinIO state is `configured`, not
-`ready`, because this startup path intentionally performs no network or bucket
-probe. Invalid configuration fails startup with a fixed safe error alias rather
-than echoing a value. `create_app(recording_sink=...)` remains available for
-deployment/test injection and reports only an opaque `injected` mode.
+`ready` by default, because the default startup path intentionally performs no
+network or bucket probe. Invalid configuration fails startup with a fixed safe
+error alias rather than echoing a value. `create_app(recording_sink=...)` remains
+available for deployment/test injection and reports only an opaque `injected`
+mode.
+
+Set `VOXBENCH_MINIO_PROBE_BUCKET=true` to perform one bounded bucket-existence
+probe during startup. A successful probe reports `ready`; a missing bucket, SDK
+failure, or timeout reports `unavailable` with a fixed reason alias. The timeout
+limits startup waiting to 10–10,000 ms. The probe never creates a bucket, retries,
+or returns a raw SDK error. Keep the default `false` when startup must not make a
+network request.
 
 Authenticated remote audio retrieval remains follow-up work; a remote recording
 currently returns 404 from the local-only audio endpoint instead of exposing a

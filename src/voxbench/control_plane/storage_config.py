@@ -6,6 +6,8 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from queue import Empty, Queue
+from threading import Thread
 from typing import Literal, Protocol
 
 from voxbench.engine_harness.storage import (
@@ -15,7 +17,7 @@ from voxbench.engine_harness.storage import (
 )
 
 StorageMode = Literal["local", "minio", "injected"]
-StorageReadinessState = Literal["ready", "configured"]
+StorageReadinessState = Literal["ready", "configured", "unavailable"]
 
 RECORDING_SINK_ENV = "VOXBENCH_RECORDING_SINK"
 MINIO_ENDPOINT_ENV = "VOXBENCH_MINIO_ENDPOINT"
@@ -24,6 +26,12 @@ MINIO_SECRET_KEY_ENV = "VOXBENCH_MINIO_SECRET_KEY"
 MINIO_BUCKET_ENV = "VOXBENCH_MINIO_BUCKET"
 MINIO_PREFIX_ENV = "VOXBENCH_MINIO_PREFIX"
 MINIO_SECURE_ENV = "VOXBENCH_MINIO_SECURE"
+MINIO_PROBE_BUCKET_ENV = "VOXBENCH_MINIO_PROBE_BUCKET"
+MINIO_PROBE_TIMEOUT_MS_ENV = "VOXBENCH_MINIO_PROBE_TIMEOUT_MS"
+
+_DEFAULT_PROBE_TIMEOUT_MS = 2_000
+_MIN_PROBE_TIMEOUT_MS = 10
+_MAX_PROBE_TIMEOUT_MS = 10_000
 
 _REQUIRED_MINIO_ENV_NAMES = (
     MINIO_ENDPOINT_ENV,
@@ -63,6 +71,10 @@ class StorageConfigurationError(RuntimeError):
         super().__init__(message)
 
 
+class ConfiguredMinioClient(MinioClientLike, Protocol):
+    def bucket_exists(self, bucket_name: str) -> bool: ...
+
+
 class MinioClientFactory(Protocol):
     def __call__(
         self,
@@ -71,7 +83,7 @@ class MinioClientFactory(Protocol):
         access_key: str,
         secret_key: str,
         secure: bool,
-    ) -> MinioClientLike: ...
+    ) -> ConfiguredMinioClient: ...
 
 
 def local_storage_readiness() -> StorageReadiness:
@@ -114,7 +126,17 @@ def build_recording_sink_from_env(
     secret_key = values[MINIO_SECRET_KEY_ENV]
     bucket = values[MINIO_BUCKET_ENV].strip()
     prefix = values.get(MINIO_PREFIX_ENV, "recordings").strip()
-    secure = _parse_secure(values.get(MINIO_SECURE_ENV, "true"))
+    secure = _parse_boolean(
+        values.get(MINIO_SECURE_ENV, "true"),
+        reason_alias="minio-secure-invalid",
+    )
+    probe_bucket = _parse_boolean(
+        values.get(MINIO_PROBE_BUCKET_ENV, "false"),
+        reason_alias="minio-probe-flag-invalid",
+    )
+    probe_timeout_ms = _parse_probe_timeout_ms(
+        values.get(MINIO_PROBE_TIMEOUT_MS_ENV, str(_DEFAULT_PROBE_TIMEOUT_MS))
+    )
     _validate_endpoint(endpoint)
 
     factory = client_factory or _create_minio_client
@@ -135,24 +157,72 @@ def build_recording_sink_from_env(
     except ValueError:
         raise StorageConfigurationError("minio-object-config-invalid") from None
 
+    if probe_bucket:
+        state, reason_alias = _probe_minio_bucket(
+            client,
+            bucket=bucket,
+            timeout_ms=probe_timeout_ms,
+        )
+    else:
+        state, reason_alias = "configured", "connectivity-not-checked"
     readiness = StorageReadiness(
         mode="minio",
-        state="configured",
+        state=state,
         bucket_alias=bucket,
         prefix_alias=sink.prefix,
         secure=secure,
-        reason_alias="connectivity-not-checked",
+        reason_alias=reason_alias,
     )
     return sink, readiness
 
 
-def _parse_secure(value: str) -> bool:
+def _parse_boolean(value: str, *, reason_alias: str) -> bool:
     normalized = value.strip().lower()
     if normalized == "true":
         return True
     if normalized == "false":
         return False
-    raise StorageConfigurationError("minio-secure-invalid")
+    raise StorageConfigurationError(reason_alias)
+
+
+def _parse_probe_timeout_ms(value: str) -> int:
+    normalized = value.strip()
+    if not normalized.isdigit():
+        raise StorageConfigurationError("minio-probe-timeout-invalid")
+    timeout_ms = int(normalized)
+    if not _MIN_PROBE_TIMEOUT_MS <= timeout_ms <= _MAX_PROBE_TIMEOUT_MS:
+        raise StorageConfigurationError("minio-probe-timeout-invalid")
+    return timeout_ms
+
+
+def _probe_minio_bucket(
+    client: ConfiguredMinioClient,
+    *,
+    bucket: str,
+    timeout_ms: int,
+) -> tuple[StorageReadinessState, str | None]:
+    result: Queue[tuple[StorageReadinessState, str | None]] = Queue(maxsize=1)
+
+    def target() -> None:
+        try:
+            exists = client.bucket_exists(bucket_name=bucket)
+        except Exception:
+            result.put(("unavailable", "bucket-probe-failed"))
+            return
+        if exists:
+            result.put(("ready", None))
+        else:
+            result.put(("unavailable", "bucket-not-found"))
+
+    thread = Thread(target=target, name="voxbench-minio-readiness", daemon=True)
+    thread.start()
+    thread.join(timeout_ms / 1_000)
+    if thread.is_alive():
+        return "unavailable", "bucket-probe-timeout"
+    try:
+        return result.get_nowait()
+    except Empty:
+        return "unavailable", "bucket-probe-failed"
 
 
 def _validate_endpoint(endpoint: str) -> None:
@@ -181,7 +251,7 @@ def _create_minio_client(
     access_key: str,
     secret_key: str,
     secure: bool,
-) -> MinioClientLike:
+) -> ConfiguredMinioClient:
     try:
         from minio import Minio
     except ImportError as exc:

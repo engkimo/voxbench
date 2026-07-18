@@ -436,7 +436,7 @@ class ReadinessSummaryResponse(BaseModel):
 
 class StorageReadinessResponse(BaseModel):
     mode: Literal["local", "minio", "injected"]
-    state: Literal["ready", "configured"]
+    state: Literal["ready", "configured", "unavailable"]
     bucket_alias: str | None = None
     prefix_alias: str | None = None
     secure: bool | None = None

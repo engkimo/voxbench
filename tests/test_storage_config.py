@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Event
 from typing import Any
 
 import pytest
@@ -16,8 +17,16 @@ from voxbench.engine_harness.storage import MinioRecordingSink
 
 
 class FakeMinioClient:
+    def __init__(self, *, bucket_exists: bool = True) -> None:
+        self.bucket_exists_result = bucket_exists
+        self.bucket_exists_calls: list[str] = []
+
     def fput_object(self, **kwargs: Any) -> object:
         return object()
+
+    def bucket_exists(self, bucket_name: str) -> bool:
+        self.bucket_exists_calls.append(bucket_name)
+        return self.bucket_exists_result
 
 
 class CapturingClientFactory:
@@ -99,6 +108,81 @@ def test_minio_environment_builds_sink_and_credential_free_readiness() -> None:
     assert "minio.internal" not in serialized
     assert "private-access-key" not in serialized
     assert "private-secret" not in serialized
+    assert factory.client.bucket_exists_calls == []
+
+
+@pytest.mark.parametrize(
+    ("bucket_exists", "state", "reason_alias"),
+    [
+        (True, "ready", None),
+        (False, "unavailable", "bucket-not-found"),
+    ],
+)
+def test_opt_in_bucket_probe_reports_safe_readiness(
+    bucket_exists: bool,
+    state: str,
+    reason_alias: str | None,
+) -> None:
+    environment = _minio_env()
+    environment["VOXBENCH_MINIO_PROBE_BUCKET"] = "true"
+    factory = CapturingClientFactory()
+    factory.client = FakeMinioClient(bucket_exists=bucket_exists)
+
+    _, readiness = build_recording_sink_from_env(
+        environment,
+        client_factory=factory,
+    )
+
+    assert readiness.state == state
+    assert readiness.reason_alias == reason_alias
+    assert factory.client.bucket_exists_calls == ["voxbench-recordings"]
+
+
+def test_bucket_probe_failure_discards_raw_error() -> None:
+    class FailingProbeClient(FakeMinioClient):
+        def bucket_exists(self, bucket_name: str) -> bool:
+            raise RuntimeError("token=private-secret endpoint=https://private.invalid")
+
+    environment = _minio_env()
+    environment["VOXBENCH_MINIO_PROBE_BUCKET"] = "true"
+    factory = CapturingClientFactory()
+    factory.client = FailingProbeClient()
+
+    _, readiness = build_recording_sink_from_env(
+        environment,
+        client_factory=factory,
+    )
+
+    assert readiness.state == "unavailable"
+    assert readiness.reason_alias == "bucket-probe-failed"
+    assert "private-secret" not in repr(readiness)
+    assert "private.invalid" not in repr(readiness)
+
+
+def test_bucket_probe_timeout_is_bounded_and_safe() -> None:
+    release = Event()
+
+    class BlockingProbeClient(FakeMinioClient):
+        def bucket_exists(self, bucket_name: str) -> bool:
+            release.wait()
+            return True
+
+    environment = _minio_env()
+    environment["VOXBENCH_MINIO_PROBE_BUCKET"] = "true"
+    environment["VOXBENCH_MINIO_PROBE_TIMEOUT_MS"] = "10"
+    factory = CapturingClientFactory()
+    factory.client = BlockingProbeClient()
+
+    try:
+        _, readiness = build_recording_sink_from_env(
+            environment,
+            client_factory=factory,
+        )
+    finally:
+        release.set()
+
+    assert readiness.state == "unavailable"
+    assert readiness.reason_alias == "bucket-probe-timeout"
 
 
 def test_minio_environment_reports_only_missing_variable_names() -> None:
@@ -122,6 +206,22 @@ def test_minio_environment_reports_only_missing_variable_names() -> None:
     [
         ("VOXBENCH_RECORDING_SINK", "private-backend", "unsupported-recording-sink"),
         ("VOXBENCH_MINIO_SECURE", "secret-bool", "minio-secure-invalid"),
+        (
+            "VOXBENCH_MINIO_PROBE_BUCKET",
+            "secret-bool",
+            "minio-probe-flag-invalid",
+        ),
+        (
+            "VOXBENCH_MINIO_PROBE_TIMEOUT_MS",
+            "private-timeout",
+            "minio-probe-timeout-invalid",
+        ),
+        ("VOXBENCH_MINIO_PROBE_TIMEOUT_MS", "9", "minio-probe-timeout-invalid"),
+        (
+            "VOXBENCH_MINIO_PROBE_TIMEOUT_MS",
+            "10001",
+            "minio-probe-timeout-invalid",
+        ),
         (
             "VOXBENCH_MINIO_ENDPOINT",
             "https://user:private-secret@minio.internal/path",
