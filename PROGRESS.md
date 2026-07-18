@@ -1,5 +1,20 @@
 # 進捗
 
+## Phase 1/5 environment-driven recording storage startup (2026-07-18)
+
+- `create_app_from_env(...)` とmodule-level ASGI appを追加し、録音sinkをprocess environmentの
+  `local|minio` 選択から構築できるようにした。既定値は従来どおりlocal。
+- MinIO endpoint/access key/secret key/bucketはdeployment environmentからだけ読み、run payload、
+  repository、artifact URI、readiness responseへcredentialを渡さない。
+- endpoint、TLS flag、必須env、bucket/prefixをfail-fast検証し、client生成を含む全エラーを
+  固定safe reason aliasへ変換する。生の設定値や外部例外messageは返さない。
+- `GET /storage/readiness` は `local=ready`、`minio|injected=configured` を返す。
+  MinIOではsafe bucket/prefix aliasとTLS選択だけを公開し、endpoint/credentialはmodelにも持たない。
+- `configured` はnetwork/bucket probe未実施を明示する状態であり、疎通済みとは扱わない。
+  bucket provisioningも引き続きdeployment責務。
+- default/MinIO/error sanitization/factory failure/readiness API/injected sinkをtest固定した。
+  全体進捗目安は約85%。次はbounded bucket readiness probe、またはauthenticated remote audio proxy。
+
 ## Phase 1/5 Control Plane recording sink injection (2026-07-18)
 
 - `RunApiState` と `create_app(...)` にoptional `RecordingSink` injectionを追加した。

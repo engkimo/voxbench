@@ -19,6 +19,11 @@ from fastapi.responses import FileResponse
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from voxbench.control_plane.storage_config import (
+    StorageReadiness,
+    injected_storage_readiness,
+    local_storage_readiness,
+)
 from voxbench.engine_harness.harness import EngineHarness
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact, SpanArtifact
 from voxbench.engine_harness.storage import LocalRecordingSink, RecordingSink
@@ -427,6 +432,15 @@ class ReadinessSummaryResponse(BaseModel):
     unknown_count: int
     manual_blocker_count: int
     incomplete_count: int
+
+
+class StorageReadinessResponse(BaseModel):
+    mode: Literal["local", "minio", "injected"]
+    state: Literal["ready", "configured"]
+    bucket_alias: str | None = None
+    prefix_alias: str | None = None
+    secure: bool | None = None
+    reason_alias: str | None = None
 
 
 class TimelineLanes(BaseModel):
@@ -840,8 +854,17 @@ class RunAudioBuffer:
 class RunApiState:
     artifact_root: Path = Path("artifacts/recordings")
     recording_sink: RecordingSink | None = None
+    storage_readiness: StorageReadiness | None = None
     repository: InMemoryRunRepository = field(default_factory=InMemoryRunRepository)
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.storage_readiness is None:
+            self.storage_readiness = (
+                injected_storage_readiness()
+                if self.recording_sink is not None
+                else local_storage_readiness()
+            )
 
     def create_harness(self) -> EngineHarness:
         sink = self.recording_sink or LocalRecordingSink(self.artifact_root)
@@ -1210,6 +1233,13 @@ def _write_observed_audio(
 
 def create_runs_router() -> APIRouter:
     router = APIRouter()
+
+    @router.get("/storage/readiness", response_model=StorageReadinessResponse)
+    async def get_storage_readiness(
+        api_state: RunApiStateDependency,
+    ) -> StorageReadiness:
+        assert api_state.storage_readiness is not None
+        return api_state.storage_readiness
 
     @router.post("/runs", response_model=RunResponse)
     async def create_run(

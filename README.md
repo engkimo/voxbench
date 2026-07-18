@@ -117,17 +117,39 @@ PY
 The response includes `run_id`, `conversation_id`, recording artifact URIs, and spans.
 Local development stores WAV tap artifacts under `artifacts/recordings/`.
 
-The engine harness also exposes `MinioRecordingSink` for an injected official
-MinIO Python client. Install `.[storage]`, provision the bucket separately, and
-pass `minio.Minio(...)` as the client. Stage WAVs are uploaded with
+The engine harness also exposes `MinioRecordingSink` for the official MinIO
+Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with
 `content_type="audio/wav"`; returned artifacts use only
 `s3://<bucket>/<prefix>/<run>/<stage>.wav`. Endpoint and credentials never enter
 the artifact URI. Bucket, prefix, run, and stage values are validated as safe
-object-key components. `create_app(recording_sink=...)` injects this deployment
-choice without putting endpoint or credentials in run payloads. The default API
-stays local. Environment-driven startup construction and authenticated remote
-audio retrieval remain follow-up work; a remote recording currently returns 404
-from the local-only audio endpoint instead of exposing a storage URL.
+object-key components.
+
+The default API stays local. To select MinIO at process startup, set these
+deployment environment variables before starting Uvicorn:
+
+```bash
+export VOXBENCH_RECORDING_SINK=minio
+export VOXBENCH_MINIO_ENDPOINT=minio.internal:9000
+export VOXBENCH_MINIO_ACCESS_KEY='<access-key>'
+export VOXBENCH_MINIO_SECRET_KEY='<secret-key>'
+export VOXBENCH_MINIO_BUCKET=voxbench-recordings
+export VOXBENCH_MINIO_PREFIX=recordings       # optional; default: recordings
+export VOXBENCH_MINIO_SECURE=true             # optional; true or false
+uvicorn voxbench.control_plane.app:app --reload
+```
+
+These values are read only from the process environment; run request models
+forbid unknown fields, so storage credentials cannot be supplied in a run
+payload. `GET /storage/readiness` returns only the mode, safe bucket/prefix
+aliases, TLS choice, and a fixed reason alias. MinIO state is `configured`, not
+`ready`, because this startup path intentionally performs no network or bucket
+probe. Invalid configuration fails startup with a fixed safe error alias rather
+than echoing a value. `create_app(recording_sink=...)` remains available for
+deployment/test injection and reports only an opaque `injected` mode.
+
+Authenticated remote audio retrieval remains follow-up work; a remote recording
+currently returns 404 from the local-only audio endpoint instead of exposing a
+storage URL.
 
 ## Run the Web UI
 
