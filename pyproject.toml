@@ -28,6 +28,9 @@ live = [
 storage = [
   "minio>=7.2.20,<8",
 ]
+postgres = [
+  "psycopg[binary]>=3.2.0,<4",
+]
 dev = [
   "httpx>=0.28.0",
   "pytest>=9.0.0",

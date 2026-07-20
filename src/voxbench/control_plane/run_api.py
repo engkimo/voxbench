@@ -11,19 +11,46 @@ from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 from threading import Thread
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Protocol
 from urllib.parse import quote, unquote, urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from voxbench.control_plane.audio_session import (
     REMOTE_AUDIO_SESSION_COOKIE,
     AudioSessionLoginError,
     RemoteAudioSessionAuth,
+)
+from voxbench.control_plane.models import (
+    Metric as MetricRow,
+)
+from voxbench.control_plane.models import (
+    Recording as RecordingRow,
+)
+from voxbench.control_plane.models import (
+    RtpStat as RtpStatRow,
+)
+from voxbench.control_plane.models import (
+    Run as RunRow,
+)
+from voxbench.control_plane.models import (
+    SipEvent as SipEventRow,
+)
+from voxbench.control_plane.models import (
+    Span as SpanRow,
+)
+from voxbench.control_plane.models import (
+    Verification as VerificationRow,
+)
+from voxbench.control_plane.repository_config import (
+    RepositoryReadiness,
+    memory_repository_readiness,
 )
 from voxbench.control_plane.storage_config import (
     StorageReadiness,
@@ -469,6 +496,12 @@ class AudioSessionStatusResponse(BaseModel):
     expires_in_seconds: int | None = None
 
 
+class RepositoryReadinessResponse(BaseModel):
+    mode: Literal["memory", "postgres"]
+    state: Literal["ready", "configured"]
+    reason_alias: str | None = None
+
+
 class TimelineLanes(BaseModel):
     sip_ladder: list[TimelineSipEvent]
     rtp_quality: list[TimelineRtpStat]
@@ -855,6 +888,16 @@ class StoredRun:
         )
 
 
+class RunRepository(Protocol):
+    def save(self, run: StoredRun) -> None: ...
+
+    def get(self, run_id: str) -> StoredRun | None: ...
+
+    def list_recent(self) -> list[StoredRun]: ...
+
+    def list_all(self) -> list[StoredRun]: ...
+
+
 @dataclass
 class InMemoryRunRepository:
     runs: dict[str, StoredRun] = field(default_factory=dict)
@@ -867,6 +910,270 @@ class InMemoryRunRepository:
 
     def list_recent(self) -> list[StoredRun]:
         return sorted(self.runs.values(), key=lambda run: run.started_at, reverse=True)
+
+    def list_all(self) -> list[StoredRun]:
+        return sorted(self.runs.values(), key=lambda run: run.started_at)
+
+
+@dataclass
+class PostgresRunRepository:
+    session_factory: sessionmaker[Session] = field(repr=False)
+
+    def save(self, run: StoredRun) -> None:
+        run_uuid = UUID(run.run_id)
+        with self.session_factory.begin() as session:
+            row = session.get(RunRow, run_uuid)
+            values = {
+                "config_hash": run.config_hash,
+                "call_id": run.call_id,
+                "conversation_id": run.conversation_id,
+                "provider": run.provider,
+                "engine": run.engine,
+                "status": run.status,
+                "failure_alias": run.failure_alias,
+                "resolved_config": run.resolved_config,
+                "environment_metadata": run.environment.model_dump(mode="json"),
+                "readiness_checklist": [
+                    item.model_dump(mode="json") for item in run.readiness_checklist
+                ],
+                "started_at": run.started_at,
+                "ended_at": run.ended_at,
+            }
+            if row is None:
+                row = RunRow(id=run_uuid, **values)
+                session.add(row)
+            else:
+                for name, value in values.items():
+                    setattr(row, name, value)
+            session.flush()
+
+            child_models = (
+                RecordingRow,
+                SpanRow,
+                MetricRow,
+                VerificationRow,
+                SipEventRow,
+                RtpStatRow,
+            )
+            for child_model in child_models:
+                session.execute(delete(child_model).where(child_model.run_id == run_uuid))
+
+            session.add_all(
+                [
+                    RecordingRow(
+                        run_id=run_uuid,
+                        ordinal=ordinal,
+                        stage=item.stage,
+                        uri=item.uri,
+                        format=item.format,
+                        duration_ms=item.duration_ms,
+                    )
+                    for ordinal, item in enumerate(run.recordings)
+                ]
+                + [
+                    SpanRow(
+                        run_id=run_uuid,
+                        ordinal=ordinal,
+                        trace_id=item.trace_id,
+                        span_id=item.span_id,
+                        parent_id=item.parent_id,
+                        name=item.name,
+                        start_ns=item.start_ns,
+                        end_ns=item.end_ns,
+                        attrs=item.attrs,
+                    )
+                    for ordinal, item in enumerate(run.spans)
+                ]
+                + [
+                    MetricRow(
+                        run_id=run_uuid,
+                        ordinal=ordinal,
+                        stage=item.stage,
+                        name=item.name,
+                        value=item.value,
+                        ts=item.ts,
+                    )
+                    for ordinal, item in enumerate(run.metrics)
+                ]
+                + [
+                    VerificationRow(
+                        run_id=run_uuid,
+                        ordinal=ordinal,
+                        stage=item.stage,
+                        invariant=item.invariant,
+                        passed=item.passed,
+                        observed=item.observed,
+                        expected=item.expected,
+                        detail=item.detail,
+                    )
+                    for ordinal, item in enumerate(run.verifications)
+                ]
+                + [
+                    SipEventRow(
+                        run_id=run_uuid,
+                        ordinal=ordinal,
+                        call_id=item.call_id,
+                        method=item.method,
+                        direction=item.direction,
+                        status_code=item.status_code,
+                        summary_alias=item.summary_alias,
+                        ts=item.ts,
+                    )
+                    for ordinal, item in enumerate(run.sip_events)
+                ]
+                + [
+                    RtpStatRow(
+                        run_id=run_uuid,
+                        ordinal=ordinal,
+                        ts=item.ts,
+                        jitter_ms=item.jitter_ms,
+                        loss_pct=item.loss_pct,
+                        mos=item.mos,
+                        direction=item.direction,
+                        rtt_ms=item.rtt_ms,
+                    )
+                    for ordinal, item in enumerate(run.rtp_stats)
+                ]
+            )
+
+    def get(self, run_id: str) -> StoredRun | None:
+        try:
+            run_uuid = UUID(run_id)
+        except ValueError:
+            return None
+        with self.session_factory() as session:
+            row = session.get(RunRow, run_uuid)
+            return self._restore(session, row) if row is not None else None
+
+    def list_recent(self) -> list[StoredRun]:
+        with self.session_factory() as session:
+            rows = session.scalars(select(RunRow).order_by(RunRow.started_at.desc())).all()
+            return [self._restore(session, row) for row in rows]
+
+    def list_all(self) -> list[StoredRun]:
+        with self.session_factory() as session:
+            rows = session.scalars(select(RunRow).order_by(RunRow.started_at)).all()
+            return [self._restore(session, row) for row in rows]
+
+    def _restore(self, session: Session, row: RunRow) -> StoredRun:
+        run_uuid = row.id
+        recordings = session.scalars(
+            select(RecordingRow)
+            .where(RecordingRow.run_id == run_uuid)
+            .order_by(RecordingRow.ordinal, RecordingRow.id)
+        ).all()
+        spans = session.scalars(
+            select(SpanRow)
+            .where(SpanRow.run_id == run_uuid)
+            .order_by(SpanRow.ordinal, SpanRow.id)
+        ).all()
+        metrics = session.scalars(
+            select(MetricRow)
+            .where(MetricRow.run_id == run_uuid)
+            .order_by(MetricRow.ordinal, MetricRow.id)
+        ).all()
+        verifications = session.scalars(
+            select(VerificationRow)
+            .where(VerificationRow.run_id == run_uuid)
+            .order_by(VerificationRow.ordinal, VerificationRow.id)
+        ).all()
+        sip_events = session.scalars(
+            select(SipEventRow)
+            .where(SipEventRow.run_id == run_uuid)
+            .order_by(SipEventRow.ordinal, SipEventRow.id)
+        ).all()
+        rtp_stats = session.scalars(
+            select(RtpStatRow)
+            .where(RtpStatRow.run_id == run_uuid)
+            .order_by(RtpStatRow.ordinal, RtpStatRow.id)
+        ).all()
+        restored_recordings = [
+            RecordingArtifact(
+                stage=item.stage,
+                uri=item.uri,
+                format=item.format,
+                duration_ms=item.duration_ms,
+            )
+            for item in recordings
+        ]
+        return StoredRun(
+            run_id=str(row.id),
+            config_hash=row.config_hash,
+            call_id=row.call_id,
+            conversation_id=row.conversation_id,
+            provider=row.provider,
+            engine=row.engine,
+            status=row.status,
+            failure_alias=row.failure_alias,
+            started_at=_as_utc(row.started_at),
+            ended_at=_as_utc(row.ended_at) if row.ended_at is not None else None,
+            resolved_config=row.resolved_config,
+            recordings=restored_recordings,
+            spans=[
+                SpanArtifact(
+                    trace_id=item.trace_id,
+                    span_id=item.span_id,
+                    parent_id=item.parent_id,
+                    name=item.name,
+                    start_ns=item.start_ns,
+                    end_ns=item.end_ns,
+                    attrs=item.attrs,
+                )
+                for item in spans
+            ],
+            metrics=[
+                MetricArtifact(
+                    stage=item.stage,
+                    name=item.name,
+                    value=item.value,
+                    ts=_as_utc(item.ts),
+                )
+                for item in metrics
+            ],
+            verifications=[
+                VerificationResult(
+                    stage=item.stage,
+                    invariant=item.invariant,
+                    passed=item.passed,
+                    observed=item.observed,
+                    expected=item.expected,
+                    detail=item.detail,
+                )
+                for item in verifications
+            ],
+            sip_events=[
+                SipEventResponse(
+                    call_id=item.call_id,
+                    method=item.method,
+                    direction=item.direction,
+                    status_code=item.status_code,
+                    summary_alias=item.summary_alias,
+                    ts=_as_utc(item.ts),
+                )
+                for item in sip_events
+            ],
+            rtp_stats=[
+                RtpStatResponse(
+                    ts=_as_utc(item.ts),
+                    jitter_ms=item.jitter_ms,
+                    loss_pct=item.loss_pct,
+                    mos=item.mos,
+                    direction=item.direction,
+                    rtt_ms=item.rtt_ms,
+                )
+                for item in rtp_stats
+            ],
+            environment=RunEnvironmentMetadata.model_validate(row.environment_metadata),
+            readiness_checklist=[
+                ReadinessChecklistItem.model_validate(item) for item in row.readiness_checklist
+            ],
+        )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 @dataclass
@@ -884,7 +1191,10 @@ class RunApiState:
     remote_recording_reader: RemoteRecordingReader | None = None
     remote_audio_access_token: str | None = field(default=None, repr=False)
     remote_audio_session_auth: RemoteAudioSessionAuth | None = None
-    repository: InMemoryRunRepository = field(default_factory=InMemoryRunRepository)
+    repository: RunRepository = field(default_factory=InMemoryRunRepository)
+    repository_readiness: RepositoryReadiness = field(
+        default_factory=memory_repository_readiness
+    )
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -965,18 +1275,20 @@ def _execute_stored_run(stored: StoredRun, api_state: RunApiState) -> None:
         stored.failure_alias = "engine-harness-error"
         stored.ended_at = datetime.now(UTC)
         raise
-
-    stored.conversation_id = harness_result.conversation_id
-    stored.status = "completed"
-    stored.ended_at = datetime.now(UTC)
-    stored.recordings = harness_result.recordings
-    stored.spans = harness_result.spans
-    stored.metrics = harness_result.metrics
-    stored.verifications = verify_recordings(
-        resolved_config=stored.resolved_config,
-        recordings=harness_result.recordings,
-        metrics=harness_result.metrics,
-    )
+    else:
+        stored.conversation_id = harness_result.conversation_id
+        stored.status = "completed"
+        stored.ended_at = datetime.now(UTC)
+        stored.recordings = harness_result.recordings
+        stored.spans = harness_result.spans
+        stored.metrics = harness_result.metrics
+        stored.verifications = verify_recordings(
+            resolved_config=stored.resolved_config,
+            recordings=harness_result.recordings,
+            metrics=harness_result.metrics,
+        )
+    finally:
+        api_state.repository.save(stored)
 
 
 def _start_background_run(stored: StoredRun, api_state: RunApiState) -> None:
@@ -999,7 +1311,7 @@ def _cross_session_trends(api_state: RunApiState) -> list[CrossSessionTrendRespo
         tuple[EnvironmentProfile, str, str],
         list[CrossSessionTrendPoint],
     ] = {}
-    for run in sorted(api_state.repository.runs.values(), key=lambda item: item.started_at):
+    for run in api_state.repository.list_all():
         if run.status not in {"completed", "failed"} or run.ended_at is None:
             continue
         server_alias = run.environment.server_alias
@@ -1275,6 +1587,15 @@ def _write_observed_audio(
 def create_runs_router() -> APIRouter:
     router = APIRouter()
 
+    @router.get(
+        "/repository/readiness",
+        response_model=RepositoryReadinessResponse,
+    )
+    async def get_repository_readiness(
+        api_state: RunApiStateDependency,
+    ) -> RepositoryReadinessResponse:
+        return RepositoryReadinessResponse(**api_state.repository_readiness.__dict__)
+
     @router.get("/storage/readiness", response_model=StorageReadinessResponse)
     async def get_storage_readiness(
         api_state: RunApiStateDependency,
@@ -1453,7 +1774,9 @@ def create_runs_router() -> APIRouter:
             )
         except Exception:
             stored.status = "failed"
+            stored.failure_alias = "simulated-live-bridge-error"
             stored.ended_at = datetime.now(UTC)
+            api_state.repository.save(stored)
             raise
 
         stored.conversation_id = f"simulated-{stored.run_id}"
@@ -1470,6 +1793,7 @@ def create_runs_router() -> APIRouter:
         )
         stored.status = "completed"
         stored.ended_at = datetime.now(UTC)
+        api_state.repository.save(stored)
         return stored.to_response()
 
     @router.post("/v1/sip-events", response_model=SipEventResponse)
@@ -1489,6 +1813,7 @@ def create_runs_router() -> APIRouter:
             summary_alias=request.summary_alias,
         )
         stored.sip_events.append(event)
+        api_state.repository.save(stored)
         return event
 
     @router.post("/v1/rtp-stats", response_model=RtpStatResponse)
@@ -1508,6 +1833,7 @@ def create_runs_router() -> APIRouter:
             rtt_ms=request.rtt_ms,
         )
         stored.rtp_stats.append(stat)
+        api_state.repository.save(stored)
         return stat
 
     @router.post("/v1/observations", response_model=ObservationBatchResponse)
@@ -1596,6 +1922,7 @@ def create_runs_router() -> APIRouter:
             )
             for stat in request.rtp_stats
         )
+        api_state.repository.save(stored)
         return ObservationBatchResponse(
             run_id=stored.run_id,
             metric_count=len(request.metrics),
@@ -1627,6 +1954,7 @@ def create_runs_router() -> APIRouter:
         stored.ended_at = datetime.now(UTC)
         for key in [key for key in api_state.audio_buffers if key[0] == run_id]:
             del api_state.audio_buffers[key]
+        api_state.repository.save(stored)
         return stored.to_response()
 
     @router.post("/runs/{run_id}/fail", response_model=RunResponse)
@@ -1656,6 +1984,7 @@ def create_runs_router() -> APIRouter:
         )
         for key in [key for key in api_state.audio_buffers if key[0] == run_id]:
             del api_state.audio_buffers[key]
+        api_state.repository.save(stored)
         return stored.to_response()
 
     @router.get("/runs/example-payload", response_model=RunCreateRequest)

@@ -27,10 +27,11 @@ Implemented so far:
   packet loss, RTT, and media direction without storing channel/address/SSRC data
 - A provider-agnostic `voxbench.observability` library boundary for existing
   direct-provider, Pipecat, and custom telephony applications
+- An opt-in SQLAlchemy/Postgres run repository that restores completed and
+  observed runs, normalized telemetry, verification results, and recording metadata
 
 This implementation intentionally does not include SIP packet capture, production
-live-host hardening, cross-session leak trend analysis, persistent production job
-leasing, or the scale profile.
+live-host hardening, persistent production job leasing, or the scale profile.
 
 ## Install for development
 
@@ -116,6 +117,36 @@ PY
 
 The response includes `run_id`, `conversation_id`, recording artifact URIs, and spans.
 Local development stores WAV tap artifacts under `artifacts/recordings/`.
+
+The run repository defaults to process-local memory. To persist run state in
+Postgres, install the optional psycopg driver, apply migrations, and select the
+repository before starting the API:
+
+```bash
+python -m pip install -e ".[postgres]"
+export VOXBENCH_RUN_REPOSITORY=postgres
+export VOXBENCH_DATABASE_URL='postgresql+psycopg://voxbench:<password>@db.internal/voxbench'
+alembic upgrade head
+uvicorn voxbench.control_plane.app:app
+```
+
+`VOXBENCH_DATABASE_URL` is read only from the process environment and must use
+the explicit `postgresql+psycopg` dialect. API startup constructs the engine but
+does not perform an implicit connection or migration. `GET /repository/readiness`
+therefore reports Postgres as `configured` with
+`connectivity-and-migrations-not-checked`; it does not claim `ready`. The URL,
+host, username, and password are excluded from readiness and runtime
+representations. Alembic reads the same environment variable, so credentials do
+not need to be written to `alembic.ini`.
+
+Each repository save is one SQLAlchemy transaction. The current MVP replaces a
+run's normalized child rows atomically and records their ordinal positions so a
+process restart reconstructs recording, span, metric, verification, SIP, and RTP
+ordering deterministically. Apply migration `0007_run_runtime_state` before
+enabling Postgres. The default `memory` mode remains compatible with existing
+local development and tests. Persistent background job leasing is still a
+separate follow-up; do not run multiple workers against the current in-process
+background runner.
 
 The engine harness also exposes `MinioRecordingSink` for the official MinIO
 Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with

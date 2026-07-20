@@ -1,5 +1,21 @@
 # 進捗
 
+## Phase 1/5 opt-in Postgres run persistence (2026-07-20)
+
+- `RunRepository` protocolを追加し、既定のprocess-local memory互換を維持したまま、SQLAlchemy 2.xの
+  short transactionでrun stateをPostgresへ保存・再構築する `PostgresRunRepository` を追加した。
+- run本体にresolved config/failure aliasを保存し、recording/span/metric/verification/SIP/RTPを既存の
+  正規化tableへatomic replaceする。各childへordinalを追加し、restart後もAPI配列順を決定的に復元する。
+- synchronous/background harness、simulated live、observation batch、個別SIP/RTP、complete/failの全mutation
+  後に明示saveするよう修正し、in-memoryの参照共有に依存していた暗黙永続化を除去した。
+- `VOXBENCH_RUN_REPOSITORY=postgres` とprocess-only `VOXBENCH_DATABASE_URL`によるopt-in startupを追加。
+  URLは明示 `postgresql+psycopg`だけ許可し、readiness/reprへhost/user/passwordを出さない。
+- startupはDB接続/migrationを暗黙実行せず、`GET /repository/readiness` はPostgresを
+  `configured/connectivity-and-migrations-not-checked`と正直に返す。Alembicも同じenv URLを使用する。
+- migration `0007_run_runtime_state`、optional `.[postgres]`、SQLite ORM restart integrationを追加した。
+  全体進捗目安は約93%。次はbounded Postgres readiness probe、DB errorのsafe 503 mapping、または
+  Postgres-backed job leaseへ進む。
+
 ## Phase 1/5 Web remote-audio session boundary (2026-07-20)
 
 - process-level storage Bearerをfrontendへ渡さず、別のoperator login tokenを短命な署名cookieへ交換する

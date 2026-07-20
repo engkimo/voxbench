@@ -134,6 +134,8 @@ runs (
   conversation_id text,         -- PipeCat側
   provider text, engine text,
   status text,                  -- 'running' | 'completed' | 'failed'
+  failure_alias text null,      -- safe fixed/operator alias; raw exceptionは保存しない
+  resolved_config jsonb,        -- restart後のtimeline/verification再構築に必要
   environment_metadata jsonb,    -- aliases/references only; no secret values/URLs/Slack IDs
   readiness_checklist jsonb,     -- [{item_id,label,status,note}]
   started_at, ended_at
@@ -141,7 +143,7 @@ runs (
 
 -- ステージごとのタップ録音
 recordings (
-  id uuid pk, run_id uuid, stage text,
+  id uuid pk, run_id uuid, ordinal int, stage text,
   uri text,                     -- MinIO上のWAV
   format jsonb,                 -- {rate, encoding, channels}
   duration_ms numeric
@@ -149,7 +151,7 @@ recordings (
 
 -- ★不変条件の検証結果（§7）
 verifications (
-  id uuid pk, run_id uuid, stage text,
+  id uuid pk, run_id uuid, ordinal int, stage text,
   invariant text,               -- 'duration_preserving' 等
   passed bool,
   observed jsonb, expected jsonb, detail text
@@ -157,23 +159,23 @@ verifications (
 
 -- 信号＋ホストメトリクス（時系列。MVPはPG、scaleでCH/TS）
 metrics (
-  id bigserial pk, run_id uuid, stage text null,
+  id bigserial pk, run_id uuid, ordinal int, stage text null,
   name text,                    -- 'rms_out','duration_ratio','frame_cadence_jitter','cpu','active_tasks','loop_lag' 等
   value numeric, ts timestamptz
 )
 
 -- OTLPトレース（自前シンク。最小）
 spans (
-  id uuid pk, run_id uuid, trace_id text, span_id text, parent_id text null,
+  id uuid pk, run_id uuid, ordinal int, trace_id text, span_id text, parent_id text null,
   name text, start_ns bigint, end_ns bigint, attrs jsonb
 )
 
 -- SIP/RTP（任意・v1後半）。HEP/collector取込。raw packet/bodyは保存しない。
 sip_events (
-  id pk, run_id uuid, call_id text null, method text, direction text,
+  id pk, run_id uuid, ordinal int, call_id text null, method text, direction text,
   status_code int null, summary_alias text null, ts
 )
-rtp_stats  ( id pk, run_id uuid, ts, jitter_ms numeric, loss_pct numeric, mos numeric )
+rtp_stats  ( id pk, run_id uuid, ordinal int, ts, jitter_ms numeric, loss_pct numeric, mos numeric )
 ```
 
 ---
@@ -412,6 +414,7 @@ GET  /runs/{id}/recordings/{stage}/audio
                                       # local WAV or opt-in bounded MinIO proxy; Bearer/session auth
 GET  /runs/cross-session-trends
 GET  /storage/readiness            # credential-free storage/proxy capability projection
+GET  /repository/readiness         # memory ready or Postgres configured; never exposes DB URL
 GET  /auth/remote-audio/session     # browser session capability/status; no secret reflection
 POST /auth/remote-audio/session     # one-time operator token exchange -> signed HttpOnly cookie
 DELETE /auth/remote-audio/session   # clear browser audio session cookie
