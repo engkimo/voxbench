@@ -383,6 +383,9 @@ def test_storage_readiness_endpoint_is_local_by_default() -> None:
         "secure": None,
         "reason_alias": None,
         "remote_audio_proxy_enabled": False,
+        "web_audio_session_enabled": False,
+        "web_audio_cookie_secure": None,
+        "web_audio_session_ttl_seconds": None,
     }
 
 
@@ -403,6 +406,9 @@ def test_environment_app_exposes_only_safe_minio_readiness() -> None:
         "secure": False,
         "reason_alias": "connectivity-not-checked",
         "remote_audio_proxy_enabled": False,
+        "web_audio_session_enabled": False,
+        "web_audio_cookie_secure": None,
+        "web_audio_session_ttl_seconds": None,
     }
     assert "minio.internal" not in response.text
     assert "private-access-key" not in response.text
@@ -422,9 +428,47 @@ def test_environment_app_exposes_proxy_capability_without_access_token() -> None
 
     assert response.status_code == 200
     assert response.json()["remote_audio_proxy_enabled"] is True
+    assert response.json()["web_audio_session_enabled"] is False
     assert "private-token" not in response.text
     assert "private-access-key" not in response.text
     assert "private-secret" not in response.text
+
+
+def test_environment_app_wires_safe_web_audio_session_capability() -> None:
+    environment = _minio_env()
+    environment.update(
+        {
+            "VOXBENCH_REMOTE_AUDIO_PROXY": "true",
+            "VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN": "remote-" + "r" * 32,
+            "VOXBENCH_WEB_AUDIO_SESSION": "true",
+            "VOXBENCH_WEB_AUDIO_LOGIN_TOKEN": "login-" + "a" * 32,
+            "VOXBENCH_WEB_AUDIO_SESSION_SECRET": "sign-" + "b" * 32,
+            "VOXBENCH_WEB_AUDIO_SESSION_TTL_SECONDS": "300",
+            "VOXBENCH_WEB_AUDIO_COOKIE_SECURE": "false",
+        }
+    )
+    app = create_app_from_env(
+        environ=environment,
+        client_factory=CapturingClientFactory(),
+    )
+    client = TestClient(app)
+
+    readiness = client.get("/storage/readiness")
+    session = client.get("/auth/remote-audio/session")
+
+    assert readiness.status_code == 200
+    assert readiness.json()["web_audio_session_enabled"] is True
+    assert readiness.json()["web_audio_cookie_secure"] is False
+    assert readiness.json()["web_audio_session_ttl_seconds"] == 300
+    assert session.json() == {
+        "enabled": True,
+        "authenticated": False,
+        "expires_in_seconds": None,
+    }
+    serialized = readiness.text + session.text + repr(app.state.voxbench)
+    assert "remote-" not in serialized
+    assert "login-" not in serialized
+    assert "sign-" not in serialized
 
 
 def test_injected_sink_readiness_does_not_inspect_the_sink() -> None:
@@ -446,4 +490,7 @@ def test_injected_sink_readiness_does_not_inspect_the_sink() -> None:
         "secure": None,
         "reason_alias": "connectivity-not-checked",
         "remote_audio_proxy_enabled": False,
+        "web_audio_session_enabled": False,
+        "web_audio_cookie_secure": None,
+        "web_audio_session_ttl_seconds": None,
     }

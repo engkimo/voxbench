@@ -409,9 +409,12 @@ GET  /runs/live-preview            # recent run status + readiness + latest host
 GET  /runs/{id}
 GET  /runs/{id}/timeline           # §10
 GET  /runs/{id}/recordings/{stage}/audio
-                                      # local WAV or opt-in authenticated bounded MinIO proxy
+                                      # local WAV or opt-in bounded MinIO proxy; Bearer/session auth
 GET  /runs/cross-session-trends
 GET  /storage/readiness            # credential-free storage/proxy capability projection
+GET  /auth/remote-audio/session     # browser session capability/status; no secret reflection
+POST /auth/remote-audio/session     # one-time operator token exchange -> signed HttpOnly cookie
+DELETE /auth/remote-audio/session   # clear browser audio session cookie
 
 # Synthetic caller
 POST /synthetic-caller/calls       # 参照音声+雑音で発信

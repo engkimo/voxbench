@@ -7,6 +7,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from voxbench.control_plane.audio_session import (
+    RemoteAudioSessionAuth,
+    build_remote_audio_session_from_env,
+)
 from voxbench.control_plane.run_api import RunApiState, create_runs_router
 from voxbench.control_plane.storage_config import (
     MinioClientFactory,
@@ -23,6 +27,7 @@ def create_app(
     storage_readiness: StorageReadiness | None = None,
     remote_recording_reader: RemoteRecordingReader | None = None,
     remote_audio_access_token: str | None = None,
+    remote_audio_session_auth: RemoteAudioSessionAuth | None = None,
 ) -> FastAPI:
     app = FastAPI(title="VoxBench Control Plane")
     state = RunApiState(
@@ -31,6 +36,7 @@ def create_app(
         storage_readiness=storage_readiness,
         remote_recording_reader=remote_recording_reader,
         remote_audio_access_token=remote_audio_access_token,
+        remote_audio_session_auth=remote_audio_session_auth,
     )
     app.state.voxbench = state
     app.include_router(create_runs_router())
@@ -47,12 +53,17 @@ def create_app_from_env(
         environ,
         client_factory=client_factory,
     )
+    session_auth = build_remote_audio_session_from_env(
+        environ,
+        remote_audio_proxy_enabled=runtime.readiness.remote_audio_proxy_enabled,
+    )
     return create_app(
         artifact_root=artifact_root,
         recording_sink=runtime.recording_sink,
         storage_readiness=runtime.readiness,
         remote_recording_reader=runtime.remote_recording_reader,
         remote_audio_access_token=runtime.remote_audio_access_token,
+        remote_audio_session_auth=session_auth,
     )
 
 

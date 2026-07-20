@@ -16,10 +16,15 @@ from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from voxbench.control_plane.audio_session import (
+    REMOTE_AUDIO_SESSION_COOKIE,
+    AudioSessionLoginError,
+    RemoteAudioSessionAuth,
+)
 from voxbench.control_plane.storage_config import (
     StorageReadiness,
     injected_storage_readiness,
@@ -453,6 +458,15 @@ class StorageReadinessResponse(BaseModel):
     secure: bool | None = None
     reason_alias: str | None = None
     remote_audio_proxy_enabled: bool = False
+    web_audio_session_enabled: bool = False
+    web_audio_cookie_secure: bool | None = None
+    web_audio_session_ttl_seconds: int | None = None
+
+
+class AudioSessionStatusResponse(BaseModel):
+    enabled: bool
+    authenticated: bool
+    expires_in_seconds: int | None = None
 
 
 class TimelineLanes(BaseModel):
@@ -869,6 +883,7 @@ class RunApiState:
     storage_readiness: StorageReadiness | None = None
     remote_recording_reader: RemoteRecordingReader | None = None
     remote_audio_access_token: str | None = field(default=None, repr=False)
+    remote_audio_session_auth: RemoteAudioSessionAuth | None = None
     repository: InMemoryRunRepository = field(default_factory=InMemoryRunRepository)
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
@@ -883,6 +898,8 @@ class RunApiState:
             or any(character.isspace() for character in self.remote_audio_access_token)
         ):
             raise ValueError("remote audio access token must be a safe 32..256 character value")
+        if self.remote_audio_session_auth is not None and self.remote_recording_reader is None:
+            raise ValueError("remote audio session requires a remote recording reader")
         if self.storage_readiness is None:
             self.storage_readiness = (
                 injected_storage_readiness()
@@ -1261,9 +1278,93 @@ def create_runs_router() -> APIRouter:
     @router.get("/storage/readiness", response_model=StorageReadinessResponse)
     async def get_storage_readiness(
         api_state: RunApiStateDependency,
-    ) -> StorageReadiness:
+    ) -> StorageReadinessResponse:
         assert api_state.storage_readiness is not None
-        return api_state.storage_readiness
+        session_auth = api_state.remote_audio_session_auth
+        return StorageReadinessResponse(
+            **api_state.storage_readiness.__dict__,
+            web_audio_session_enabled=session_auth is not None,
+            web_audio_cookie_secure=(
+                session_auth.cookie_secure if session_auth is not None else None
+            ),
+            web_audio_session_ttl_seconds=(
+                session_auth.ttl_seconds if session_auth is not None else None
+            ),
+        )
+
+    @router.get(
+        "/auth/remote-audio/session",
+        response_model=AudioSessionStatusResponse,
+    )
+    async def get_remote_audio_session_status(
+        request: Request,
+        api_state: RunApiStateDependency,
+    ) -> AudioSessionStatusResponse:
+        session_auth = api_state.remote_audio_session_auth
+        if session_auth is None:
+            return AudioSessionStatusResponse(enabled=False, authenticated=False)
+        remaining = session_auth.remaining_seconds(
+            request.cookies.get(REMOTE_AUDIO_SESSION_COOKIE)
+        )
+        return AudioSessionStatusResponse(
+            enabled=True,
+            authenticated=remaining is not None,
+            expires_in_seconds=remaining,
+        )
+
+    @router.post(
+        "/auth/remote-audio/session",
+        response_model=AudioSessionStatusResponse,
+    )
+    async def create_remote_audio_session(
+        request: Request,
+        api_state: RunApiStateDependency,
+    ) -> Response:
+        session_auth = api_state.remote_audio_session_auth
+        if session_auth is None:
+            raise HTTPException(status_code=404, detail="web audio session is disabled")
+        login_token = await _read_audio_session_login_token(request)
+        try:
+            cookie = session_auth.issue_cookie(login_token)
+        except AudioSessionLoginError as exc:
+            raise HTTPException(
+                status_code=401,
+                detail="web audio session login rejected",
+            ) from exc
+        response = JSONResponse(
+            AudioSessionStatusResponse(
+                enabled=True,
+                authenticated=True,
+                expires_in_seconds=session_auth.ttl_seconds,
+            ).model_dump()
+        )
+        response.set_cookie(
+            REMOTE_AUDIO_SESSION_COOKIE,
+            cookie,
+            max_age=session_auth.ttl_seconds,
+            path="/",
+            secure=session_auth.cookie_secure,
+            httponly=True,
+            samesite="strict",
+        )
+        return response
+
+    @router.delete(
+        "/auth/remote-audio/session",
+        response_model=AudioSessionStatusResponse,
+    )
+    async def delete_remote_audio_session(
+        api_state: RunApiStateDependency,
+    ) -> Response:
+        session_auth = api_state.remote_audio_session_auth
+        response = JSONResponse(
+            AudioSessionStatusResponse(
+                enabled=session_auth is not None,
+                authenticated=False,
+            ).model_dump()
+        )
+        response.delete_cookie(REMOTE_AUDIO_SESSION_COOKIE, path="/")
+        return response
 
     @router.post("/runs", response_model=RunResponse)
     async def create_run(
@@ -1647,7 +1748,11 @@ def create_runs_router() -> APIRouter:
                 status_code=404,
                 detail=f"recording audio is not available locally for stage '{stage}'",
             )
-        _authorize_remote_audio(request, access_token)
+        _authorize_remote_audio(
+            request,
+            access_token,
+            api_state.remote_audio_session_auth,
+        )
 
         try:
             payload = await asyncio.wait_for(
@@ -1729,7 +1834,11 @@ def _local_recording_path(uri: str) -> Path | None:
     return Path(unquote(parsed.path))
 
 
-def _authorize_remote_audio(request: Request, expected_token: str) -> None:
+def _authorize_remote_audio(
+    request: Request,
+    expected_token: str,
+    session_auth: RemoteAudioSessionAuth | None,
+) -> None:
     authorization = request.headers.get("authorization", "")
     scheme, separator, supplied_token = authorization.partition(" ")
     authorized = (
@@ -1740,9 +1849,42 @@ def _authorize_remote_audio(request: Request, expected_token: str) -> None:
         and " " not in supplied_token
         and hmac.compare_digest(supplied_token, expected_token)
     )
+    if not authorized and session_auth is not None:
+        authorized = session_auth.remaining_seconds(
+            request.cookies.get(REMOTE_AUDIO_SESSION_COOKIE)
+        ) is not None
     if not authorized:
         raise HTTPException(
             status_code=401,
             detail="remote recording authorization required",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+async def _read_audio_session_login_token(request: Request) -> str:
+    content_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise HTTPException(status_code=415, detail="web audio login requires JSON")
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 1_024:
+            raise HTTPException(status_code=413, detail="web audio login request is too large")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="web audio login request is invalid") from None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"login_token"}
+        or not isinstance(payload["login_token"], str)
+    ):
+        raise HTTPException(status_code=400, detail="web audio login request is invalid")
+    login_token = payload["login_token"]
+    if (
+        not 32 <= len(login_token) <= 256
+        or not login_token.isascii()
+        or any(character.isspace() for character in login_token)
+    ):
+        raise HTTPException(status_code=400, detail="web audio login request is invalid")
+    return login_token

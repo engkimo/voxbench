@@ -1,5 +1,21 @@
 # 進捗
 
+## Phase 1/5 Web remote-audio session boundary (2026-07-20)
+
+- process-level storage Bearerをfrontendへ渡さず、別のoperator login tokenを短命な署名cookieへ交換する
+  opt-in Web session境界を追加した。sessionはremote proxy有効時だけ起動できる。
+- login tokenとHMAC-SHA256 signing secretは32〜256文字のASCII・空白なし・相互に別値を必須化し、
+  `repr`、readiness、responseから除外した。cookie TTLは60〜3,600秒、既定900秒。
+- cookieは `HttpOnly`、`SameSite=Strict`、`Secure`既定true、path `/`。改ざん、期限切れ、未来すぎる
+  expiryを拒否し、logoutで削除する。login bodyは1 KiBに制限し、失敗responseへ入力値を反射しない。
+- audio endpointは従来のserver-to-server Bearerまたは有効session cookieを受け付け、local playbackと
+  session/proxy既定off互換を維持する。readinessはenabled/Secure/TTLというsafe capabilityだけを返す。
+- Webに一時password入力、lock/unlock/status/期限表示を追加した。成功時に入力を消去し、永続保存せず、
+  WaveSurfer/native audioのcredential付き再取得をsession revisionで明示的に更新する。
+- auth cookie/env/startup sanitization/body bound/remote playback/logoutをbackend testで固定し、Web buildで
+  credential fetch contractを検証した。全体進捗目安は約90%。次はPostgres永続化連携、またはsessionの
+  revocation/auditと実HTTPS同一origin deployment検証。
+
 ## Phase 1/5 authenticated bounded remote audio proxy (2026-07-20)
 
 - MinIO `get_object`をserver-sideだけで使う `MinioRecordingReader` を追加し、presigned URLや

@@ -25,6 +25,25 @@ export type TimelineRecording = {
   duration_ms: number
 }
 
+export type StorageReadiness = {
+  mode: 'local' | 'minio' | 'injected'
+  state: 'ready' | 'configured' | 'unavailable'
+  bucket_alias: string | null
+  prefix_alias: string | null
+  secure: boolean | null
+  reason_alias: string | null
+  remote_audio_proxy_enabled: boolean
+  web_audio_session_enabled: boolean
+  web_audio_cookie_secure: boolean | null
+  web_audio_session_ttl_seconds: number | null
+}
+
+export type AudioSessionStatus = {
+  enabled: boolean
+  authenticated: boolean
+  expires_in_seconds: number | null
+}
+
 export type TimelineSipEvent = {
   ts: number
   call_id: string | null

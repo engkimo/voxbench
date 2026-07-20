@@ -150,6 +150,55 @@ a {
   white-space: nowrap;
 }
 
+.audioSessionPanel {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: -4px 0 18px;
+  padding: 12px 14px;
+  border: 1px solid #d6b96c;
+  border-radius: 8px;
+  background: #fff9e8;
+}
+
+.audioSessionPanel.authenticated {
+  border-color: #8bc4a5;
+  background: #edf9f2;
+}
+
+.audioSessionCopy {
+  display: grid;
+  gap: 3px;
+}
+
+.audioSessionCopy span,
+.audioSessionCopy small {
+  color: #657384;
+  font-size: 12px;
+}
+
+.audioSessionForm {
+  display: flex;
+  gap: 8px;
+}
+
+.audioSessionForm input {
+  width: min(320px, 42vw);
+  min-height: 38px;
+  border: 1px solid #b9c5d1;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #ffffff;
+}
+
+.audioSessionPanel > em {
+  grid-column: 1 / -1;
+  color: #8e2f35;
+  font-size: 12px;
+  font-style: normal;
+}
+
 .statusPanel {
   display: flex;
   align-items: center;
@@ -1709,6 +1758,7 @@ a {
   }
 
   .runForm,
+  .audioSessionPanel,
   .summaryGrid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1720,8 +1770,18 @@ a {
   }
 
   .runForm,
+  .audioSessionPanel,
+  .audioSessionForm,
   .summaryGrid {
     grid-template-columns: 1fr;
+  }
+
+  .audioSessionForm {
+    display: grid;
+  }
+
+  .audioSessionForm input {
+    width: 100%;
   }
 
   .stageHeader,

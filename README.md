@@ -189,9 +189,37 @@ errors are mapped to fixed HTTP details.
 the Bearer token is excluded from runtime representations and responses.
 
 Local filesystem recording playback remains backward-compatible and does not
-require this remote-object Bearer token. Browser credential/session integration
-for Web playback is separate hardening work; do not place the process Bearer
-token in frontend source or persistent browser storage.
+require this remote-object Bearer token.
+
+For Web playback, keep the remote-object Bearer token server-to-server and enable
+the optional browser session exchange with two separate high-entropy secrets:
+
+```bash
+export VOXBENCH_WEB_AUDIO_SESSION=true
+export VOXBENCH_WEB_AUDIO_LOGIN_TOKEN='<operator-login-token>'
+export VOXBENCH_WEB_AUDIO_SESSION_SECRET='<distinct-cookie-signing-secret>'
+export VOXBENCH_WEB_AUDIO_SESSION_TTL_SECONDS=900  # optional; 60..3600
+export VOXBENCH_WEB_AUDIO_COOKIE_SECURE=true       # optional; default: true
+```
+
+The login token and signing secret must each contain 32–256 ASCII characters,
+must not contain whitespace, and must differ from each other. Web session mode
+also requires the remote audio proxy. The UI submits the operator login token
+once to `POST /auth/remote-audio/session`, immediately clears the input on
+success, and never writes it to browser storage. The API returns a signed,
+short-lived `HttpOnly`, `SameSite=Strict` cookie; the audio endpoint accepts that
+cookie or the original server-to-server Bearer credential. Status and logout are
+available at `GET` and `DELETE /auth/remote-audio/session`. Login payloads are
+bounded, authentication failures are fixed aliases, and neither secret appears
+in readiness or runtime representations.
+
+Serve the Web UI and `/api` through the same origin. `Secure=true` is the
+production default and requires HTTPS. For loopback HTTP development only, set
+`VOXBENCH_WEB_AUDIO_COOKIE_SECURE=false`; readiness exposes this non-secret flag
+so the UI can warn about the development configuration. A custom cross-origin
+deployment requires an explicit CORS and credential-policy review. Never place
+the process Bearer, operator login token, or signing secret in frontend source or
+persistent browser storage.
 
 ## Run the Web UI
 

@@ -34,6 +34,8 @@ import type {
   TimelineSipEvent,
   TimelineStageLane,
   TimelineViolation,
+  AudioSessionStatus,
+  StorageReadiness,
 } from './types'
 
 const DEFAULT_API_BASE = '/api'
@@ -164,6 +166,55 @@ async function createAsyncRun(apiBase: string, payload: unknown): Promise<LiveRu
 async function fetchExamplePayload(apiBase: string): Promise<unknown> {
   const base = apiBase.replace(/\/$/, '')
   const response = await fetch(`${base}/runs/example-payload?environment_profile=demo`)
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function fetchStorageReadiness(apiBase: string): Promise<StorageReadiness> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/storage/readiness`, { credentials: 'include' })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function fetchAudioSessionStatus(apiBase: string): Promise<AudioSessionStatus> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/auth/remote-audio/session`, {
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function createAudioSession(
+  apiBase: string,
+  loginToken: string,
+): Promise<AudioSessionStatus> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/auth/remote-audio/session`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ login_token: loginToken }),
+  })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
+  }
+  return response.json()
+}
+
+async function deleteAudioSession(apiBase: string): Promise<AudioSessionStatus> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/auth/remote-audio/session`, {
+    method: 'DELETE',
+    credentials: 'include',
+  })
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`)
   }
@@ -341,6 +392,10 @@ export function App() {
   const [asyncRunError, setAsyncRunError] = useState<string | null>(null)
   const [asyncRunPending, setAsyncRunPending] = useState(false)
   const [examplePayloadPending, setExamplePayloadPending] = useState(false)
+  const [audioLoginToken, setAudioLoginToken] = useState('')
+  const [audioSessionError, setAudioSessionError] = useState<string | null>(null)
+  const [audioSessionPending, setAudioSessionPending] = useState(false)
+  const [audioSessionRevision, setAudioSessionRevision] = useState(0)
 
   const timelineQuery = useQuery({
     queryKey: ['timeline', apiBase, runId],
@@ -364,6 +419,15 @@ export function App() {
     queryKey: ['cross-session-trends', apiBase],
     queryFn: () => fetchCrossSessionTrends(apiBase),
     refetchInterval: 5_000,
+  })
+  const storageReadinessQuery = useQuery({
+    queryKey: ['storage-readiness', apiBase],
+    queryFn: () => fetchStorageReadiness(apiBase),
+  })
+  const audioSessionStatusQuery = useQuery({
+    queryKey: ['remote-audio-session', apiBase],
+    queryFn: () => fetchAudioSessionStatus(apiBase),
+    enabled: storageReadinessQuery.data?.web_audio_session_enabled === true,
   })
 
   useEffect(() => {
@@ -429,6 +493,36 @@ export function App() {
       setAsyncRunError(error instanceof Error ? error.message : 'Example payload unavailable')
     } finally {
       setExamplePayloadPending(false)
+    }
+  }
+
+  async function submitAudioSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAudioSessionPending(true)
+    setAudioSessionError(null)
+    try {
+      await createAudioSession(apiBase, audioLoginToken)
+      setAudioLoginToken('')
+      await audioSessionStatusQuery.refetch()
+      setAudioSessionRevision((current) => current + 1)
+    } catch (error) {
+      setAudioSessionError(error instanceof Error ? error.message : 'Audio login failed')
+    } finally {
+      setAudioSessionPending(false)
+    }
+  }
+
+  async function logoutAudioSession() {
+    setAudioSessionPending(true)
+    setAudioSessionError(null)
+    try {
+      await deleteAudioSession(apiBase)
+      await audioSessionStatusQuery.refetch()
+      setAudioSessionRevision((current) => current + 1)
+    } catch (error) {
+      setAudioSessionError(error instanceof Error ? error.message : 'Audio logout failed')
+    } finally {
+      setAudioSessionPending(false)
     }
   }
 
@@ -552,6 +646,19 @@ export function App() {
           value={timeline ? readinessHeadline(timeline.readiness_summary) : '-'}
         />
       </section>
+
+      {storageReadinessQuery.data?.remote_audio_proxy_enabled ? (
+        <AudioSessionPanel
+          error={audioSessionError}
+          loginToken={audioLoginToken}
+          onLoginTokenChange={setAudioLoginToken}
+          onLogout={logoutAudioSession}
+          onSubmit={submitAudioSession}
+          pending={audioSessionPending}
+          readiness={storageReadinessQuery.data}
+          status={audioSessionStatusQuery.data}
+        />
+      ) : null}
 
       {timelineQuery.isPending && runId ? <StatusPanel state="loading" /> : null}
       {timelineQuery.isError ? <StatusPanel state="error" detail={timelineQuery.error.message} /> : null}
@@ -684,6 +791,7 @@ export function App() {
             {selectedStage ? (
               <StageDetail
                 apiBase={apiBase}
+                audioSessionRevision={audioSessionRevision}
                 compareRecording={selectedCompareRecording}
                 compareRunId={compareTimeline?.run_id}
                 compareStage={selectedCompareStage}
@@ -694,6 +802,7 @@ export function App() {
             ) : null}
             <Recordings
               apiBase={apiBase}
+              audioSessionRevision={audioSessionRevision}
               recordings={timeline.lanes.recordings}
               runId={timeline.run_id}
             />
@@ -701,6 +810,70 @@ export function App() {
         </section>
       ) : null}
     </main>
+  )
+}
+
+function AudioSessionPanel({
+  error,
+  loginToken,
+  onLoginTokenChange,
+  onLogout,
+  onSubmit,
+  pending,
+  readiness,
+  status,
+}: {
+  error: string | null
+  loginToken: string
+  onLoginTokenChange: (value: string) => void
+  onLogout: () => void
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  pending: boolean
+  readiness: StorageReadiness
+  status?: AudioSessionStatus
+}) {
+  const authenticated = status?.authenticated === true
+  return (
+    <section className={authenticated ? 'audioSessionPanel authenticated' : 'audioSessionPanel'}>
+      <div className="audioSessionCopy">
+        <strong>Remote audio access</strong>
+        <span>
+          {readiness.web_audio_session_enabled
+            ? authenticated
+              ? `Session unlocked${status?.expires_in_seconds ? ` · ${status.expires_in_seconds}s remaining` : ''}`
+              : 'Enter the operator login token to create a short-lived HttpOnly session.'
+            : 'Remote proxy is server-to-server only; Web session login is disabled.'}
+        </span>
+        {readiness.web_audio_session_enabled && readiness.web_audio_cookie_secure === false ? (
+          <small>Development cookie mode is active. Use Secure cookies in production.</small>
+        ) : null}
+      </div>
+      {readiness.web_audio_session_enabled ? (
+        authenticated ? (
+          <button disabled={pending} onClick={onLogout} type="button">
+            Lock audio
+          </button>
+        ) : (
+          <form className="audioSessionForm" onSubmit={onSubmit}>
+            <input
+              aria-label="Remote audio operator login token"
+              autoComplete="off"
+              maxLength={256}
+              minLength={32}
+              onChange={(event) => onLoginTokenChange(event.target.value)}
+              placeholder="operator login token"
+              required
+              type="password"
+              value={loginToken}
+            />
+            <button disabled={pending || loginToken.length < 32} type="submit">
+              {pending ? 'Unlocking…' : 'Unlock audio'}
+            </button>
+          </form>
+        )
+      ) : null}
+      {error ? <em>{error}</em> : null}
+    </section>
   )
 }
 
@@ -1465,6 +1638,7 @@ function ChipList({
 
 function StageDetail({
   apiBase,
+  audioSessionRevision,
   compareRecording,
   compareRunId,
   compareStage,
@@ -1473,6 +1647,7 @@ function StageDetail({
   stage,
 }: {
   apiBase: string
+  audioSessionRevision: number
   compareRecording?: TimelineRecording
   compareRunId?: string
   compareStage?: TimelineStageLane
@@ -1576,6 +1751,7 @@ function StageDetail({
           <strong>Recording</strong>
           <RecordingWaveform
             activePlayerId={activePlayerId}
+            audioSessionRevision={audioSessionRevision}
             durationMs={recording?.duration_ms}
             label="Primary"
             onActivate={activatePlayer}
@@ -1586,6 +1762,7 @@ function StageDetail({
           {hasCompare && comparePlayerId ? (
             <RecordingWaveform
               activePlayerId={activePlayerId}
+              audioSessionRevision={audioSessionRevision}
               durationMs={compareRecording?.duration_ms}
               label="Compare"
               onActivate={activatePlayer}
@@ -1682,6 +1859,7 @@ function MissingComparePanel({ label }: { label: string }) {
 
 function RecordingWaveform({
   activePlayerId,
+  audioSessionRevision,
   durationMs,
   label,
   onActivate,
@@ -1690,6 +1868,7 @@ function RecordingWaveform({
   src,
 }: {
   activePlayerId: string | null
+  audioSessionRevision: number
   durationMs?: number
   label: string
   onActivate: (playerId: string) => void
@@ -1708,6 +1887,7 @@ function RecordingWaveform({
       {src ? (
         <WaveformPlayer
           activePlayerId={activePlayerId}
+          audioSessionRevision={audioSessionRevision}
           onActivate={onActivate}
           onDeactivate={onDeactivate}
           playerId={playerId}
@@ -1722,12 +1902,14 @@ function RecordingWaveform({
 
 function WaveformPlayer({
   activePlayerId,
+  audioSessionRevision,
   onActivate,
   onDeactivate,
   playerId,
   src,
 }: {
   activePlayerId: string | null
+  audioSessionRevision: number
   onActivate: (playerId: string) => void
   onDeactivate: (playerId: string) => void
   playerId: string
@@ -1753,6 +1935,7 @@ function WaveformPlayer({
       cursorColor: '#c84b52',
       height: 76,
       normalize: true,
+      fetchParams: { credentials: 'include' },
       progressColor: '#1f6f78',
       url: src,
       waveColor: '#9eb5c1',
@@ -1787,7 +1970,7 @@ function WaveformPlayer({
         waveRef.current = null
       }
     }
-  }, [onActivate, onDeactivate, playerId, src])
+  }, [audioSessionRevision, onActivate, onDeactivate, playerId, src])
 
   useEffect(() => {
     if (activePlayerId !== playerId && isPlaying) {
@@ -1816,7 +1999,14 @@ function WaveformPlayer({
         </button>
         <span>{loadError ?? (isReady ? 'Waveform ready' : 'Loading waveform')}</span>
       </div>
-      <audio className="nativeAudio" controls preload="none" src={src} />
+      <audio
+        className="nativeAudio"
+        controls
+        crossOrigin="use-credentials"
+        key={audioSessionRevision}
+        preload="none"
+        src={src}
+      />
     </div>
   )
 }
@@ -1952,10 +2142,12 @@ function RtpQualityPanel({ stats }: { stats: TimelineRtpStat[] }) {
 
 function Recordings({
   apiBase,
+  audioSessionRevision,
   recordings,
   runId,
 }: {
   apiBase: string
+  audioSessionRevision: number
   recordings: TimelineRecording[]
   runId: string
 }) {
@@ -1975,7 +2167,13 @@ function Recordings({
                 <strong>{recording.stage}</strong>
                 <span>{formatNumber(recording.duration_ms)} ms</span>
               </div>
-              <audio controls preload="none" src={src} />
+              <audio
+                controls
+                crossOrigin="use-credentials"
+                key={`${recording.stage}-${audioSessionRevision}`}
+                preload="none"
+                src={src}
+              />
             </div>
           )
         })}

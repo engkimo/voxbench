@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from voxbench.control_plane.app import create_app
+from voxbench.control_plane.audio_session import RemoteAudioSessionAuth
 from voxbench.engine_harness.storage import MinioRecordingReader, MinioRecordingSink
 from voxbench.registry.service import load_json
 
@@ -218,3 +219,89 @@ def test_control_plane_proxies_remote_audio_only_with_valid_bearer_token() -> No
             "length": 10 * 1024 * 1024 + 1,
         }
     ]
+
+
+def test_control_plane_exchanges_login_for_http_only_remote_audio_session() -> None:
+    minio_client = FakeMinioClient()
+    sink = MinioRecordingSink(client=minio_client, bucket="voxbench-recordings")
+    session_auth = RemoteAudioSessionAuth(
+        login_token="login-" + "a" * 32,
+        signing_secret=("sign-" + "b" * 32).encode(),
+        ttl_seconds=300,
+        cookie_secure=False,
+    )
+    app = create_app(
+        recording_sink=sink,
+        remote_recording_reader=MinioRecordingReader(
+            client=minio_client,
+            bucket="voxbench-recordings",
+        ),
+        remote_audio_access_token="remote-" + "r" * 32,
+        remote_audio_session_auth=session_auth,
+    )
+    client = TestClient(app)
+    payload = {
+        "config_name": "baseline",
+        "configs": [load_json(ROOT / "examples/configs/valid-baseline.json")],
+        "manifests": [load_json(ROOT / path) for path in MANIFESTS],
+    }
+    run = client.post("/runs", json=payload).json()
+    audio_path = f"/runs/{run['run_id']}/recordings/serializer/audio"
+
+    rejected = client.post(
+        "/auth/remote-audio/session",
+        json={"login_token": "wrong-" + "x" * 32},
+    )
+    login = client.post(
+        "/auth/remote-audio/session",
+        json={"login_token": "login-" + "a" * 32},
+    )
+    status = client.get("/auth/remote-audio/session")
+    audio = client.get(audio_path)
+    logout = client.delete("/auth/remote-audio/session")
+    locked_again = client.get(audio_path)
+
+    assert rejected.status_code == 401
+    assert "wrong-" not in rejected.text
+    assert login.status_code == 200
+    set_cookie = login.headers["set-cookie"]
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=strict" in set_cookie
+    assert "login-" not in set_cookie
+    assert "sign-" not in set_cookie
+    assert status.json()["authenticated"] is True
+    assert audio.status_code == 200
+    assert audio.content.startswith(b"RIFF")
+    assert logout.json()["authenticated"] is False
+    assert locked_again.status_code == 401
+
+
+def test_audio_session_login_body_is_bounded_and_never_echoed() -> None:
+    minio_client = FakeMinioClient()
+    app = create_app(
+        recording_sink=MinioRecordingSink(
+            client=minio_client,
+            bucket="voxbench-recordings",
+        ),
+        remote_recording_reader=MinioRecordingReader(
+            client=minio_client,
+            bucket="voxbench-recordings",
+        ),
+        remote_audio_access_token="remote-" + "r" * 32,
+        remote_audio_session_auth=RemoteAudioSessionAuth(
+            login_token="login-" + "a" * 32,
+            signing_secret=("sign-" + "b" * 32).encode(),
+            cookie_secure=False,
+        ),
+    )
+    client = TestClient(app)
+    secret = "private-secret-" + "x" * 1_100
+
+    response = client.post(
+        "/auth/remote-audio/session",
+        content=secret,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert secret not in response.text
