@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from voxbench.control_plane.app import create_app
-from voxbench.engine_harness.storage import MinioRecordingSink
+from voxbench.engine_harness.storage import MinioRecordingReader, MinioRecordingSink
 from voxbench.registry.service import load_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,12 +28,15 @@ class FakeMinioClient:
         self.payload = b""
         self.upload_path: Path | None = None
         self.sample_widths: list[int] = []
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.get_calls: list[dict[str, Any]] = []
 
     def fput_object(self, **kwargs: Any) -> object:
         self.calls.append(kwargs)
         self.upload_path = Path(kwargs["file_path"])
         assert self.upload_path.exists()
         self.payload = self.upload_path.read_bytes()
+        self.objects[(kwargs["bucket_name"], kwargs["object_name"])] = self.payload
         with wave.open(str(self.upload_path), "rb") as wav:
             assert wav.getframerate() == 8_000
             assert wav.getnchannels() == 1
@@ -41,6 +44,26 @@ class FakeMinioClient:
             assert wav.getsampwidth() in {1, 2}
             assert wav.getnframes() == 160
         return object()
+
+    def get_object(self, **kwargs: Any):
+        self.get_calls.append(kwargs)
+        payload = self.objects[(kwargs["bucket_name"], kwargs["object_name"])]
+
+        class Response:
+            def __init__(self, data: bytes) -> None:
+                self.data = data
+                self.offset = 0
+                self.closed = False
+
+            def read(self, amount: int) -> bytes:
+                chunk = self.data[self.offset : self.offset + amount]
+                self.offset += len(chunk)
+                return chunk
+
+            def close(self) -> None:
+                self.closed = True
+
+        return Response(payload[: kwargs["length"]])
 
 
 def test_minio_recording_sink_uploads_wav_and_returns_credential_free_uri() -> None:
@@ -153,3 +176,45 @@ def test_control_plane_uses_injected_minio_sink_without_payload_credentials() ->
     audio = client.get(f"/runs/{body['run_id']}/recordings/serializer/audio")
     assert audio.status_code == 404
     assert "not available locally" in audio.json()["detail"]
+
+
+def test_control_plane_proxies_remote_audio_only_with_valid_bearer_token() -> None:
+    minio_client = FakeMinioClient()
+    sink = MinioRecordingSink(client=minio_client, bucket="voxbench-recordings")
+    app = create_app(
+        recording_sink=sink,
+        remote_recording_reader=MinioRecordingReader(
+            client=minio_client,
+            bucket="voxbench-recordings",
+        ),
+        remote_audio_access_token="a" * 32,
+    )
+    client = TestClient(app)
+    payload = {
+        "config_name": "baseline",
+        "configs": [load_json(ROOT / "examples/configs/valid-baseline.json")],
+        "manifests": [load_json(ROOT / path) for path in MANIFESTS],
+    }
+    run = client.post("/runs", json=payload).json()
+    audio_path = f"/runs/{run['run_id']}/recordings/serializer/audio"
+
+    missing_auth = client.get(audio_path)
+    wrong_auth = client.get(audio_path, headers={"Authorization": "Bearer wrong"})
+    audio = client.get(audio_path, headers={"Authorization": f"Bearer {'a' * 32}"})
+
+    assert missing_auth.status_code == 401
+    assert missing_auth.headers["www-authenticate"] == "Bearer"
+    assert wrong_auth.status_code == 401
+    assert audio.status_code == 200
+    assert audio.headers["content-type"] == "audio/wav"
+    assert audio.headers["cache-control"] == "no-store"
+    assert audio.headers["x-content-type-options"] == "nosniff"
+    assert audio.content.startswith(b"RIFF")
+    assert b"WAVE" in audio.content[:12]
+    assert minio_client.get_calls == [
+        {
+            "bucket_name": "voxbench-recordings",
+            "object_name": f"recordings/{run['run_id']}/serializer.wav",
+            "length": 10 * 1024 * 1024 + 1,
+        }
+    ]

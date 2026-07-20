@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import binascii
+import hmac
 import json
 import wave
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -26,7 +27,17 @@ from voxbench.control_plane.storage_config import (
 )
 from voxbench.engine_harness.harness import EngineHarness
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact, SpanArtifact
-from voxbench.engine_harness.storage import LocalRecordingSink, RecordingSink
+from voxbench.engine_harness.storage import (
+    LocalRecordingSink,
+    RecordingSink,
+    RemoteRecordingBusyError,
+    RemoteRecordingIdentityError,
+    RemoteRecordingInvalidContentError,
+    RemoteRecordingReader,
+    RemoteRecordingTimeoutError,
+    RemoteRecordingTooLargeError,
+    RemoteRecordingUnavailableError,
+)
 from voxbench.live_demo.simulated_bridge import run_simulated_live_bridge
 from voxbench.realtime_providers import GeminiLiveProvider, OpenAIRealtimeProvider
 from voxbench.registry.errors import RegistryError
@@ -441,6 +452,7 @@ class StorageReadinessResponse(BaseModel):
     prefix_alias: str | None = None
     secure: bool | None = None
     reason_alias: str | None = None
+    remote_audio_proxy_enabled: bool = False
 
 
 class TimelineLanes(BaseModel):
@@ -855,10 +867,22 @@ class RunApiState:
     artifact_root: Path = Path("artifacts/recordings")
     recording_sink: RecordingSink | None = None
     storage_readiness: StorageReadiness | None = None
+    remote_recording_reader: RemoteRecordingReader | None = None
+    remote_audio_access_token: str | None = field(default=None, repr=False)
     repository: InMemoryRunRepository = field(default_factory=InMemoryRunRepository)
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if (self.remote_recording_reader is None) != (
+            self.remote_audio_access_token is None
+        ):
+            raise ValueError("remote recording reader and access token must be configured together")
+        if self.remote_audio_access_token is not None and (
+            not 32 <= len(self.remote_audio_access_token) <= 256
+            or not self.remote_audio_access_token.isascii()
+            or any(character.isspace() for character in self.remote_audio_access_token)
+        ):
+            raise ValueError("remote audio access token must be a safe 32..256 character value")
         if self.storage_readiness is None:
             self.storage_readiness = (
                 injected_storage_readiness()
@@ -1595,8 +1619,9 @@ def create_runs_router() -> APIRouter:
     async def get_run_recording_audio(
         run_id: str,
         stage: str,
+        request: Request,
         api_state: RunApiStateDependency,
-    ) -> FileResponse:
+    ) -> Response:
         stored = api_state.repository.get(run_id)
         if stored is None:
             raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
@@ -1612,13 +1637,73 @@ def create_runs_router() -> APIRouter:
             )
 
         path = _local_recording_path(recording.uri)
-        if path is None or not path.exists():
+        if path is not None and path.exists():
+            return FileResponse(path, media_type="audio/wav")
+
+        remote_reader = api_state.remote_recording_reader
+        access_token = api_state.remote_audio_access_token
+        if remote_reader is None or access_token is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"recording audio is not available locally for stage '{stage}'",
             )
+        _authorize_remote_audio(request, access_token)
 
-        return FileResponse(path, media_type="audio/wav")
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(
+                    remote_reader.read_wav,
+                    uri=recording.uri,
+                    run_id=run_id,
+                    stage=stage,
+                ),
+                timeout=remote_reader.timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="remote recording read timed out",
+            ) from exc
+        except RemoteRecordingIdentityError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="remote recording identity is not available",
+            ) from exc
+        except RemoteRecordingTooLargeError as exc:
+            raise HTTPException(
+                status_code=413,
+                detail="remote recording exceeds the configured byte limit",
+            ) from exc
+        except RemoteRecordingBusyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="remote recording reader is busy",
+                headers={"Retry-After": "1"},
+            ) from exc
+        except RemoteRecordingTimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="remote recording read timed out",
+            ) from exc
+        except RemoteRecordingInvalidContentError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="remote recording is not a valid WAV object",
+            ) from exc
+        except RemoteRecordingUnavailableError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="remote recording read failed",
+            ) from exc
+
+        return Response(
+            content=payload,
+            media_type="audio/wav",
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @router.get("/runs/{run_id}/metrics", response_model=list[MetricResponse])
     async def get_run_metrics(
@@ -1642,3 +1727,22 @@ def _local_recording_path(uri: str) -> Path | None:
     if parsed.scheme != "file":
         return None
     return Path(unquote(parsed.path))
+
+
+def _authorize_remote_audio(request: Request, expected_token: str) -> None:
+    authorization = request.headers.get("authorization", "")
+    scheme, separator, supplied_token = authorization.partition(" ")
+    authorized = (
+        bool(separator)
+        and scheme.lower() == "bearer"
+        and bool(supplied_token)
+        and supplied_token.isascii()
+        and " " not in supplied_token
+        and hmac.compare_digest(supplied_token, expected_token)
+    )
+    if not authorized:
+        raise HTTPException(
+            status_code=401,
+            detail="remote recording authorization required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

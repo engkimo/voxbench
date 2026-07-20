@@ -6,8 +6,12 @@ import ipaddress
 import re
 import tempfile
 import wave
+from contextlib import suppress
 from pathlib import Path
+from threading import BoundedSemaphore
+from time import monotonic
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from voxbench.engine_harness.models import RecordingArtifact
 
@@ -33,6 +37,57 @@ class MinioClientLike(Protocol):
         file_path: str,
         content_type: str,
     ) -> Any: ...
+
+
+class MinioObjectResponseLike(Protocol):
+    def read(self, amount: int) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class MinioReadClientLike(Protocol):
+    def get_object(
+        self,
+        *,
+        bucket_name: str,
+        object_name: str,
+        length: int,
+    ) -> MinioObjectResponseLike: ...
+
+
+class RemoteRecordingReader(Protocol):
+    timeout_seconds: float
+
+    def read_wav(self, *, uri: str, run_id: str, stage: str) -> bytes:
+        """Read one strictly identified, bounded WAV object."""
+
+
+class RemoteRecordingReadError(RuntimeError):
+    """Safe base error for remote recording reads."""
+
+
+class RemoteRecordingIdentityError(RemoteRecordingReadError):
+    pass
+
+
+class RemoteRecordingTooLargeError(RemoteRecordingReadError):
+    pass
+
+
+class RemoteRecordingUnavailableError(RemoteRecordingReadError):
+    pass
+
+
+class RemoteRecordingBusyError(RemoteRecordingReadError):
+    pass
+
+
+class RemoteRecordingTimeoutError(RemoteRecordingReadError):
+    pass
+
+
+class RemoteRecordingInvalidContentError(RemoteRecordingReadError):
+    pass
 
 
 class LocalRecordingSink:
@@ -102,6 +157,96 @@ class MinioRecordingSink:
             format=dict(audio_format),
             duration_ms=duration_ms,
         )
+
+
+class MinioRecordingReader:
+    """Bounded reader for credential-free URIs produced by MinioRecordingSink."""
+
+    def __init__(
+        self,
+        *,
+        client: MinioReadClientLike,
+        bucket: str,
+        prefix: str = "recordings",
+        max_bytes: int = 10 * 1024 * 1024,
+        timeout_seconds: float = 5.0,
+        max_concurrent_reads: int = 2,
+    ) -> None:
+        _validate_bucket(bucket)
+        if max_bytes < 44:
+            raise ValueError("max_bytes must allow a WAV header")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if max_concurrent_reads <= 0:
+            raise ValueError("max_concurrent_reads must be positive")
+        if max_bytes * max_concurrent_reads > 128 * 1024 * 1024:
+            raise ValueError("remote recording in-flight capacity must not exceed 128 MiB")
+        self.client = client
+        self.bucket = bucket
+        self.prefix = _validate_prefix(prefix)
+        self.max_bytes = max_bytes
+        self.timeout_seconds = timeout_seconds
+        self._read_slots = BoundedSemaphore(max_concurrent_reads)
+
+    def read_wav(self, *, uri: str, run_id: str, stage: str) -> bytes:
+        _validate_object_segment(run_id, field="run_id")
+        _validate_object_segment(stage, field="stage")
+        object_name = "/".join(
+            part for part in (self.prefix, run_id, f"{stage}.wav") if part
+        )
+        parsed = urlparse(uri)
+        if (
+            parsed.scheme != "s3"
+            or parsed.netloc != self.bucket
+            or parsed.path != f"/{object_name}"
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise RemoteRecordingIdentityError("remote-recording-identity-mismatch")
+        if not self._read_slots.acquire(blocking=False):
+            raise RemoteRecordingBusyError("remote-recording-reader-busy")
+        try:
+            return self._read_object(object_name)
+        finally:
+            self._read_slots.release()
+
+    def _read_object(self, object_name: str) -> bytes:
+        try:
+            response = self.client.get_object(
+                bucket_name=self.bucket,
+                object_name=object_name,
+                length=self.max_bytes + 1,
+            )
+        except Exception:
+            raise RemoteRecordingUnavailableError("remote-recording-read-failed") from None
+
+        deadline = monotonic() + self.timeout_seconds
+        payload = bytearray()
+        try:
+            while len(payload) <= self.max_bytes:
+                if monotonic() >= deadline:
+                    raise RemoteRecordingTimeoutError("remote-recording-read-timeout")
+                amount = min(64 * 1024, self.max_bytes + 1 - len(payload))
+                chunk = response.read(amount)
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise RemoteRecordingUnavailableError("remote-recording-read-failed")
+                payload.extend(chunk)
+        except RemoteRecordingReadError:
+            raise
+        except Exception:
+            raise RemoteRecordingUnavailableError("remote-recording-read-failed") from None
+        finally:
+            with suppress(Exception):
+                response.close()
+
+        if len(payload) > self.max_bytes:
+            raise RemoteRecordingTooLargeError("remote-recording-too-large")
+        if len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
+            raise RemoteRecordingInvalidContentError("remote-recording-invalid-content")
+        return bytes(payload)
 
 
 _BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")

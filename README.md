@@ -137,6 +137,8 @@ export VOXBENCH_MINIO_PREFIX=recordings       # optional; default: recordings
 export VOXBENCH_MINIO_SECURE=true             # optional; true or false
 export VOXBENCH_MINIO_PROBE_BUCKET=false      # optional; default: false
 export VOXBENCH_MINIO_PROBE_TIMEOUT_MS=2000   # optional; 10..10000
+export VOXBENCH_MINIO_IO_TIMEOUT_MS=5000      # optional; 100..30000
+export VOXBENCH_REMOTE_AUDIO_PROXY=false      # optional; default: false
 uvicorn voxbench.control_plane.app:app --reload
 ```
 
@@ -157,9 +159,39 @@ limits startup waiting to 10–10,000 ms. The probe never creates a bucket, retr
 or returns a raw SDK error. Keep the default `false` when startup must not make a
 network request.
 
-Authenticated remote audio retrieval remains follow-up work; a remote recording
-currently returns 404 from the local-only audio endpoint instead of exposing a
-storage URL.
+Remote audio retrieval is disabled by default and remote recordings continue to
+return 404. To opt in, provide a high-entropy process secret of 32–256 ASCII
+characters through the deployment secret manager and set:
+
+```bash
+export VOXBENCH_REMOTE_AUDIO_PROXY=true
+export VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN='<high-entropy-bearer-token>'
+export VOXBENCH_REMOTE_AUDIO_MAX_BYTES=10485760    # optional; 44..67108864
+export VOXBENCH_REMOTE_AUDIO_MAX_CONCURRENT=2      # optional; 1..8
+```
+
+Then request the existing audio endpoint with the token:
+
+```bash
+curl \
+  -H "Authorization: Bearer ${VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN}" \
+  'http://127.0.0.1:8000/runs/<run-id>/recordings/<stage>/audio' \
+  --output recording.wav
+```
+
+The proxy never returns a presigned URL. It accepts only the exact configured
+bucket/prefix/run/stage object identity, requests at most the configured byte
+limit plus one byte, rejects oversized or non-WAV content, bounds concurrent
+reads and total in-flight payload capacity to 128 MiB, and uses a TLS-verifying
+HTTP client with connect/read timeouts and no automatic retry. SDK/configuration
+errors are mapped to fixed HTTP details.
+`GET /storage/readiness` exposes only whether the proxy capability is enabled;
+the Bearer token is excluded from runtime representations and responses.
+
+Local filesystem recording playback remains backward-compatible and does not
+require this remote-object Bearer token. Browser credential/session integration
+for Web playback is separate hardening work; do not place the process Bearer
+token in frontend source or persistent browser storage.
 
 ## Run the Web UI
 

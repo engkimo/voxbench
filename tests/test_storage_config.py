@@ -12,8 +12,9 @@ from voxbench.control_plane.run_api import RunCreateRequest
 from voxbench.control_plane.storage_config import (
     StorageConfigurationError,
     build_recording_sink_from_env,
+    build_recording_storage_from_env,
 )
-from voxbench.engine_harness.storage import MinioRecordingSink
+from voxbench.engine_harness.storage import MinioRecordingReader, MinioRecordingSink
 
 
 class FakeMinioClient:
@@ -27,6 +28,9 @@ class FakeMinioClient:
     def bucket_exists(self, bucket_name: str) -> bool:
         self.bucket_exists_calls.append(bucket_name)
         return self.bucket_exists_result
+
+    def get_object(self, **kwargs: Any):
+        raise AssertionError("remote object read was not expected")
 
 
 class CapturingClientFactory:
@@ -61,6 +65,7 @@ def test_default_environment_selects_local_storage() -> None:
     assert readiness.prefix_alias is None
     assert readiness.secure is None
     assert readiness.reason_alias is None
+    assert readiness.remote_audio_proxy_enabled is False
 
 
 def test_run_payload_cannot_select_or_configure_storage() -> None:
@@ -108,6 +113,57 @@ def test_minio_environment_builds_sink_and_credential_free_readiness() -> None:
     assert "minio.internal" not in serialized
     assert "private-access-key" not in serialized
     assert "private-secret" not in serialized
+    assert factory.client.bucket_exists_calls == []
+
+
+def test_remote_audio_proxy_requires_process_token_and_omits_it_from_repr() -> None:
+    environment = _minio_env()
+    environment["VOXBENCH_REMOTE_AUDIO_PROXY"] = "true"
+    environment["VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN"] = "private-token-" + "a" * 32
+
+    runtime = build_recording_storage_from_env(
+        environment,
+        client_factory=CapturingClientFactory(),
+    )
+
+    assert isinstance(runtime.recording_sink, MinioRecordingSink)
+    assert isinstance(runtime.remote_recording_reader, MinioRecordingReader)
+    assert runtime.remote_audio_access_token == "private-token-" + "a" * 32
+    assert runtime.readiness.remote_audio_proxy_enabled is True
+    assert "private-token" not in repr(runtime)
+
+
+def test_remote_audio_proxy_missing_token_uses_safe_error() -> None:
+    environment = _minio_env()
+    environment["VOXBENCH_REMOTE_AUDIO_PROXY"] = "true"
+    environment["VOXBENCH_MINIO_PROBE_BUCKET"] = "true"
+    factory = CapturingClientFactory()
+
+    with pytest.raises(StorageConfigurationError) as caught:
+        build_recording_storage_from_env(
+            environment,
+            client_factory=factory,
+        )
+
+    assert caught.value.reason_alias == "remote-audio-token-missing"
+    assert factory.calls == []
+    assert factory.client.bucket_exists_calls == []
+
+
+def test_remote_audio_proxy_rejects_excessive_inflight_capacity_before_probe() -> None:
+    environment = _minio_env()
+    environment["VOXBENCH_REMOTE_AUDIO_PROXY"] = "true"
+    environment["VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN"] = "a" * 32
+    environment["VOXBENCH_REMOTE_AUDIO_MAX_BYTES"] = str(64 * 1024 * 1024)
+    environment["VOXBENCH_REMOTE_AUDIO_MAX_CONCURRENT"] = "3"
+    environment["VOXBENCH_MINIO_PROBE_BUCKET"] = "true"
+    factory = CapturingClientFactory()
+
+    with pytest.raises(StorageConfigurationError) as caught:
+        build_recording_storage_from_env(environment, client_factory=factory)
+
+    assert caught.value.reason_alias == "remote-audio-capacity-invalid"
+    assert factory.calls == []
     assert factory.client.bucket_exists_calls == []
 
 
@@ -207,6 +263,11 @@ def test_minio_environment_reports_only_missing_variable_names() -> None:
         ("VOXBENCH_RECORDING_SINK", "private-backend", "unsupported-recording-sink"),
         ("VOXBENCH_MINIO_SECURE", "secret-bool", "minio-secure-invalid"),
         (
+            "VOXBENCH_REMOTE_AUDIO_PROXY",
+            "secret-bool",
+            "remote-audio-proxy-flag-invalid",
+        ),
+        (
             "VOXBENCH_MINIO_PROBE_BUCKET",
             "secret-bool",
             "minio-probe-flag-invalid",
@@ -221,6 +282,28 @@ def test_minio_environment_reports_only_missing_variable_names() -> None:
             "VOXBENCH_MINIO_PROBE_TIMEOUT_MS",
             "10001",
             "minio-probe-timeout-invalid",
+        ),
+        ("VOXBENCH_MINIO_IO_TIMEOUT_MS", "99", "minio-io-timeout-invalid"),
+        ("VOXBENCH_MINIO_IO_TIMEOUT_MS", "30001", "minio-io-timeout-invalid"),
+        (
+            "VOXBENCH_REMOTE_AUDIO_MAX_BYTES",
+            "43",
+            "remote-audio-max-bytes-invalid",
+        ),
+        (
+            "VOXBENCH_REMOTE_AUDIO_MAX_BYTES",
+            str(64 * 1024 * 1024 + 1),
+            "remote-audio-max-bytes-invalid",
+        ),
+        (
+            "VOXBENCH_REMOTE_AUDIO_MAX_CONCURRENT",
+            "0",
+            "remote-audio-max-concurrent-invalid",
+        ),
+        (
+            "VOXBENCH_REMOTE_AUDIO_MAX_CONCURRENT",
+            "9",
+            "remote-audio-max-concurrent-invalid",
         ),
         (
             "VOXBENCH_MINIO_ENDPOINT",
@@ -265,6 +348,29 @@ def test_client_factory_failure_discards_raw_error() -> None:
     assert caught.value.__suppress_context__ is True
 
 
+@pytest.mark.parametrize("token", ["short", "a" * 257, "a" * 31 + " "])
+def test_remote_audio_proxy_rejects_unsafe_token_without_echo(token: str) -> None:
+    environment = _minio_env()
+    environment["VOXBENCH_REMOTE_AUDIO_PROXY"] = "true"
+    environment["VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN"] = token
+
+    with pytest.raises(StorageConfigurationError) as caught:
+        build_recording_storage_from_env(
+            environment,
+            client_factory=CapturingClientFactory(),
+        )
+
+    assert caught.value.reason_alias == "remote-audio-token-invalid"
+    assert token not in str(caught.value)
+
+
+def test_remote_audio_proxy_cannot_be_enabled_for_local_storage() -> None:
+    with pytest.raises(StorageConfigurationError) as caught:
+        build_recording_storage_from_env({"VOXBENCH_REMOTE_AUDIO_PROXY": "true"})
+
+    assert caught.value.reason_alias == "remote-audio-proxy-requires-minio"
+
+
 def test_storage_readiness_endpoint_is_local_by_default() -> None:
     response = TestClient(create_app()).get("/storage/readiness")
 
@@ -276,6 +382,7 @@ def test_storage_readiness_endpoint_is_local_by_default() -> None:
         "prefix_alias": None,
         "secure": None,
         "reason_alias": None,
+        "remote_audio_proxy_enabled": False,
     }
 
 
@@ -295,8 +402,27 @@ def test_environment_app_exposes_only_safe_minio_readiness() -> None:
         "prefix_alias": "stage-taps/v1",
         "secure": False,
         "reason_alias": "connectivity-not-checked",
+        "remote_audio_proxy_enabled": False,
     }
     assert "minio.internal" not in response.text
+    assert "private-access-key" not in response.text
+    assert "private-secret" not in response.text
+
+
+def test_environment_app_exposes_proxy_capability_without_access_token() -> None:
+    environment = _minio_env()
+    environment["VOXBENCH_REMOTE_AUDIO_PROXY"] = "true"
+    environment["VOXBENCH_REMOTE_AUDIO_BEARER_TOKEN"] = "private-token-" + "a" * 32
+
+    app = create_app_from_env(
+        environ=environment,
+        client_factory=CapturingClientFactory(),
+    )
+    response = TestClient(app).get("/storage/readiness")
+
+    assert response.status_code == 200
+    assert response.json()["remote_audio_proxy_enabled"] is True
+    assert "private-token" not in response.text
     assert "private-access-key" not in response.text
     assert "private-secret" not in response.text
 
@@ -319,4 +445,5 @@ def test_injected_sink_readiness_does_not_inspect_the_sink() -> None:
         "prefix_alias": None,
         "secure": None,
         "reason_alias": "connectivity-not-checked",
+        "remote_audio_proxy_enabled": False,
     }

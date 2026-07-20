@@ -1,5 +1,21 @@
 # 進捗
 
+## Phase 1/5 authenticated bounded remote audio proxy (2026-07-20)
+
+- MinIO `get_object`をserver-sideだけで使う `MinioRecordingReader` を追加し、presigned URLや
+  storage credentialをbrowser/responseへ返さず既存audio endpointからWAVを返せるようにした。
+- remote proxyは `VOXBENCH_REMOTE_AUDIO_PROXY=true` の明示時だけ有効。32〜256文字のprocess-level
+  Bearer tokenを必須とし、constant-time比較、不正/missing tokenは固定401で拒否する。
+- 保存済み `s3://` URIがconfigured bucket/prefixとrequest run/stageから導くobject keyに完全一致する
+  場合だけ読込む。query/fragment、別bucket/prefix/run/stage、非S3 URIはnetwork前に拒否する。
+- byte上限44〜64 MiB、同時read 1〜8、connect/read timeout 100〜30,000msをbounded設定化した。
+  総in-flight payloadは128 MiB以下とし、SDKにもlimit+1 byteだけ要求。oversize、非RIFF/WAVE、
+  busy、timeout、SDK失敗をsafe HTTPへ変換する。
+- custom urllib3 clientはTLS証明書検証＋certifi CAを明示し、自動retryなし。responseは必ずcloseする。
+- local playbackとproxy既定offの404互換を維持し、readinessにはenabled booleanだけを追加した。
+- identity/limit/content/error cleanup/deadline/concurrency/auth/upload→read統合/startup secret sanitizationを
+  test固定した。全体進捗目安は約88%。次はWeb向けsession auth/BFF、またはPostgres永続化連携。
+
 ## Phase 1/5 bounded MinIO bucket readiness probe (2026-07-18)
 
 - `VOXBENCH_MINIO_PROBE_BUCKET=true` の明示時だけ、process startupでbucket existenceを1回確認する
