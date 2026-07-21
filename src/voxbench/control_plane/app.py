@@ -94,6 +94,8 @@ def create_app(
                 worker_id=f"worker-{uuid4().hex}",
             )
         )
+    if supervisor is not None:
+        state.worker_telemetry_provider = lambda: supervisor.snapshot().__dict__
     app.state.voxbench = state
     app.state.run_worker_supervisor = supervisor
 

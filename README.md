@@ -29,9 +29,12 @@ Implemented so far:
   direct-provider, Pipecat, and custom telephony applications
 - An opt-in SQLAlchemy/Postgres run repository that restores completed and
   observed runs, normalized telemetry, verification results, and recording metadata
+- A Postgres-backed persistent async queue with leases, heartbeat, fenced result
+  commits, supervised polling, restart recovery, and process-local safe telemetry
 
 This implementation intentionally does not include SIP packet capture, production
-live-host hardening, persistent production job leasing, or the scale profile.
+live-host hardening, production-validated multi-process worker deployment, or the
+scale profile.
 
 ## Install for development
 
@@ -128,6 +131,7 @@ export VOXBENCH_RUN_REPOSITORY=postgres
 export VOXBENCH_DATABASE_URL='postgresql+psycopg://voxbench:<password>@db.internal/voxbench'
 export VOXBENCH_POSTGRES_PROBE=true                 # optional; default: false
 export VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS=2000      # optional; 10..10000
+export VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS=5000  # optional; 100..30000
 alembic upgrade head
 uvicorn voxbench.control_plane.app:app
 ```
@@ -151,6 +155,13 @@ driver error. A timed-out driver call may continue in its daemon worker until th
 driver or operating system returns, so deployments should also set a bounded
 psycopg `connect_timeout` in the database URL.
 
+Production-created psycopg connections also receive a per-session PostgreSQL
+`statement_timeout` through libpq connection options. The default is 5,000 ms and
+the accepted range is 100–30,000 ms, preventing a stuck query or row lock from
+holding a worker indefinitely. An injected test/custom engine factory is
+responsible for applying an equivalent timeout itself. `connect_timeout` remains
+a separate libpq connection parameter and should also be bounded in the URL.
+
 If a repository operation fails after startup, the API returns a fixed
 `503 {"detail":"run repository is unavailable"}` with `Retry-After: 1`.
 SQL statements, driver messages, connection details, and query parameters are
@@ -169,8 +180,10 @@ Its state machine provides idempotent enqueue by run, `FOR UPDATE SKIP LOCKED`
 claiming, bounded 5–300 second leases, opaque lease tokens, heartbeat extension,
 delayed retry, and an attempt limit. Expired leases can be reclaimed with a new
 token, so stale workers cannot heartbeat or finalize a job through the queue.
-`GET /repository/readiness` exposes only `job_queue_enabled`; it does not expose
-worker or lease data.
+`GET /repository/readiness` exposes the configured statement timeout and only
+process-local safe worker telemetry: enabled/running booleans plus processed,
+error, and lease-loss counters. It does not expose worker aliases, job IDs, lease
+tokens, database identities, or exception messages; counters reset on restart.
 
 `PostgresRunRepository.commit_leased_result(...)` locks the matching job, verifies
 the run/job/worker/opaque-token/unexpired-lease tuple, and commits the normalized
@@ -197,8 +210,20 @@ compatibility.
 
 The queue and fencing contracts are designed for multiple Postgres application
 processes, but production rollout should still validate real-Postgres concurrent
-claim behavior, database statement timeouts, shutdown telemetry, and deployment
-migrations before increasing worker count.
+claim behavior, shutdown telemetry, and deployment migrations before increasing
+worker count. The opt-in integration tests create and drop a unique schema in a
+disposable test database and directly verify locked-row skipping plus stale-lease
+fencing:
+
+```bash
+export VOXBENCH_TEST_POSTGRES_URL='postgresql+psycopg://user:<password>@localhost/testdb'
+pytest -q -m postgres_integration tests/test_postgres_integration.py
+```
+
+The configured test role must be allowed to create and drop schemas. Never point
+this variable at a production database. Without the variable, these tests are
+collected and explicitly skipped; the normal SQLite and SQL compilation coverage
+continues to run.
 
 The engine harness also exposes `MinioRecordingSink` for the official MinIO
 Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with

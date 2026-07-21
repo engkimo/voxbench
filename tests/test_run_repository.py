@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import voxbench.control_plane.repository_config as repository_config_module
 from voxbench.control_plane.app import create_app, create_app_from_env
 from voxbench.control_plane.job_queue import PostgresRunJobQueue
 from voxbench.control_plane.models import Base
@@ -394,6 +395,12 @@ def test_repository_environment_defaults_to_memory_and_exposes_safe_readiness() 
         "state": "ready",
         "reason_alias": None,
         "job_queue_enabled": False,
+        "statement_timeout_ms": None,
+        "worker_enabled": False,
+        "worker_running": False,
+        "worker_processed_total": 0,
+        "worker_error_total": 0,
+        "worker_lease_lost_total": 0,
     }
 
 
@@ -422,10 +429,18 @@ def test_repository_environment_wires_postgres_without_exposing_database_url() -
         "state": "configured",
         "reason_alias": "connectivity-and-migrations-not-checked",
         "job_queue_enabled": True,
+        "statement_timeout_ms": 5_000,
+        "worker_enabled": True,
+        "worker_running": False,
+        "worker_processed_total": 0,
+        "worker_error_total": 0,
+        "worker_lease_lost_total": 0,
     }
     serialized = response.text + repr(app.state.voxbench)
     assert "private-password" not in serialized
     assert "db.internal" not in serialized
+    assert "worker-" not in response.text
+    assert "lease_token" not in response.text
 
 
 def test_postgres_async_run_uses_persistent_worker_lifespan_and_atomic_job(
@@ -453,6 +468,10 @@ def test_postgres_async_run_uses_persistent_worker_lifespan_and_atomic_job(
 
     with TestClient(app) as client:
         assert supervisor.is_running is True
+        readiness = client.get("/repository/readiness").json()
+        assert readiness["worker_enabled"] is True
+        assert readiness["worker_running"] is True
+        assert readiness["statement_timeout_ms"] == 5_000
         accepted = client.post("/runs/async", json=_run_payload())
         assert accepted.status_code == 202
         run_id = accepted.json()["run_id"]
@@ -473,6 +492,10 @@ def test_postgres_async_run_uses_persistent_worker_lifespan_and_atomic_job(
         assert job.attempts == 1
         assert job.lease_owner is None
         assert job.lease_token is None
+        telemetry = client.get("/repository/readiness").json()
+        assert telemetry["worker_processed_total"] >= 1
+        assert telemetry["worker_error_total"] == 0
+        assert telemetry["worker_lease_lost_total"] == 0
 
     assert supervisor.is_running is False
 
@@ -551,6 +574,28 @@ def _sqlite_probe_engine(migration_head: str):
     return engine
 
 
+def test_postgres_engine_applies_bounded_session_statement_timeout(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    engine = create_engine("sqlite+pysqlite://")
+
+    def capture_engine(url: str, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return engine
+
+    monkeypatch.setattr(repository_config_module, "create_engine", capture_engine)
+
+    runtime = build_run_repository_from_env(
+        _postgres_environment(
+            VOXBENCH_POSTGRES_PROBE="false",
+            VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS="1234",
+        )
+    )
+
+    assert captured["connect_args"] == {"options": "-c statement_timeout=1234"}
+    assert runtime.readiness.statement_timeout_ms == 1_234
+
+
 def test_opt_in_postgres_probe_reports_ready_only_at_expected_migration_head() -> None:
     engine = _sqlite_probe_engine("0008_run_job_leases")
 
@@ -563,6 +608,7 @@ def test_opt_in_postgres_probe_reports_ready_only_at_expected_migration_head() -
         mode="postgres",
         state="ready",
         job_queue_enabled=True,
+        statement_timeout_ms=5_000,
     )
 
 
@@ -579,6 +625,7 @@ def test_postgres_probe_reports_safe_migration_head_mismatch() -> None:
         state="unavailable",
         reason_alias="migration-head-mismatch",
         job_queue_enabled=True,
+        statement_timeout_ms=5_000,
     )
 
 
@@ -603,6 +650,7 @@ def test_postgres_probe_failure_discards_raw_database_error() -> None:
         state="unavailable",
         reason_alias="postgres-probe-failed",
         job_queue_enabled=True,
+        statement_timeout_ms=5_000,
     )
     serialized = repr(runtime) + repr(runtime.repository)
     assert "private-password" not in serialized
@@ -635,6 +683,7 @@ def test_postgres_probe_timeout_is_bounded_and_safe() -> None:
         state="unavailable",
         reason_alias="postgres-probe-timeout",
         job_queue_enabled=True,
+        statement_timeout_ms=5_000,
     )
 
 
@@ -656,6 +705,21 @@ def test_postgres_probe_timeout_is_bounded_and_safe() -> None:
             "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS",
             "10001",
             "postgres-probe-timeout-invalid",
+        ),
+        (
+            "VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS",
+            "private-timeout",
+            "postgres-statement-timeout-invalid",
+        ),
+        (
+            "VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS",
+            "99",
+            "postgres-statement-timeout-invalid",
+        ),
+        (
+            "VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS",
+            "30001",
+            "postgres-statement-timeout-invalid",
         ),
     ],
 )

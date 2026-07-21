@@ -235,6 +235,7 @@ def test_supervisor_start_stop_are_idempotent_and_restartable() -> None:
     assert supervisor.start() is False
     assert called.wait(timeout=1)
     assert supervisor.is_running is True
+    assert supervisor.snapshot().running is True
     assert supervisor.stop() is True
     assert supervisor.stop() is True
     assert supervisor.is_running is False
@@ -269,6 +270,40 @@ def test_supervisor_survives_worker_error_with_bounded_backoff() -> None:
     assert recovered.wait(timeout=1)
     assert worker.calls >= 2
     assert supervisor.stop() is True
+    telemetry = supervisor.snapshot()
+    assert telemetry.error_total == 1
+    assert telemetry.processed_total == 0
+    assert telemetry.lease_lost_total == 0
+
+
+def test_supervisor_counts_lease_loss_without_exposing_lease_data() -> None:
+    returned = Event()
+
+    class LeaseLostWorker:
+        def run_one(self) -> RunWorkerResult:
+            returned.set()
+            return RunWorkerResult(
+                outcome="lease_lost",
+                job_id="internal-job-id",
+                run_id="internal-run-id",
+                attempt=2,
+            )
+
+    supervisor = RunWorkerSupervisor(
+        LeaseLostWorker(),
+        idle_wait_seconds=0.05,
+        error_wait_seconds=0.1,
+        shutdown_timeout_seconds=0.5,
+    )
+
+    supervisor.start()
+    assert returned.wait(timeout=1)
+    assert supervisor.stop() is True
+    telemetry = supervisor.snapshot()
+    assert telemetry.processed_total == 1
+    assert telemetry.lease_lost_total == 1
+    assert "internal-job-id" not in repr(telemetry)
+    assert "internal-run-id" not in repr(telemetry)
 
 
 def test_supervisor_shutdown_timeout_is_bounded() -> None:
@@ -329,6 +364,11 @@ def test_supervisor_recovers_expired_lease_after_restart() -> None:
     assert status is not None
     assert status.state == "completed"
     assert status.attempts == 2
+    telemetry = supervisor.snapshot()
+    assert telemetry.running is False
+    assert telemetry.processed_total >= 1
+    assert telemetry.error_total == 0
+    assert telemetry.lease_lost_total == 0
 
 
 @pytest.mark.parametrize(

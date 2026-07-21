@@ -464,6 +464,9 @@ WS   /live                         # live-preview projectionをsnapshot push
   final attemptだけfailed runとfailed jobをfenced transactionで同時確定する。
 - FastAPI lifespanがprocessごとにpolling supervisorをstart/stopする。idle 0.05〜10秒、error 0.1〜60秒、
   shutdown join 0.1〜30秒をboundedにし、既定は0.25/1/5秒。queued/expired leaseをstartup後にclaimする。
+- psycopg sessionへ100〜30,000msの`statement_timeout`（既定5,000ms）を設定する。readinessは
+  worker enabled/runningとprocess-local processed/error/lease-lost countだけを返し、identity/token/error
+  detailは返さない。実Postgres concurrency testはdisposable DBのunique schema内だけで行う。
 - OTLP受信：FastAPIエンドポイントで自前パース→`spans`。
 
 **Engine Harness**

@@ -54,3 +54,6 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "postgres_integration: opt-in tests requiring VOXBENCH_TEST_POSTGRES_URL",
+]

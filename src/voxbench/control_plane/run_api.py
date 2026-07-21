@@ -6,7 +6,7 @@ import binascii
 import hmac
 import json
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -514,6 +514,12 @@ class RepositoryReadinessResponse(BaseModel):
     state: Literal["ready", "configured", "unavailable"]
     reason_alias: str | None = None
     job_queue_enabled: bool = False
+    statement_timeout_ms: int | None = None
+    worker_enabled: bool = False
+    worker_running: bool = False
+    worker_processed_total: int = 0
+    worker_error_total: int = 0
+    worker_lease_lost_total: int = 0
 
 
 class TimelineLanes(BaseModel):
@@ -1320,6 +1326,10 @@ class RunApiState:
         default=None,
         repr=False,
     )
+    worker_telemetry_provider: Callable[[], Mapping[str, bool | int]] | None = field(
+        default=None,
+        repr=False,
+    )
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -1724,7 +1734,16 @@ def create_runs_router() -> APIRouter:
     async def get_repository_readiness(
         api_state: RunApiStateDependency,
     ) -> RepositoryReadinessResponse:
-        return RepositoryReadinessResponse(**api_state.repository_readiness.__dict__)
+        provider = api_state.worker_telemetry_provider
+        telemetry = provider() if provider is not None else {}
+        return RepositoryReadinessResponse(
+            **api_state.repository_readiness.__dict__,
+            worker_enabled=provider is not None,
+            worker_running=bool(telemetry.get("running", False)),
+            worker_processed_total=int(telemetry.get("processed_total", 0)),
+            worker_error_total=int(telemetry.get("error_total", 0)),
+            worker_lease_lost_total=int(telemetry.get("lease_lost_total", 0)),
+        )
 
     @router.get("/storage/readiness", response_model=StorageReadinessResponse)
     async def get_storage_readiness(

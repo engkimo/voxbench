@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 1/5 Postgres worker production-readiness contracts (2026-07-22)
+
+- `VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS`を100〜30,000ms、既定5,000msで追加し、production
+  psycopg sessionへlibpq `options=-c statement_timeout=...`として適用。connect timeoutとは責務分離する。
+- supervisorにprocess-local processed/error/lease-lost counter snapshotを追加。repository readinessへ
+  enabled/runningとcounter、statement timeoutだけを投影し、worker/job/DB identity、token、error detailは除外。
+- `VOXBENCH_TEST_POSTGRES_URL`指定時だけ動くreal Postgres testを追加。random unique schemaをcreate/dropし、
+  held rowを待たず次jobをclaimする`SKIP LOCKED`とexpired lease後のstale result拒否を直接検証する。
+- 通常suiteでは実Postgres 2件を明示skip。ローカルPostgres 14 binaryは削除済みICU 74へのlink切れで
+  起動不能だったため、package再導入は行わず外部test URL待ちとした。
+- 全体進捗目安は約99%。残りは実Postgres URL上でのopt-in test実走、deployment migration、worker
+  shutdown/timeout alertの運用接続、実multi-process soak test。
+
 ## Phase 1/5 persistent Postgres async worker lifecycle (2026-07-21)
 
 - `PostgresRunRepository.save_queued_run(...)`でinitial runとqueued jobを同一transactionに保存し、

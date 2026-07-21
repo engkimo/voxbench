@@ -18,11 +18,15 @@ RUN_REPOSITORY_ENV = "VOXBENCH_RUN_REPOSITORY"
 DATABASE_URL_ENV = "VOXBENCH_DATABASE_URL"
 POSTGRES_PROBE_ENV = "VOXBENCH_POSTGRES_PROBE"
 POSTGRES_PROBE_TIMEOUT_MS_ENV = "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS"
+POSTGRES_STATEMENT_TIMEOUT_MS_ENV = "VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS"
 EXPECTED_ALEMBIC_HEAD = "0008_run_job_leases"
 
 _DEFAULT_PROBE_TIMEOUT_MS = 2_000
 _MIN_PROBE_TIMEOUT_MS = 10
 _MAX_PROBE_TIMEOUT_MS = 10_000
+_DEFAULT_STATEMENT_TIMEOUT_MS = 5_000
+_MIN_STATEMENT_TIMEOUT_MS = 100
+_MAX_STATEMENT_TIMEOUT_MS = 30_000
 
 RepositoryMode = Literal["memory", "postgres"]
 RepositoryState = Literal["ready", "configured", "unavailable"]
@@ -50,6 +54,7 @@ class RepositoryReadiness:
     state: RepositoryState
     reason_alias: str | None = None
     job_queue_enabled: bool = False
+    statement_timeout_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +112,15 @@ def build_run_repository_from_env(
         maximum=_MAX_PROBE_TIMEOUT_MS,
         reason_alias="postgres-probe-timeout-invalid",
     )
+    statement_timeout_ms = _parse_bounded_integer(
+        values.get(
+            POSTGRES_STATEMENT_TIMEOUT_MS_ENV,
+            str(_DEFAULT_STATEMENT_TIMEOUT_MS),
+        ),
+        minimum=_MIN_STATEMENT_TIMEOUT_MS,
+        maximum=_MAX_STATEMENT_TIMEOUT_MS,
+        reason_alias="postgres-statement-timeout-invalid",
+    )
 
     try:
         engine = (
@@ -119,6 +133,9 @@ def build_run_repository_from_env(
                 pool_size=5,
                 max_overflow=5,
                 pool_timeout=5,
+                connect_args={
+                    "options": f"-c statement_timeout={statement_timeout_ms}"
+                },
             )
         )
     except (ImportError, NoSuchModuleError):
@@ -137,7 +154,11 @@ def build_run_repository_from_env(
             job_queue_enabled=True,
         )
     )
-    readiness = replace(readiness, job_queue_enabled=True)
+    readiness = replace(
+        readiness,
+        job_queue_enabled=True,
+        statement_timeout_ms=statement_timeout_ms,
+    )
     return RunRepositoryRuntime(
         repository=PostgresRunRepository(sessions),
         readiness=readiness,

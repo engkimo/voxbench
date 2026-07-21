@@ -51,6 +51,14 @@ class RunWorkerResult:
     attempt: int | None = None
 
 
+@dataclass(frozen=True)
+class RunWorkerTelemetry:
+    running: bool
+    processed_total: int
+    error_total: int
+    lease_lost_total: int
+
+
 @dataclass
 class RunJobWorker:
     queue: RunJobQueue = field(repr=False)
@@ -179,6 +187,9 @@ class RunWorkerSupervisor:
     _stop: Event = field(default_factory=Event, init=False, repr=False)
     _lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _thread: Thread | None = field(default=None, init=False, repr=False)
+    _processed_total: int = field(default=0, init=False, repr=False)
+    _error_total: int = field(default=0, init=False, repr=False)
+    _lease_lost_total: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not 0.05 <= self.idle_wait_seconds <= 10:
@@ -206,6 +217,15 @@ class RunWorkerSupervisor:
             self._thread.start()
             return True
 
+    def snapshot(self) -> RunWorkerTelemetry:
+        with self._lock:
+            return RunWorkerTelemetry(
+                running=self._thread is not None and self._thread.is_alive(),
+                processed_total=self._processed_total,
+                error_total=self._error_total,
+                lease_lost_total=self._lease_lost_total,
+            )
+
     def stop(self) -> bool:
         self._stop.set()
         with self._lock:
@@ -225,9 +245,16 @@ class RunWorkerSupervisor:
             try:
                 result = self.worker.run_one()
             except Exception:
+                with self._lock:
+                    self._error_total += 1
                 if self._stop.wait(self.error_wait_seconds):
                     return
                 continue
+            if result.outcome != "idle":
+                with self._lock:
+                    self._processed_total += 1
+                    if result.outcome == "lease_lost":
+                        self._lease_lost_total += 1
             if result.outcome == "idle":
                 if self._stop.wait(self.idle_wait_seconds):
                     return
