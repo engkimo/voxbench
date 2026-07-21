@@ -457,6 +457,9 @@ WS   /live                         # live-preview projectionをsnapshot push
 - ワーカ：MVPはSQLAlchemy/Postgresのlease queue（`SKIP LOCKED`＋fencing token）。結果保存も
   active lease検証とjob terminal化を同一transactionに閉じる。Redis不要でPostgresファーストを
   維持し、必要ならprocrastinate/arq/Celeryへ差替可。
+- worker実行単位は1 jobだけをclaimし、harness実行中は`Event`で停止可能なheartbeat threadを維持する。
+  heartbeat拒否/DB失敗/停止timeoutはlease lostとしてlocal resultを破棄する。途中attemptはqueue retry、
+  final attemptだけfailed runとfailed jobをfenced transactionで同時確定する。
 - OTLP受信：FastAPIエンドポイントで自前パース→`spans`。
 
 **Engine Harness**

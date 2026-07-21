@@ -1353,7 +1353,7 @@ def _create_running_run(request: RunCreateRequest, resolved: Any) -> StoredRun:
     )
 
 
-def _execute_stored_run(stored: StoredRun, api_state: RunApiState) -> None:
+def _populate_stored_run_result(stored: StoredRun, api_state: RunApiState) -> None:
     try:
         harness_result = api_state.create_harness().run_once(
             run_id=stored.run_id,
@@ -1377,6 +1377,11 @@ def _execute_stored_run(stored: StoredRun, api_state: RunApiState) -> None:
             recordings=harness_result.recordings,
             metrics=harness_result.metrics,
         )
+
+
+def _execute_stored_run(stored: StoredRun, api_state: RunApiState) -> None:
+    try:
+        _populate_stored_run_result(stored, api_state)
     finally:
         api_state.repository.save(stored)
 

@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 1/5 bounded Postgres single-job worker (2026-07-21)
+
+- `RunJobWorker.run_one()`を追加し、1 jobのclaim、run load、実行、retry/finalizeをpolling lifecycleから分離。
+- harness実行中は1〜lease半分秒間隔のdaemon heartbeatを維持し、`Event`停止後に最大1秒だけjoinする。
+  heartbeat拒否・queue error・join timeoutはlease lostとして結果/failureを書かない。
+- claimに`final_attempt`を追加。途中attemptの実行例外は固定`engine-harness-error`で0〜3,600秒のretry、
+  final attemptはfailed runとfailed jobを既存fenced transactionでatomic commitする。
+- run欠落はorphan jobを固定`run-not-found`でterminal fail。worker resultはjob/run/attempt/outcomeだけで
+  opaque tokenや例外detailを返さない。
+- harness結果生成を通常repository saveから分離し、次の永続worker接続時にunfenced saveを再利用しない。
+- heartbeat継続、成功commit、retry→final fail、lease loss結果破棄、run欠落、全timing boundをtest固定。
+  全体進捗目安は約97%。次はbounded polling lifecycle、shutdown、restart recovery、`/runs/async`切替。
+
 ## Phase 1/5 fenced Postgres run-result commit (2026-07-21)
 
 - `PostgresRunRepository.commit_leased_result(...)`を追加し、terminalなrun結果だけをfenced commitする。

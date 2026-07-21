@@ -33,6 +33,7 @@ class RunJobLease:
     lease_token: str
     attempt: int
     lease_expires_at: datetime
+    final_attempt: bool = False
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ class PostgresRunJobQueue:
                     lease_token=str(lease_token),
                     attempt=row.attempts,
                     lease_expires_at=lease_expires_at,
+                    final_attempt=row.attempts >= self.max_attempts,
                 )
         except SQLAlchemyError as exc:
             raise RunJobQueueError from exc

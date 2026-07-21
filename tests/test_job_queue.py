@@ -59,6 +59,7 @@ def test_job_queue_claim_heartbeat_expiry_reclaim_and_complete() -> None:
     assert first is not None
     assert first.run_id == run_id
     assert first.attempt == 1
+    assert first.final_attempt is False
     assert queue.claim("worker-b", lease_seconds=5, now=t0 + timedelta(seconds=1)) is None
     assert queue.heartbeat(first, "wrong-worker", lease_seconds=5, now=t0) is False
     assert queue.heartbeat(first, "worker-a", lease_seconds=5, now=t0 + timedelta(seconds=2))
@@ -68,6 +69,7 @@ def test_job_queue_claim_heartbeat_expiry_reclaim_and_complete() -> None:
 
     assert second is not None
     assert second.attempt == 2
+    assert second.final_attempt is False
     assert second.lease_token != first.lease_token
     assert queue.complete(first, "worker-a", now=t0 + timedelta(seconds=8)) is False
     assert queue.complete(second, "worker-b", now=t0 + timedelta(seconds=9)) is True
@@ -99,6 +101,7 @@ def test_job_queue_retry_delay_and_attempt_limit_are_deterministic() -> None:
 
     assert second is not None
     assert second.attempt == 2
+    assert second.final_attempt is True
     assert queue.fail(
         second,
         "worker-b",

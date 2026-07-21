@@ -180,9 +180,18 @@ expired worker therefore cannot overwrite the stored result, and a database
 failure cannot commit only one side of that transition.
 
 The persistent queue is still not connected to execution because the bounded
-worker lifecycle, periodic heartbeat, retry classification, and restart recovery
-are not wired yet. Do not run multiple async workers; the next slice adds that
-worker loop before `/runs/async` switches from the process-local daemon path.
+polling lifecycle and restart recovery are not wired yet. The standalone
+`RunJobWorker.run_one()` unit can now claim one job, load its run, maintain a
+periodic lease heartbeat during harness execution, schedule a bounded retry, and
+use the fenced repository commit for success or final failure. Heartbeat rejection
+or a heartbeat database error marks the lease lost and discards the local result.
+The worker result projection never includes the opaque lease token.
+
+Worker lease duration is bounded to 5–300 seconds, heartbeat cadence to at least
+1 second and at most half the lease, and retry delay to 0–3,600 seconds. A missing
+run terminally fails its orphan job with the fixed `run-not-found` alias. Do not
+run multiple async workers yet; the next slice adds bounded polling/start-stop and
+restart recovery before `/runs/async` switches from the process-local daemon path.
 
 The engine harness also exposes `MinioRecordingSink` for the official MinIO
 Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with
