@@ -7,10 +7,11 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -19,12 +20,17 @@ from voxbench.control_plane.app import create_app, create_app_from_env
 from voxbench.control_plane.job_queue import PostgresRunJobQueue
 from voxbench.control_plane.models import Base
 from voxbench.control_plane.models import Run as RunRow
+from voxbench.control_plane.models import RunJob as RunJobRow
 from voxbench.control_plane.repository_config import (
     RepositoryConfigurationError,
     RepositoryReadiness,
     build_run_repository_from_env,
 )
-from voxbench.control_plane.run_api import PostgresRunRepository, RunRepositoryError
+from voxbench.control_plane.run_api import (
+    PostgresRunRepository,
+    RunRepositoryError,
+    StoredRun,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATHS = (
@@ -65,6 +71,63 @@ def _sqlite_repository():
     Base.metadata.create_all(engine)
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     return engine, sessions, PostgresRunRepository(sessions)
+
+
+def _queued_run() -> StoredRun:
+    return StoredRun(
+        run_id=str(uuid4()),
+        config_hash="queued-config-hash",
+        call_id=None,
+        conversation_id="",
+        provider="provider",
+        engine="engine",
+        status="running",
+        started_at=datetime.now(UTC),
+        ended_at=None,
+        resolved_config={},
+        recordings=[],
+        spans=[],
+        metrics=[],
+    )
+
+
+def test_postgres_repository_atomically_saves_run_and_enqueues_job() -> None:
+    _, sessions, repository = _sqlite_repository()
+    run = _queued_run()
+
+    job_id = repository.save_queued_run(run)
+    duplicate_job_id = repository.save_queued_run(run)
+
+    restored = repository.get(run.run_id)
+    with sessions() as session:
+        job = session.get(RunJobRow, UUID(job_id))
+    assert duplicate_job_id == job_id
+    assert restored is not None
+    assert restored.status == "running"
+    assert job is not None
+    assert str(job.run_id) == run.run_id
+    assert job.state == "queued"
+    assert job.attempts == 0
+
+
+def test_postgres_repository_rolls_back_run_when_atomic_enqueue_fails() -> None:
+    _, sessions, repository = _sqlite_repository()
+    run = _queued_run()
+
+    def fail_job_flush(session, _context, _instances) -> None:
+        if any(isinstance(row, RunJobRow) for row in session.new):
+            raise IntegrityError("enqueue failed", {}, RuntimeError("private"))
+
+    event.listen(sessions.class_, "before_flush", fail_job_flush)
+    try:
+        with pytest.raises(RunRepositoryError, match="run repository is unavailable"):
+            repository.save_queued_run(run)
+    finally:
+        event.remove(sessions.class_, "before_flush", fail_job_flush)
+
+    assert repository.get(run.run_id) is None
+    with sessions() as session:
+        assert session.scalar(select(RunJobRow)) is None
 
 
 def test_postgres_repository_restores_completed_run_after_app_restart(tmp_path: Path) -> None:
@@ -363,6 +426,55 @@ def test_repository_environment_wires_postgres_without_exposing_database_url() -
     serialized = response.text + repr(app.state.voxbench)
     assert "private-password" not in serialized
     assert "db.internal" not in serialized
+
+
+def test_postgres_async_run_uses_persistent_worker_lifespan_and_atomic_job(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'worker.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    app = create_app_from_env(
+        environ={
+            "VOXBENCH_RUN_REPOSITORY": "postgres",
+            "VOXBENCH_DATABASE_URL": (
+                "postgresql+psycopg://voxbench:private-password@db.internal/voxbench"
+            ),
+        },
+        repository_engine_factory=lambda _url: engine,
+        artifact_root=tmp_path / "recordings",
+    )
+    supervisor = app.state.run_worker_supervisor
+    assert supervisor is not None
+    assert supervisor.is_running is False
+
+    with TestClient(app) as client:
+        assert supervisor.is_running is True
+        accepted = client.post("/runs/async", json=_run_payload())
+        assert accepted.status_code == 202
+        run_id = accepted.json()["run_id"]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            restored = client.get(f"/runs/{run_id}").json()
+            if restored["status"] == "completed":
+                break
+            time.sleep(0.01)
+        else:
+            raise AssertionError("persistent worker did not complete queued run")
+
+        assert restored["recordings"]
+        with sessions() as session:
+            job = session.scalar(select(RunJobRow).where(RunJobRow.run_id == UUID(run_id)))
+        assert job is not None
+        assert job.state == "completed"
+        assert job.attempts == 1
+        assert job.lease_owner is None
+        assert job.lease_token is None
+
+    assert supervisor.is_running is False
 
 
 @pytest.mark.parametrize(

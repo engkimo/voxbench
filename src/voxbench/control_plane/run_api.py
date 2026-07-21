@@ -6,6 +6,7 @@ import binascii
 import hmac
 import json
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -948,6 +949,36 @@ class PostgresRunRepository:
         with self.session_factory.begin() as session:
             self._save_in_session(session, run, run_uuid)
 
+    def save_queued_run(
+        self,
+        run: StoredRun,
+        *,
+        now: datetime | None = None,
+    ) -> str:
+        if run.status != "running" or run.ended_at is not None:
+            raise ValueError("queued-run-not-running")
+        run_uuid = UUID(run.run_id)
+        available_at = _as_utc(now or datetime.now(UTC))
+        try:
+            with self.session_factory.begin() as session:
+                existing = session.scalar(
+                    select(RunJobRow).where(RunJobRow.run_id == run_uuid)
+                )
+                if existing is not None:
+                    return str(existing.id)
+                self._save_in_session(session, run, run_uuid)
+                job = RunJobRow(
+                    run_id=run_uuid,
+                    state="queued",
+                    available_at=available_at,
+                    attempts=0,
+                )
+                session.add(job)
+                session.flush()
+                return str(job.id)
+        except SQLAlchemyError as exc:
+            raise RunRepositoryError from exc
+
     def commit_leased_result(
         self,
         run: StoredRun,
@@ -1285,6 +1316,10 @@ class RunApiState:
         default_factory=memory_repository_readiness
     )
     job_queue: RunJobQueue | None = None
+    persistent_run_submitter: Callable[[StoredRun], str] | None = field(
+        default=None,
+        repr=False,
+    )
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -1804,8 +1839,11 @@ def create_runs_router() -> APIRouter:
     ) -> LiveRunStatusResponse:
         resolved = _resolve_run_request(request)
         stored = _create_running_run(request, resolved)
-        api_state.repository.save(stored)
-        _start_background_run(stored, api_state)
+        if api_state.persistent_run_submitter is not None:
+            api_state.persistent_run_submitter(stored)
+        else:
+            api_state.repository.save(stored)
+            _start_background_run(stored, api_state)
         return stored.to_live_status()
 
     @router.post("/runs/observed", response_model=RunResponse)

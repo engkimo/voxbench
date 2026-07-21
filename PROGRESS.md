@@ -1,5 +1,19 @@
 # 進捗
 
+## Phase 1/5 persistent Postgres async worker lifecycle (2026-07-21)
+
+- `PostgresRunRepository.save_queued_run(...)`でinitial runとqueued jobを同一transactionに保存し、
+  save成功/enqueue失敗でorphan running runだけが残るcrash windowを除去。idempotent job参照も維持する。
+- `RunWorkerSupervisor`を追加。idle 0.05〜10秒、error 0.1〜60秒、shutdown 0.1〜30秒のbounded wait、
+  idempotent start/stop/restart、exception後backoff、lease lost後backoff、queue drainを実装した。
+- FastAPI推奨lifespan contextでPostgres workerをprocessごとにstartupし、shutdown時にEvent通知＋bounded join。
+  worker/threadをmodule import時には開始しない。
+- Postgres `/runs/async`をatomic persistent submitへ切替。memory modeは既存process-local daemon互換を維持。
+- queued jobとexpired leaseはstartup pollingで自然回収。expired leaseをattempt 2で完了するrestart test、
+  lifespan前後のworker状態、atomic rollback、retrying supervisor、shutdown timeoutを固定した。
+- queue/fencingは複数Postgres process向けだが、real Postgres concurrent test、statement timeout、shutdown
+  telemetry、deployment migration検証をproduction scale前の残作業とする。全体進捗目安は約98%。
+
 ## Phase 1/5 bounded Postgres single-job worker (2026-07-21)
 
 - `RunJobWorker.run_one()`を追加し、1 jobのclaim、run load、実行、retry/finalizeをpolling lifecycleから分離。

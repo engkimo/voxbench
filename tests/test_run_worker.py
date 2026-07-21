@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Event
 from uuid import uuid4
 
@@ -12,7 +12,11 @@ from sqlalchemy.pool import StaticPool
 from voxbench.control_plane.job_queue import PostgresRunJobQueue, RunJobQueueError
 from voxbench.control_plane.models import Base
 from voxbench.control_plane.run_api import PostgresRunRepository, StoredRun
-from voxbench.control_plane.run_worker import RunJobWorker
+from voxbench.control_plane.run_worker import (
+    RunJobWorker,
+    RunWorkerResult,
+    RunWorkerSupervisor,
+)
 
 
 def _runtime(*, max_attempts: int = 2):
@@ -210,3 +214,146 @@ def test_worker_rejects_unsafe_identity_and_timing_bounds(overrides) -> None:
 
     with pytest.raises(ValueError):
         RunJobWorker(**arguments)
+
+
+def test_supervisor_start_stop_are_idempotent_and_restartable() -> None:
+    called = Event()
+
+    class IdleWorker:
+        def run_one(self) -> RunWorkerResult:
+            called.set()
+            return RunWorkerResult(outcome="idle")
+
+    supervisor = RunWorkerSupervisor(
+        IdleWorker(),
+        idle_wait_seconds=0.05,
+        error_wait_seconds=0.1,
+        shutdown_timeout_seconds=0.5,
+    )
+
+    assert supervisor.start() is True
+    assert supervisor.start() is False
+    assert called.wait(timeout=1)
+    assert supervisor.is_running is True
+    assert supervisor.stop() is True
+    assert supervisor.stop() is True
+    assert supervisor.is_running is False
+    called.clear()
+    assert supervisor.start() is True
+    assert called.wait(timeout=1)
+    assert supervisor.stop() is True
+
+
+def test_supervisor_survives_worker_error_with_bounded_backoff() -> None:
+    recovered = Event()
+
+    class RecoveringWorker:
+        calls = 0
+
+        def run_one(self) -> RunWorkerResult:
+            self.calls += 1
+            if self.calls == 1:
+                raise RunJobQueueError
+            recovered.set()
+            return RunWorkerResult(outcome="idle")
+
+    worker = RecoveringWorker()
+    supervisor = RunWorkerSupervisor(
+        worker,
+        idle_wait_seconds=0.05,
+        error_wait_seconds=0.1,
+        shutdown_timeout_seconds=0.5,
+    )
+
+    supervisor.start()
+    assert recovered.wait(timeout=1)
+    assert worker.calls >= 2
+    assert supervisor.stop() is True
+
+
+def test_supervisor_shutdown_timeout_is_bounded() -> None:
+    entered = Event()
+    release = Event()
+
+    class BlockingWorker:
+        def run_one(self) -> RunWorkerResult:
+            entered.set()
+            release.wait(timeout=2)
+            return RunWorkerResult(outcome="idle")
+
+    supervisor = RunWorkerSupervisor(
+        BlockingWorker(),
+        idle_wait_seconds=0.05,
+        error_wait_seconds=0.1,
+        shutdown_timeout_seconds=0.1,
+    )
+
+    supervisor.start()
+    assert entered.wait(timeout=1)
+    assert supervisor.stop() is False
+    assert supervisor.is_running is True
+    release.set()
+    assert supervisor.stop() is True
+    assert supervisor.is_running is False
+
+
+def test_supervisor_recovers_expired_lease_after_restart() -> None:
+    queue, repository, run_id = _runtime(max_attempts=3)
+    old_now = datetime.now(UTC) - timedelta(seconds=10)
+    job_id = queue.enqueue(run_id, now=old_now)
+    stale = queue.claim("old-worker", lease_seconds=5, now=old_now)
+    completed = Event()
+    assert stale is not None
+
+    def execute(run: StoredRun) -> None:
+        run.status = "completed"
+        run.conversation_id = "restart-recovered"
+        run.ended_at = datetime.now(UTC)
+        completed.set()
+
+    supervisor = RunWorkerSupervisor(
+        _worker(queue, repository, execute),
+        idle_wait_seconds=0.05,
+        error_wait_seconds=0.1,
+        shutdown_timeout_seconds=0.5,
+    )
+
+    supervisor.start()
+    assert completed.wait(timeout=1)
+    assert supervisor.stop() is True
+    restored = repository.get(run_id)
+    status = queue.get(job_id)
+    assert restored is not None
+    assert restored.status == "completed"
+    assert restored.conversation_id == "restart-recovered"
+    assert status is not None
+    assert status.state == "completed"
+    assert status.attempts == 2
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"idle_wait_seconds": 0.01},
+        {"idle_wait_seconds": 11},
+        {"error_wait_seconds": 0.05},
+        {"error_wait_seconds": 61},
+        {"shutdown_timeout_seconds": 0.05},
+        {"shutdown_timeout_seconds": 31},
+    ],
+)
+def test_supervisor_rejects_unbounded_timing_configuration(overrides) -> None:
+    class IdleWorker:
+        def run_one(self) -> RunWorkerResult:
+            return RunWorkerResult(outcome="idle")
+
+    arguments = {
+        "worker": IdleWorker(),
+        "idle_wait_seconds": 0.05,
+        "error_wait_seconds": 0.1,
+        "shutdown_timeout_seconds": 0.5,
+    }
+    arguments.update(overrides)
+
+    with pytest.raises(ValueError):
+        RunWorkerSupervisor(**arguments)

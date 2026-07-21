@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -12,7 +15,7 @@ from voxbench.control_plane.audio_session import (
     RemoteAudioSessionAuth,
     build_remote_audio_session_from_env,
 )
-from voxbench.control_plane.job_queue import RunJobQueue
+from voxbench.control_plane.job_queue import RunJobQueue, RunJobQueueError
 from voxbench.control_plane.repository_config import (
     EngineFactory,
     RepositoryReadiness,
@@ -22,7 +25,14 @@ from voxbench.control_plane.run_api import (
     RunApiState,
     RunRepository,
     RunRepositoryError,
+    StoredRun,
+    _populate_stored_run_result,
     create_runs_router,
+)
+from voxbench.control_plane.run_worker import (
+    FencedRunRepository,
+    RunJobWorker,
+    RunWorkerSupervisor,
 )
 from voxbench.control_plane.storage_config import (
     MinioClientFactory,
@@ -43,8 +53,22 @@ def create_app(
     repository: RunRepository | None = None,
     repository_readiness: RepositoryReadiness | None = None,
     job_queue: RunJobQueue | None = None,
+    persistent_run_submitter: Callable[[StoredRun], str] | None = None,
+    run_worker_supervisor: RunWorkerSupervisor | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="VoxBench Control Plane")
+    supervisor = run_worker_supervisor
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if supervisor is not None:
+            supervisor.start()
+        try:
+            yield
+        finally:
+            if supervisor is not None:
+                supervisor.stop()
+
+    app = FastAPI(title="VoxBench Control Plane", lifespan=lifespan)
     state = RunApiState(
         artifact_root=artifact_root or Path("artifacts/recordings"),
         recording_sink=recording_sink,
@@ -59,8 +83,19 @@ def create_app(
             else {}
         ),
         job_queue=job_queue,
+        persistent_run_submitter=persistent_run_submitter,
     )
+    if supervisor is None and job_queue is not None and persistent_run_submitter is not None:
+        supervisor = RunWorkerSupervisor(
+            RunJobWorker(
+                queue=job_queue,
+                repository=cast(FencedRunRepository, state.repository),
+                execute=lambda run: _populate_stored_run_result(run, state),
+                worker_id=f"worker-{uuid4().hex}",
+            )
+        )
     app.state.voxbench = state
+    app.state.run_worker_supervisor = supervisor
 
     @app.exception_handler(RunRepositoryError)
     async def handle_run_repository_error(
@@ -70,6 +105,17 @@ def create_app(
         return JSONResponse(
             status_code=503,
             content={"detail": "run repository is unavailable"},
+            headers={"Retry-After": "1"},
+        )
+
+    @app.exception_handler(RunJobQueueError)
+    async def handle_run_job_queue_error(
+        _request: Request,
+        _error: RunJobQueueError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "run job queue is unavailable"},
             headers={"Retry-After": "1"},
         )
 
@@ -106,6 +152,11 @@ def create_app_from_env(
         repository=repository_runtime.repository,
         repository_readiness=repository_runtime.readiness,
         job_queue=repository_runtime.job_queue,
+        persistent_run_submitter=(
+            repository_runtime.repository.save_queued_run
+            if repository_runtime.job_queue is not None
+            else None
+        ),
     )
 
 

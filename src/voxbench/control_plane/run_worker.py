@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Literal, Protocol
 
 from voxbench.control_plane.job_queue import (
@@ -37,6 +37,10 @@ class FencedRunRepository(Protocol):
         *,
         now: datetime | None = None,
     ) -> bool: ...
+
+
+class SingleJobWorker(Protocol):
+    def run_one(self) -> RunWorkerResult: ...
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,73 @@ class RunJobWorker:
             run_id=lease.run_id,
             attempt=lease.attempt,
         )
+
+
+@dataclass
+class RunWorkerSupervisor:
+    worker: SingleJobWorker = field(repr=False)
+    idle_wait_seconds: float = 0.25
+    error_wait_seconds: float = 1.0
+    shutdown_timeout_seconds: float = 5.0
+    _stop: Event = field(default_factory=Event, init=False, repr=False)
+    _lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _thread: Thread | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not 0.05 <= self.idle_wait_seconds <= 10:
+            raise ValueError("run-worker-idle-wait-invalid")
+        if not 0.1 <= self.error_wait_seconds <= 60:
+            raise ValueError("run-worker-error-wait-invalid")
+        if not 0.1 <= self.shutdown_timeout_seconds <= 30:
+            raise ValueError("run-worker-shutdown-timeout-invalid")
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop.clear()
+            self._thread = Thread(
+                target=self._run,
+                name="voxbench-run-worker",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def stop(self) -> bool:
+        self._stop.set()
+        with self._lock:
+            thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout=self.shutdown_timeout_seconds)
+        stopped = not thread.is_alive()
+        if stopped:
+            with self._lock:
+                if self._thread is thread:
+                    self._thread = None
+        return stopped
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                result = self.worker.run_one()
+            except Exception:
+                if self._stop.wait(self.error_wait_seconds):
+                    return
+                continue
+            if result.outcome == "idle":
+                if self._stop.wait(self.idle_wait_seconds):
+                    return
+            elif result.outcome == "lease_lost" and self._stop.wait(
+                self.error_wait_seconds
+            ):
+                return
 
 
 @dataclass

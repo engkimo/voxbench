@@ -172,26 +172,33 @@ token, so stale workers cannot heartbeat or finalize a job through the queue.
 `GET /repository/readiness` exposes only `job_queue_enabled`; it does not expose
 worker or lease data.
 
-The current `/runs/async` endpoint still uses its existing single-process daemon
-runner. `PostgresRunRepository.commit_leased_result(...)` now locks the matching
-job, verifies the run/job/worker/opaque-token/unexpired-lease tuple, and commits
-the normalized run result plus terminal job state in one transaction. A stale or
-expired worker therefore cannot overwrite the stored result, and a database
-failure cannot commit only one side of that transition.
+`PostgresRunRepository.commit_leased_result(...)` locks the matching job, verifies
+the run/job/worker/opaque-token/unexpired-lease tuple, and commits the normalized
+run result plus terminal job state in one transaction. A stale or expired worker
+therefore cannot overwrite the stored result, and a database failure cannot
+commit only one side of that transition.
 
-The persistent queue is still not connected to execution because the bounded
-polling lifecycle and restart recovery are not wired yet. The standalone
-`RunJobWorker.run_one()` unit can now claim one job, load its run, maintain a
-periodic lease heartbeat during harness execution, schedule a bounded retry, and
-use the fenced repository commit for success or final failure. Heartbeat rejection
-or a heartbeat database error marks the lease lost and discards the local result.
-The worker result projection never includes the opaque lease token.
+In Postgres mode, `/runs/async` now stores the initial run and its queued job in
+one transaction, then returns 202. FastAPI lifespan starts one supervised polling
+thread per application process and signals/stops it during shutdown. The worker
+claims one job, loads its run, maintains a periodic lease heartbeat during harness
+execution, schedules a bounded retry, and uses the fenced repository commit for
+success or final failure. Heartbeat rejection or a heartbeat database error marks
+the lease lost and discards the local result. The worker result projection never
+includes the opaque lease token.
 
 Worker lease duration is bounded to 5–300 seconds, heartbeat cadence to at least
 1 second and at most half the lease, and retry delay to 0–3,600 seconds. A missing
-run terminally fails its orphan job with the fixed `run-not-found` alias. Do not
-run multiple async workers yet; the next slice adds bounded polling/start-stop and
-restart recovery before `/runs/async` switches from the process-local daemon path.
+run terminally fails its orphan job with the fixed `run-not-found` alias. The
+supervisor uses bounded idle/error waits and a bounded shutdown join; queued jobs
+and expired leases are naturally recovered by the next process through claim.
+Memory mode keeps the existing process-local daemon behavior for local/test
+compatibility.
+
+The queue and fencing contracts are designed for multiple Postgres application
+processes, but production rollout should still validate real-Postgres concurrent
+claim behavior, database statement timeouts, shutdown telemetry, and deployment
+migrations before increasing worker count.
 
 The engine harness also exposes `MinioRecordingSink` for the official MinIO
 Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with

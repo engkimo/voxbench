@@ -191,6 +191,8 @@ Postgres workerの結果確定は、対象`run_jobs` rowをlockし、run/job/wor
 再検証した同じtransaction内で、run本体・正規化child rowsのreplaceとjobのterminal化を行う。
 stale/expired workerは更新件数0相当で拒否し、結果だけ・jobだけがcommitされる中間状態を作らない。
 通常の同期run/observed mutationは従来のrepository save契約を維持する。
+Postgres `/runs/async`のinitial run保存とqueued job作成も同一transactionで行い、runだけが残る
+crash windowを作らない。memory modeはlocal互換のprocess内daemon executionを維持する。
 
 ---
 
@@ -460,6 +462,8 @@ WS   /live                         # live-preview projectionをsnapshot push
 - worker実行単位は1 jobだけをclaimし、harness実行中は`Event`で停止可能なheartbeat threadを維持する。
   heartbeat拒否/DB失敗/停止timeoutはlease lostとしてlocal resultを破棄する。途中attemptはqueue retry、
   final attemptだけfailed runとfailed jobをfenced transactionで同時確定する。
+- FastAPI lifespanがprocessごとにpolling supervisorをstart/stopする。idle 0.05〜10秒、error 0.1〜60秒、
+  shutdown join 0.1〜30秒をboundedにし、既定は0.25/1/5秒。queued/expired leaseをstartup後にclaimする。
 - OTLP受信：FastAPIエンドポイントで自前パース→`spans`。
 
 **Engine Harness**
