@@ -35,7 +35,7 @@ from voxbench.control_plane.audio_session import (
     AudioSessionLoginError,
     RemoteAudioSessionAuth,
 )
-from voxbench.control_plane.job_queue import RunJobQueue
+from voxbench.control_plane.job_queue import RunJobLease, RunJobQueue
 from voxbench.control_plane.models import (
     Metric as MetricRow,
 )
@@ -47,6 +47,9 @@ from voxbench.control_plane.models import (
 )
 from voxbench.control_plane.models import (
     Run as RunRow,
+)
+from voxbench.control_plane.models import (
+    RunJob as RunJobRow,
 )
 from voxbench.control_plane.models import (
     SipEvent as SipEventRow,
@@ -943,119 +946,173 @@ class PostgresRunRepository:
     def _save(self, run: StoredRun) -> None:
         run_uuid = UUID(run.run_id)
         with self.session_factory.begin() as session:
-            row = session.get(RunRow, run_uuid)
-            values = {
-                "config_hash": run.config_hash,
-                "call_id": run.call_id,
-                "conversation_id": run.conversation_id,
-                "provider": run.provider,
-                "engine": run.engine,
-                "status": run.status,
-                "failure_alias": run.failure_alias,
-                "resolved_config": run.resolved_config,
-                "environment_metadata": run.environment.model_dump(mode="json"),
-                "readiness_checklist": [
-                    item.model_dump(mode="json") for item in run.readiness_checklist
-                ],
-                "started_at": run.started_at,
-                "ended_at": run.ended_at,
-            }
-            if row is None:
-                row = RunRow(id=run_uuid, **values)
-                session.add(row)
-            else:
-                for name, value in values.items():
-                    setattr(row, name, value)
-            session.flush()
+            self._save_in_session(session, run, run_uuid)
 
-            child_models = (
-                RecordingRow,
-                SpanRow,
-                MetricRow,
-                VerificationRow,
-                SipEventRow,
-                RtpStatRow,
-            )
-            for child_model in child_models:
-                session.execute(delete(child_model).where(child_model.run_id == run_uuid))
+    def commit_leased_result(
+        self,
+        run: StoredRun,
+        lease: RunJobLease,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        if run.status not in {"completed", "failed"} or run.ended_at is None:
+            raise ValueError("leased-run-result-not-terminal")
+        try:
+            run_uuid = UUID(run.run_id)
+            if UUID(lease.run_id) != run_uuid:
+                return False
+            job_uuid = UUID(lease.job_id)
+            lease_token = UUID(lease.lease_token)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        committed_at = _as_utc(now or datetime.now(UTC))
+        try:
+            with self.session_factory.begin() as session:
+                job = session.scalar(
+                    select(RunJobRow)
+                    .where(
+                        RunJobRow.id == job_uuid,
+                        RunJobRow.run_id == run_uuid,
+                        RunJobRow.state == "leased",
+                        RunJobRow.lease_owner == worker_id,
+                        RunJobRow.lease_token == lease_token,
+                        RunJobRow.lease_expires_at > committed_at,
+                    )
+                    .with_for_update()
+                )
+                if job is None:
+                    return False
+                self._save_in_session(session, run, run_uuid)
+                job.state = "completed" if run.status == "completed" else "failed"
+                job.lease_owner = None
+                job.lease_token = None
+                job.lease_expires_at = None
+                job.failure_alias = run.failure_alias if run.status == "failed" else None
+                session.flush()
+            return True
+        except SQLAlchemyError as exc:
+            raise RunRepositoryError from exc
 
-            session.add_all(
-                [
-                    RecordingRow(
-                        run_id=run_uuid,
-                        ordinal=ordinal,
-                        stage=item.stage,
-                        uri=item.uri,
-                        format=item.format,
-                        duration_ms=item.duration_ms,
-                    )
-                    for ordinal, item in enumerate(run.recordings)
-                ]
-                + [
-                    SpanRow(
-                        run_id=run_uuid,
-                        ordinal=ordinal,
-                        trace_id=item.trace_id,
-                        span_id=item.span_id,
-                        parent_id=item.parent_id,
-                        name=item.name,
-                        start_ns=item.start_ns,
-                        end_ns=item.end_ns,
-                        attrs=item.attrs,
-                    )
-                    for ordinal, item in enumerate(run.spans)
-                ]
-                + [
-                    MetricRow(
-                        run_id=run_uuid,
-                        ordinal=ordinal,
-                        stage=item.stage,
-                        name=item.name,
-                        value=item.value,
-                        ts=item.ts,
-                    )
-                    for ordinal, item in enumerate(run.metrics)
-                ]
-                + [
-                    VerificationRow(
-                        run_id=run_uuid,
-                        ordinal=ordinal,
-                        stage=item.stage,
-                        invariant=item.invariant,
-                        passed=item.passed,
-                        observed=item.observed,
-                        expected=item.expected,
-                        detail=item.detail,
-                    )
-                    for ordinal, item in enumerate(run.verifications)
-                ]
-                + [
-                    SipEventRow(
-                        run_id=run_uuid,
-                        ordinal=ordinal,
-                        call_id=item.call_id,
-                        method=item.method,
-                        direction=item.direction,
-                        status_code=item.status_code,
-                        summary_alias=item.summary_alias,
-                        ts=item.ts,
-                    )
-                    for ordinal, item in enumerate(run.sip_events)
-                ]
-                + [
-                    RtpStatRow(
-                        run_id=run_uuid,
-                        ordinal=ordinal,
-                        ts=item.ts,
-                        jitter_ms=item.jitter_ms,
-                        loss_pct=item.loss_pct,
-                        mos=item.mos,
-                        direction=item.direction,
-                        rtt_ms=item.rtt_ms,
-                    )
-                    for ordinal, item in enumerate(run.rtp_stats)
-                ]
-            )
+    def _save_in_session(
+        self,
+        session: Session,
+        run: StoredRun,
+        run_uuid: UUID,
+    ) -> None:
+        row = session.get(RunRow, run_uuid)
+        values = {
+            "config_hash": run.config_hash,
+            "call_id": run.call_id,
+            "conversation_id": run.conversation_id,
+            "provider": run.provider,
+            "engine": run.engine,
+            "status": run.status,
+            "failure_alias": run.failure_alias,
+            "resolved_config": run.resolved_config,
+            "environment_metadata": run.environment.model_dump(mode="json"),
+            "readiness_checklist": [
+                item.model_dump(mode="json") for item in run.readiness_checklist
+            ],
+            "started_at": run.started_at,
+            "ended_at": run.ended_at,
+        }
+        if row is None:
+            row = RunRow(id=run_uuid, **values)
+            session.add(row)
+        else:
+            for name, value in values.items():
+                setattr(row, name, value)
+        session.flush()
+
+        child_models = (
+            RecordingRow,
+            SpanRow,
+            MetricRow,
+            VerificationRow,
+            SipEventRow,
+            RtpStatRow,
+        )
+        for child_model in child_models:
+            session.execute(delete(child_model).where(child_model.run_id == run_uuid))
+
+        session.add_all(
+            [
+                RecordingRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    stage=item.stage,
+                    uri=item.uri,
+                    format=item.format,
+                    duration_ms=item.duration_ms,
+                )
+                for ordinal, item in enumerate(run.recordings)
+            ]
+            + [
+                SpanRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    trace_id=item.trace_id,
+                    span_id=item.span_id,
+                    parent_id=item.parent_id,
+                    name=item.name,
+                    start_ns=item.start_ns,
+                    end_ns=item.end_ns,
+                    attrs=item.attrs,
+                )
+                for ordinal, item in enumerate(run.spans)
+            ]
+            + [
+                MetricRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    stage=item.stage,
+                    name=item.name,
+                    value=item.value,
+                    ts=item.ts,
+                )
+                for ordinal, item in enumerate(run.metrics)
+            ]
+            + [
+                VerificationRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    stage=item.stage,
+                    invariant=item.invariant,
+                    passed=item.passed,
+                    observed=item.observed,
+                    expected=item.expected,
+                    detail=item.detail,
+                )
+                for ordinal, item in enumerate(run.verifications)
+            ]
+            + [
+                SipEventRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    call_id=item.call_id,
+                    method=item.method,
+                    direction=item.direction,
+                    status_code=item.status_code,
+                    summary_alias=item.summary_alias,
+                    ts=item.ts,
+                )
+                for ordinal, item in enumerate(run.sip_events)
+            ]
+            + [
+                RtpStatRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    ts=item.ts,
+                    jitter_ms=item.jitter_ms,
+                    loss_pct=item.loss_pct,
+                    mos=item.mos,
+                    direction=item.direction,
+                    rtt_ms=item.rtt_ms,
+                )
+                for ordinal, item in enumerate(run.rtp_stats)
+            ]
+        )
 
     def get(self, run_id: str) -> StoredRun | None:
         try:

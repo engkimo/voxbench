@@ -4,23 +4,27 @@ import base64
 import json
 import struct
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from voxbench.control_plane.app import create_app, create_app_from_env
+from voxbench.control_plane.job_queue import PostgresRunJobQueue
 from voxbench.control_plane.models import Base
+from voxbench.control_plane.models import Run as RunRow
 from voxbench.control_plane.repository_config import (
     RepositoryConfigurationError,
     RepositoryReadiness,
     build_run_repository_from_env,
 )
-from voxbench.control_plane.run_api import PostgresRunRepository
+from voxbench.control_plane.run_api import PostgresRunRepository, RunRepositoryError
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATHS = (
@@ -175,6 +179,145 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
     assert timeline["lanes"]["sip_ladder"][0]["method"] == "INVITE"
     assert timeline["lanes"]["rtp_quality"][0]["rtt_ms"] == 8.5
     assert timeline["lanes"]["recordings"][0]["stage"] == "agc"
+
+
+def test_postgres_repository_commits_result_and_job_completion_atomically(
+    tmp_path: Path,
+) -> None:
+    _, sessions, repository = _sqlite_repository()
+    client = TestClient(
+        create_app(artifact_root=tmp_path / "recordings", repository=repository)
+    )
+    run_id = client.post("/runs/observed", json=_run_payload()).json()["run_id"]
+    queue = PostgresRunJobQueue(sessions)
+    t0 = datetime(2026, 7, 21, tzinfo=UTC)
+    job_id = queue.enqueue(run_id, now=t0)
+    lease = queue.claim("worker-a", lease_seconds=30, now=t0)
+    run = repository.get(run_id)
+    assert lease is not None
+    assert run is not None
+    run.status = "completed"
+    run.conversation_id = "fenced-result"
+    run.ended_at = t0 + timedelta(seconds=1)
+
+    committed = repository.commit_leased_result(
+        run,
+        lease,
+        "worker-a",
+        now=t0 + timedelta(seconds=1),
+    )
+
+    assert committed is True
+    restored = repository.get(run_id)
+    status = queue.get(job_id)
+    assert restored is not None
+    assert restored.status == "completed"
+    assert restored.conversation_id == "fenced-result"
+    assert status is not None
+    assert status.state == "completed"
+    assert status.lease_owner is None
+    assert status.lease_expires_at is None
+
+
+def test_postgres_repository_rejects_expired_stale_lease_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    _, sessions, repository = _sqlite_repository()
+    client = TestClient(
+        create_app(artifact_root=tmp_path / "recordings", repository=repository)
+    )
+    run_id = client.post("/runs/observed", json=_run_payload()).json()["run_id"]
+    queue = PostgresRunJobQueue(sessions)
+    t0 = datetime(2026, 7, 21, tzinfo=UTC)
+    job_id = queue.enqueue(run_id, now=t0)
+    stale_lease = queue.claim("worker-a", lease_seconds=5, now=t0)
+    current_lease = queue.claim("worker-b", lease_seconds=5, now=t0 + timedelta(seconds=6))
+    stale_result = repository.get(run_id)
+    assert stale_lease is not None
+    assert current_lease is not None
+    assert stale_result is not None
+    original_conversation_id = stale_result.conversation_id
+    stale_result.status = "completed"
+    stale_result.conversation_id = "must-not-overwrite"
+    stale_result.ended_at = t0 + timedelta(seconds=7)
+
+    assert (
+        repository.commit_leased_result(
+            stale_result,
+            stale_lease,
+            "worker-a",
+            now=t0 + timedelta(seconds=7),
+        )
+        is False
+    )
+    unchanged = repository.get(run_id)
+    assert unchanged is not None
+    assert unchanged.status == "running"
+    assert unchanged.conversation_id == original_conversation_id
+
+    current_result = repository.get(run_id)
+    assert current_result is not None
+    current_result.status = "failed"
+    current_result.failure_alias = "engine-harness-error"
+    current_result.ended_at = t0 + timedelta(seconds=8)
+    assert repository.commit_leased_result(
+        current_result,
+        current_lease,
+        "worker-b",
+        now=t0 + timedelta(seconds=8),
+    )
+    status = queue.get(job_id)
+    assert status is not None
+    assert status.state == "failed"
+    assert status.failure_alias == "engine-harness-error"
+
+
+def test_postgres_repository_rolls_back_result_when_fenced_commit_fails(
+    tmp_path: Path,
+) -> None:
+    _, sessions, repository = _sqlite_repository()
+    client = TestClient(
+        create_app(artifact_root=tmp_path / "recordings", repository=repository)
+    )
+    run_id = client.post("/runs/observed", json=_run_payload()).json()["run_id"]
+    queue = PostgresRunJobQueue(sessions)
+    t0 = datetime(2026, 7, 21, tzinfo=UTC)
+    job_id = queue.enqueue(run_id, now=t0)
+    lease = queue.claim("worker-a", lease_seconds=30, now=t0)
+    run = repository.get(run_id)
+    assert lease is not None
+    assert run is not None
+    run.status = "completed"
+    run.conversation_id = "must-roll-back"
+    run.ended_at = t0 + timedelta(seconds=1)
+
+    def fail_completed_run_flush(session, _context, _instances) -> None:
+        if any(
+            isinstance(row, RunRow) and row.status == "completed"
+            for row in session.dirty
+        ):
+            raise IntegrityError("fenced commit failed", {}, RuntimeError("private"))
+
+    event.listen(sessions.class_, "before_flush", fail_completed_run_flush)
+    try:
+        with pytest.raises(RunRepositoryError, match="run repository is unavailable"):
+            repository.commit_leased_result(
+                run,
+                lease,
+                "worker-a",
+                now=t0 + timedelta(seconds=1),
+            )
+    finally:
+        event.remove(sessions.class_, "before_flush", fail_completed_run_flush)
+
+    restored = repository.get(run_id)
+    status = queue.get(job_id)
+    assert restored is not None
+    assert restored.status == "running"
+    assert restored.conversation_id != "must-roll-back"
+    assert status is not None
+    assert status.state == "leased"
+    assert status.lease_owner == "worker-a"
 
 
 def test_repository_environment_defaults_to_memory_and_exposes_safe_readiness() -> None:

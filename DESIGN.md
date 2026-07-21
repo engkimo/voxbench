@@ -187,6 +187,11 @@ run_jobs (
 )
 ```
 
+Postgres workerの結果確定は、対象`run_jobs` rowをlockし、run/job/worker/lease token/期限を
+再検証した同じtransaction内で、run本体・正規化child rowsのreplaceとjobのterminal化を行う。
+stale/expired workerは更新件数0相当で拒否し、結果だけ・jobだけがcommitされる中間状態を作らない。
+通常の同期run/observed mutationは従来のrepository save契約を維持する。
+
 ---
 
 ## 5. Config スキーマ（確定稿）
@@ -449,8 +454,9 @@ WS   /live                         # live-preview projectionをsnapshot push
 **Backend（制御プレーン）**
 - Python 3.12 / FastAPI / Pydantic v2（config・manifest検証）。
 - SQLModel（or SQLAlchemy）＋ Alembic（migration）。
-- ワーカ：MVPはSQLAlchemy/Postgresのlease queue（`SKIP LOCKED`＋fencing token）。Redis不要で
-  Postgresファーストを維持し、必要ならprocrastinate/arq/Celeryへ差替可。
+- ワーカ：MVPはSQLAlchemy/Postgresのlease queue（`SKIP LOCKED`＋fencing token）。結果保存も
+  active lease検証とjob terminal化を同一transactionに閉じる。Redis不要でPostgresファーストを
+  維持し、必要ならprocrastinate/arq/Celeryへ差替可。
 - OTLP受信：FastAPIエンドポイントで自前パース→`spans`。
 
 **Engine Harness**

@@ -1,5 +1,17 @@
 # 進捗
 
+## Phase 1/5 fenced Postgres run-result commit (2026-07-21)
+
+- `PostgresRunRepository.commit_leased_result(...)`を追加し、terminalなrun結果だけをfenced commitする。
+- matching `run_jobs` rowを`FOR UPDATE`し、run ID・job ID・worker alias・opaque lease token・未期限を
+  同じtransaction内で再検証。stale/expired/mismatched workerはrunを変更せずfalseで拒否する。
+- run本体とrecording/span/metric/verification/SIP/RTPの正規化child replace、jobの
+  `completed|failed`化、lease credential消去を1 transactionに統合した。
+- DB flush失敗時にrun結果とjob stateの両方がrollbackされるtest、expired lease再claim後に旧workerが
+  overwriteできないtest、completed/failed terminal stateの統合testを固定した。
+- 現行`/runs/async`はまだprocess-local daemon runnerのまま。bounded worker lifecycle、heartbeat、
+  retry分類、restart recoveryを実装してから永続queueへ切り替える。全体進捗目安は約96%。
+
 ## Phase 1/5 Postgres run job lease foundation (2026-07-21)
 
 - migration `0008_run_job_leases` と `run_jobs` modelを追加し、runごとのidempotent enqueue、

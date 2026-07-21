@@ -173,9 +173,16 @@ token, so stale workers cannot heartbeat or finalize a job through the queue.
 worker or lease data.
 
 The current `/runs/async` endpoint still uses its existing single-process daemon
-runner. The persistent queue is not connected to execution until run-result
-commits also enforce the lease token as a fencing condition. Do not run multiple
-async workers yet; the next slice is the fenced worker loop and restart recovery.
+runner. `PostgresRunRepository.commit_leased_result(...)` now locks the matching
+job, verifies the run/job/worker/opaque-token/unexpired-lease tuple, and commits
+the normalized run result plus terminal job state in one transaction. A stale or
+expired worker therefore cannot overwrite the stored result, and a database
+failure cannot commit only one side of that transition.
+
+The persistent queue is still not connected to execution because the bounded
+worker lifecycle, periodic heartbeat, retry classification, and restart recovery
+are not wired yet. Do not run multiple async workers; the next slice adds that
+worker loop before `/runs/async` switches from the process-local daemon path.
 
 The engine harness also exposes `MinioRecordingSink` for the official MinIO
 Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with
