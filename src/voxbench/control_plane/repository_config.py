@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from queue import Empty, Queue
+from threading import Thread
 from typing import Any, Literal
 
 from sqlalchemy import Engine, create_engine
@@ -14,9 +16,16 @@ from sqlalchemy.orm import sessionmaker
 
 RUN_REPOSITORY_ENV = "VOXBENCH_RUN_REPOSITORY"
 DATABASE_URL_ENV = "VOXBENCH_DATABASE_URL"
+POSTGRES_PROBE_ENV = "VOXBENCH_POSTGRES_PROBE"
+POSTGRES_PROBE_TIMEOUT_MS_ENV = "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS"
+EXPECTED_ALEMBIC_HEAD = "0007_run_runtime_state"
+
+_DEFAULT_PROBE_TIMEOUT_MS = 2_000
+_MIN_PROBE_TIMEOUT_MS = 10
+_MAX_PROBE_TIMEOUT_MS = 10_000
 
 RepositoryMode = Literal["memory", "postgres"]
-RepositoryState = Literal["ready", "configured"]
+RepositoryState = Literal["ready", "configured", "unavailable"]
 EngineFactory = Callable[[str], Engine]
 
 
@@ -85,6 +94,16 @@ def build_run_repository_from_env(
         raise RepositoryConfigurationError("database-url-invalid") from None
     if parsed_url.drivername != "postgresql+psycopg" or not parsed_url.database:
         raise RepositoryConfigurationError("database-url-invalid")
+    probe_enabled = _parse_boolean(
+        values.get(POSTGRES_PROBE_ENV, "false"),
+        reason_alias="postgres-probe-flag-invalid",
+    )
+    probe_timeout_ms = _parse_bounded_integer(
+        values.get(POSTGRES_PROBE_TIMEOUT_MS_ENV, str(_DEFAULT_PROBE_TIMEOUT_MS)),
+        minimum=_MIN_PROBE_TIMEOUT_MS,
+        maximum=_MAX_PROBE_TIMEOUT_MS,
+        reason_alias="postgres-probe-timeout-invalid",
+    )
 
     try:
         engine = (
@@ -105,12 +124,93 @@ def build_run_repository_from_env(
         raise RepositoryConfigurationError("database-engine-configuration-failed") from None
 
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
-    return RunRepositoryRuntime(
-        repository=PostgresRunRepository(sessions),
-        readiness=RepositoryReadiness(
+    readiness = (
+        _probe_postgres(engine, timeout_ms=probe_timeout_ms)
+        if probe_enabled
+        else RepositoryReadiness(
             mode="postgres",
             state="configured",
             reason_alias="connectivity-and-migrations-not-checked",
-        ),
+        )
+    )
+    return RunRepositoryRuntime(
+        repository=PostgresRunRepository(sessions),
+        readiness=readiness,
         engine=engine,
     )
+
+
+def _probe_postgres(engine: Engine, *, timeout_ms: int) -> RepositoryReadiness:
+    result: Queue[RepositoryReadiness] = Queue(maxsize=1)
+
+    def target() -> None:
+        try:
+            with engine.connect() as connection:
+                connection.exec_driver_sql("SELECT 1").scalar_one()
+                migration_heads = set(
+                    connection.exec_driver_sql(
+                        "SELECT version_num FROM alembic_version"
+                    ).scalars()
+                )
+        except Exception:
+            result.put(
+                RepositoryReadiness(
+                    mode="postgres",
+                    state="unavailable",
+                    reason_alias="postgres-probe-failed",
+                )
+            )
+            return
+        if migration_heads != {EXPECTED_ALEMBIC_HEAD}:
+            result.put(
+                RepositoryReadiness(
+                    mode="postgres",
+                    state="unavailable",
+                    reason_alias="migration-head-mismatch",
+                )
+            )
+            return
+        result.put(RepositoryReadiness(mode="postgres", state="ready"))
+
+    thread = Thread(target=target, name="voxbench-postgres-readiness", daemon=True)
+    thread.start()
+    thread.join(timeout_ms / 1_000)
+    if thread.is_alive():
+        return RepositoryReadiness(
+            mode="postgres",
+            state="unavailable",
+            reason_alias="postgres-probe-timeout",
+        )
+    try:
+        return result.get_nowait()
+    except Empty:
+        return RepositoryReadiness(
+            mode="postgres",
+            state="unavailable",
+            reason_alias="postgres-probe-failed",
+        )
+
+
+def _parse_boolean(value: str, *, reason_alias: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise RepositoryConfigurationError(reason_alias)
+
+
+def _parse_bounded_integer(
+    value: str,
+    *,
+    minimum: int,
+    maximum: int,
+    reason_alias: str,
+) -> int:
+    normalized = value.strip()
+    if not normalized.isdigit():
+        raise RepositoryConfigurationError(reason_alias)
+    parsed = int(normalized)
+    if not minimum <= parsed <= maximum:
+        raise RepositoryConfigurationError(reason_alias)
+    return parsed

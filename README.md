@@ -126,18 +126,36 @@ repository before starting the API:
 python -m pip install -e ".[postgres]"
 export VOXBENCH_RUN_REPOSITORY=postgres
 export VOXBENCH_DATABASE_URL='postgresql+psycopg://voxbench:<password>@db.internal/voxbench'
+export VOXBENCH_POSTGRES_PROBE=true                 # optional; default: false
+export VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS=2000      # optional; 10..10000
 alembic upgrade head
 uvicorn voxbench.control_plane.app:app
 ```
 
 `VOXBENCH_DATABASE_URL` is read only from the process environment and must use
-the explicit `postgresql+psycopg` dialect. API startup constructs the engine but
-does not perform an implicit connection or migration. `GET /repository/readiness`
-therefore reports Postgres as `configured` with
+the explicit `postgresql+psycopg` dialect. By default, API startup constructs the
+engine but does not perform an implicit connection or migration.
+`GET /repository/readiness` therefore reports Postgres as `configured` with
 `connectivity-and-migrations-not-checked`; it does not claim `ready`. The URL,
 host, username, and password are excluded from readiness and runtime
 representations. Alembic reads the same environment variable, so credentials do
 not need to be written to `alembic.ini`.
+
+The Postgres readiness probe is disabled by default. When explicitly enabled, it
+runs once during startup in a daemon worker, waits at most the configured 10–10,000
+ms, executes fixed `SELECT 1` and Alembic-version queries, and reports `ready`
+only when the database contains exactly migration head `0007_run_runtime_state`.
+A connection/query failure, migration mismatch, or timeout reports `unavailable`
+with a fixed safe reason alias; startup does not echo or persist the underlying
+driver error. A timed-out driver call may continue in its daemon worker until the
+driver or operating system returns, so deployments should also set a bounded
+psycopg `connect_timeout` in the database URL.
+
+If a repository operation fails after startup, the API returns a fixed
+`503 {"detail":"run repository is unavailable"}` with `Retry-After: 1`.
+SQL statements, driver messages, connection details, and query parameters are
+not returned to the caller. This mapping does not retry mutations; callers must
+decide whether an operation is safe to retry.
 
 Each repository save is one SQLAlchemy transaction. The current MVP replaces a
 run's normalized child rows atomically and records their ordinal positions so a

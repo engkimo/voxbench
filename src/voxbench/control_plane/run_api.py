@@ -18,8 +18,16 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.websockets import WebSocketDisconnect
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from voxbench.control_plane.audio_session import (
@@ -498,7 +506,7 @@ class AudioSessionStatusResponse(BaseModel):
 
 class RepositoryReadinessResponse(BaseModel):
     mode: Literal["memory", "postgres"]
-    state: Literal["ready", "configured"]
+    state: Literal["ready", "configured", "unavailable"]
     reason_alias: str | None = None
 
 
@@ -898,6 +906,11 @@ class RunRepository(Protocol):
     def list_all(self) -> list[StoredRun]: ...
 
 
+class RunRepositoryError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__("run repository is unavailable")
+
+
 @dataclass
 class InMemoryRunRepository:
     runs: dict[str, StoredRun] = field(default_factory=dict)
@@ -920,6 +933,12 @@ class PostgresRunRepository:
     session_factory: sessionmaker[Session] = field(repr=False)
 
     def save(self, run: StoredRun) -> None:
+        try:
+            self._save(run)
+        except SQLAlchemyError as exc:
+            raise RunRepositoryError from exc
+
+    def _save(self, run: StoredRun) -> None:
         run_uuid = UUID(run.run_id)
         with self.session_factory.begin() as session:
             row = session.get(RunRow, run_uuid)
@@ -1041,19 +1060,30 @@ class PostgresRunRepository:
             run_uuid = UUID(run_id)
         except ValueError:
             return None
-        with self.session_factory() as session:
-            row = session.get(RunRow, run_uuid)
-            return self._restore(session, row) if row is not None else None
+        try:
+            with self.session_factory() as session:
+                row = session.get(RunRow, run_uuid)
+                return self._restore(session, row) if row is not None else None
+        except (SQLAlchemyError, ValidationError, KeyError, TypeError, AttributeError) as exc:
+            raise RunRepositoryError from exc
 
     def list_recent(self) -> list[StoredRun]:
-        with self.session_factory() as session:
-            rows = session.scalars(select(RunRow).order_by(RunRow.started_at.desc())).all()
-            return [self._restore(session, row) for row in rows]
+        try:
+            with self.session_factory() as session:
+                rows = session.scalars(
+                    select(RunRow).order_by(RunRow.started_at.desc())
+                ).all()
+                return [self._restore(session, row) for row in rows]
+        except (SQLAlchemyError, ValidationError, KeyError, TypeError, AttributeError) as exc:
+            raise RunRepositoryError from exc
 
     def list_all(self) -> list[StoredRun]:
-        with self.session_factory() as session:
-            rows = session.scalars(select(RunRow).order_by(RunRow.started_at)).all()
-            return [self._restore(session, row) for row in rows]
+        try:
+            with self.session_factory() as session:
+                rows = session.scalars(select(RunRow).order_by(RunRow.started_at)).all()
+                return [self._restore(session, row) for row in rows]
+        except (SQLAlchemyError, ValidationError, KeyError, TypeError, AttributeError) as exc:
+            raise RunRepositoryError from exc
 
     def _restore(self, session: Session, row: RunRow) -> StoredRun:
         run_uuid = row.id

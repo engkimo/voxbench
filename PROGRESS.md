@@ -1,5 +1,18 @@
 # 進捗
 
+## Phase 1/5 bounded Postgres readiness and safe failure boundary (2026-07-21)
+
+- `VOXBENCH_POSTGRES_PROBE=true` の明示時だけstartupで固定 `SELECT 1` と
+  `alembic_version`を1回確認し、migration head `0007_run_runtime_state`完全一致時だけ`ready`を返す。
+- probe timeoutは `VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS` で10〜10,000ms、既定2,000ms。daemon workerを
+  bounded joinし、接続/query失敗、migration不一致、timeoutをraw errorなしの固定aliasへ変換する。
+- probe既定offは従来どおり`configured/connectivity-and-migrations-not-checked`でnetworkアクセスしない。
+  成功/不一致/例外sanitization/10ms timeout/invalid flag・timeoutをtest固定した。
+- `PostgresRunRepository`のSQLAlchemy例外を `RunRepositoryError` へ統一し、FastAPI境界で固定503と
+  `Retry-After: 1`へ変換。SQL、driver message、DB URL、query parameterをresponseへ返さない。
+- 自動retryは行わず、mutation再試行の判断をcallerへ残す。全体進捗目安は約94%。次は
+  Postgres-backed job lease、またはappend/idempotency/lockingを持つtelemetry persistence最適化。
+
 ## Phase 1/5 opt-in Postgres run persistence (2026-07-20)
 
 - `RunRepository` protocolを追加し、既定のprocess-local memory互換を維持したまま、SQLAlchemy 2.xの

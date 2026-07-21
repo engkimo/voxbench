@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from voxbench.control_plane.audio_session import (
     RemoteAudioSessionAuth,
@@ -16,7 +17,12 @@ from voxbench.control_plane.repository_config import (
     RepositoryReadiness,
     build_run_repository_from_env,
 )
-from voxbench.control_plane.run_api import RunApiState, RunRepository, create_runs_router
+from voxbench.control_plane.run_api import (
+    RunApiState,
+    RunRepository,
+    RunRepositoryError,
+    create_runs_router,
+)
 from voxbench.control_plane.storage_config import (
     MinioClientFactory,
     StorageReadiness,
@@ -52,6 +58,18 @@ def create_app(
         ),
     )
     app.state.voxbench = state
+
+    @app.exception_handler(RunRepositoryError)
+    async def handle_run_repository_error(
+        _request: Request,
+        _error: RunRepositoryError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "run repository is unavailable"},
+            headers={"Retry-After": "1"},
+        )
+
     app.include_router(create_runs_router())
     return app
 

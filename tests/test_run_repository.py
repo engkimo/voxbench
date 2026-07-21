@@ -3,11 +3,13 @@ from __future__ import annotations
 import base64
 import json
 import struct
+import time
 from pathlib import Path
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -257,3 +259,178 @@ def test_repository_engine_factory_failure_discards_raw_error() -> None:
     assert error.value.reason_alias == "database-engine-configuration-failed"
     assert "private-password" not in str(error.value)
     assert "db.internal" not in str(error.value)
+
+
+def _postgres_environment(**overrides: str) -> dict[str, str]:
+    environment = {
+        "VOXBENCH_RUN_REPOSITORY": "postgres",
+        "VOXBENCH_DATABASE_URL": (
+            "postgresql+psycopg://private-user:private-password@db.internal/private"
+        ),
+        "VOXBENCH_POSTGRES_PROBE": "true",
+        "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS": "1000",
+    }
+    environment.update(overrides)
+    return environment
+
+
+def _sqlite_probe_engine(migration_head: str):
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(64))")
+        connection.exec_driver_sql(
+            "INSERT INTO alembic_version (version_num) VALUES (?)",
+            (migration_head,),
+        )
+    return engine
+
+
+def test_opt_in_postgres_probe_reports_ready_only_at_expected_migration_head() -> None:
+    engine = _sqlite_probe_engine("0007_run_runtime_state")
+
+    runtime = build_run_repository_from_env(
+        _postgres_environment(),
+        engine_factory=lambda _: engine,
+    )
+
+    assert runtime.readiness == RepositoryReadiness(mode="postgres", state="ready")
+
+
+def test_postgres_probe_reports_safe_migration_head_mismatch() -> None:
+    engine = _sqlite_probe_engine("0006_phase4_rtp_rtt_direction")
+
+    runtime = build_run_repository_from_env(
+        _postgres_environment(),
+        engine_factory=lambda _: engine,
+    )
+
+    assert runtime.readiness == RepositoryReadiness(
+        mode="postgres",
+        state="unavailable",
+        reason_alias="migration-head-mismatch",
+    )
+
+
+def test_postgres_probe_failure_discards_raw_database_error() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def fail_connection(*_args) -> None:
+        raise RuntimeError("private-password db.internal")
+
+    runtime = build_run_repository_from_env(
+        _postgres_environment(),
+        engine_factory=lambda _: engine,
+    )
+
+    assert runtime.readiness == RepositoryReadiness(
+        mode="postgres",
+        state="unavailable",
+        reason_alias="postgres-probe-failed",
+    )
+    serialized = repr(runtime) + repr(runtime.repository)
+    assert "private-password" not in serialized
+    assert "db.internal" not in serialized
+
+
+def test_postgres_probe_timeout_is_bounded_and_safe() -> None:
+    release = Event()
+    engine = create_engine(
+        "sqlite+pysqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def block_connection(*_args) -> None:
+        release.wait(1)
+
+    started = time.monotonic()
+    runtime = build_run_repository_from_env(
+        _postgres_environment(VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS="10"),
+        engine_factory=lambda _: engine,
+    )
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert elapsed < 0.5
+    assert runtime.readiness == RepositoryReadiness(
+        mode="postgres",
+        state="unavailable",
+        reason_alias="postgres-probe-timeout",
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "reason_alias"),
+    [
+        ("VOXBENCH_POSTGRES_PROBE", "sometimes", "postgres-probe-flag-invalid"),
+        (
+            "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS",
+            "private-timeout",
+            "postgres-probe-timeout-invalid",
+        ),
+        (
+            "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS",
+            "9",
+            "postgres-probe-timeout-invalid",
+        ),
+        (
+            "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS",
+            "10001",
+            "postgres-probe-timeout-invalid",
+        ),
+    ],
+)
+def test_postgres_probe_rejects_invalid_configuration_safely(
+    name: str,
+    value: str,
+    reason_alias: str,
+) -> None:
+    with pytest.raises(RepositoryConfigurationError) as error:
+        build_run_repository_from_env(_postgres_environment(**{name: value}))
+
+    assert error.value.reason_alias == reason_alias
+    assert value not in str(error.value)
+
+
+def test_repository_database_error_maps_to_fixed_503_response(tmp_path: Path) -> None:
+    engine, _, repository = _sqlite_repository()
+    client = TestClient(
+        create_app(artifact_root=tmp_path / "recordings", repository=repository)
+    )
+    engine.dispose()
+
+    response = client.get("/runs")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "run repository is unavailable"}
+    assert response.headers["retry-after"] == "1"
+    assert "no such table" not in response.text.lower()
+
+
+def test_repository_corrupt_json_maps_to_fixed_503_without_reflection(tmp_path: Path) -> None:
+    engine, _, repository = _sqlite_repository()
+    client = TestClient(
+        create_app(artifact_root=tmp_path / "recordings", repository=repository)
+    )
+    run_id = client.post("/runs/observed", json=_run_payload()).json()["run_id"]
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "UPDATE runs SET environment_metadata = ? WHERE id = ?",
+            ('"private-corrupt-value"', run_id.replace("-", "")),
+        )
+
+    response = client.get(f"/runs/{run_id}")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "run repository is unavailable"}
+    assert "private-corrupt-value" not in response.text
