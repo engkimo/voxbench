@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from queue import Empty, Queue
 from threading import Thread
 from typing import Any, Literal
@@ -18,7 +18,7 @@ RUN_REPOSITORY_ENV = "VOXBENCH_RUN_REPOSITORY"
 DATABASE_URL_ENV = "VOXBENCH_DATABASE_URL"
 POSTGRES_PROBE_ENV = "VOXBENCH_POSTGRES_PROBE"
 POSTGRES_PROBE_TIMEOUT_MS_ENV = "VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS"
-EXPECTED_ALEMBIC_HEAD = "0007_run_runtime_state"
+EXPECTED_ALEMBIC_HEAD = "0008_run_job_leases"
 
 _DEFAULT_PROBE_TIMEOUT_MS = 2_000
 _MIN_PROBE_TIMEOUT_MS = 10
@@ -49,6 +49,7 @@ class RepositoryReadiness:
     mode: RepositoryMode
     state: RepositoryState
     reason_alias: str | None = None
+    job_queue_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class RunRepositoryRuntime:
     repository: Any = field(repr=False)
     readiness: RepositoryReadiness
     engine: Engine | None = field(default=None, repr=False)
+    job_queue: Any | None = field(default=None, repr=False)
 
 
 def memory_repository_readiness() -> RepositoryReadiness:
@@ -67,6 +69,7 @@ def build_run_repository_from_env(
     *,
     engine_factory: EngineFactory | None = None,
 ) -> RunRepositoryRuntime:
+    from voxbench.control_plane.job_queue import PostgresRunJobQueue
     from voxbench.control_plane.run_api import (
         InMemoryRunRepository,
         PostgresRunRepository,
@@ -131,12 +134,15 @@ def build_run_repository_from_env(
             mode="postgres",
             state="configured",
             reason_alias="connectivity-and-migrations-not-checked",
+            job_queue_enabled=True,
         )
     )
+    readiness = replace(readiness, job_queue_enabled=True)
     return RunRepositoryRuntime(
         repository=PostgresRunRepository(sessions),
         readiness=readiness,
         engine=engine,
+        job_queue=PostgresRunJobQueue(sessions),
     )
 
 
@@ -170,7 +176,13 @@ def _probe_postgres(engine: Engine, *, timeout_ms: int) -> RepositoryReadiness:
                 )
             )
             return
-        result.put(RepositoryReadiness(mode="postgres", state="ready"))
+        result.put(
+            RepositoryReadiness(
+                mode="postgres",
+                state="ready",
+                job_queue_enabled=True,
+            )
+        )
 
     thread = Thread(target=target, name="voxbench-postgres-readiness", daemon=True)
     thread.start()

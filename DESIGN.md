@@ -176,6 +176,15 @@ sip_events (
   status_code int null, summary_alias text null, ts
 )
 rtp_stats  ( id pk, run_id uuid, ordinal int, ts, jitter_ms numeric, loss_pct numeric, mos numeric )
+
+-- 永続run実行queue。claimはFOR UPDATE SKIP LOCKED、lease tokenをfencingに使用。
+run_jobs (
+  id uuid pk, run_id uuid unique,
+  state text,                   -- 'queued' | 'leased' | 'completed' | 'failed'
+  available_at timestamptz,
+  lease_owner text null, lease_token uuid null, lease_expires_at timestamptz null,
+  attempts int, failure_alias text null
+)
 ```
 
 ---
@@ -414,7 +423,7 @@ GET  /runs/{id}/recordings/{stage}/audio
                                       # local WAV or opt-in bounded MinIO proxy; Bearer/session auth
 GET  /runs/cross-session-trends
 GET  /storage/readiness            # credential-free storage/proxy capability projection
-GET  /repository/readiness         # memory ready; Postgres configured/ready/unavailable, safe alias only
+GET  /repository/readiness         # safe DB state + persistent job-queue capability only
 GET  /auth/remote-audio/session     # browser session capability/status; no secret reflection
 POST /auth/remote-audio/session     # one-time operator token exchange -> signed HttpOnly cookie
 DELETE /auth/remote-audio/session   # clear browser audio session cookie
@@ -440,7 +449,8 @@ WS   /live                         # live-preview projectionをsnapshot push
 **Backend（制御プレーン）**
 - Python 3.12 / FastAPI / Pydantic v2（config・manifest検証）。
 - SQLModel（or SQLAlchemy）＋ Alembic（migration）。
-- ワーカ：**procrastinate**（Postgres-backed task queue、asyncio）。Redis不要でPostgresファーストを維持。scaleでarq/Celeryに差替可。
+- ワーカ：MVPはSQLAlchemy/Postgresのlease queue（`SKIP LOCKED`＋fencing token）。Redis不要で
+  Postgresファーストを維持し、必要ならprocrastinate/arq/Celeryへ差替可。
 - OTLP受信：FastAPIエンドポイントで自前パース→`spans`。
 
 **Engine Harness**

@@ -183,7 +183,12 @@ def test_repository_environment_defaults_to_memory_and_exposes_safe_readiness() 
     response = client.get("/repository/readiness")
 
     assert response.status_code == 200
-    assert response.json() == {"mode": "memory", "state": "ready", "reason_alias": None}
+    assert response.json() == {
+        "mode": "memory",
+        "state": "ready",
+        "reason_alias": None,
+        "job_queue_enabled": False,
+    }
 
 
 def test_repository_environment_wires_postgres_without_exposing_database_url() -> None:
@@ -205,10 +210,12 @@ def test_repository_environment_wires_postgres_without_exposing_database_url() -
     response = TestClient(app).get("/repository/readiness")
 
     assert captured_urls == [database_url]
+    assert app.state.voxbench.job_queue is not None
     assert response.json() == {
         "mode": "postgres",
         "state": "configured",
         "reason_alias": "connectivity-and-migrations-not-checked",
+        "job_queue_enabled": True,
     }
     serialized = response.text + repr(app.state.voxbench)
     assert "private-password" not in serialized
@@ -290,14 +297,18 @@ def _sqlite_probe_engine(migration_head: str):
 
 
 def test_opt_in_postgres_probe_reports_ready_only_at_expected_migration_head() -> None:
-    engine = _sqlite_probe_engine("0007_run_runtime_state")
+    engine = _sqlite_probe_engine("0008_run_job_leases")
 
     runtime = build_run_repository_from_env(
         _postgres_environment(),
         engine_factory=lambda _: engine,
     )
 
-    assert runtime.readiness == RepositoryReadiness(mode="postgres", state="ready")
+    assert runtime.readiness == RepositoryReadiness(
+        mode="postgres",
+        state="ready",
+        job_queue_enabled=True,
+    )
 
 
 def test_postgres_probe_reports_safe_migration_head_mismatch() -> None:
@@ -312,6 +323,7 @@ def test_postgres_probe_reports_safe_migration_head_mismatch() -> None:
         mode="postgres",
         state="unavailable",
         reason_alias="migration-head-mismatch",
+        job_queue_enabled=True,
     )
 
 
@@ -335,6 +347,7 @@ def test_postgres_probe_failure_discards_raw_database_error() -> None:
         mode="postgres",
         state="unavailable",
         reason_alias="postgres-probe-failed",
+        job_queue_enabled=True,
     )
     serialized = repr(runtime) + repr(runtime.repository)
     assert "private-password" not in serialized
@@ -366,6 +379,7 @@ def test_postgres_probe_timeout_is_bounded_and_safe() -> None:
         mode="postgres",
         state="unavailable",
         reason_alias="postgres-probe-timeout",
+        job_queue_enabled=True,
     )
 
 

@@ -1,9 +1,24 @@
 # 進捗
 
+## Phase 1/5 Postgres run job lease foundation (2026-07-21)
+
+- migration `0008_run_job_leases` と `run_jobs` modelを追加し、runごとのidempotent enqueue、
+  `queued|leased|completed|failed` state、available time、attempt、safe failure aliasを永続化する。
+- claimはSQLAlchemy `with_for_update(skip_locked=True)`からPostgres `FOR UPDATE SKIP LOCKED`を生成し、
+  5〜300秒のbounded lease、opaque lease token、worker alias、attempt増分を1 transactionで更新する。
+- heartbeat/complete/failはjob・worker・lease token・未期限を完全一致させ、stale workerを拒否する。
+  expired leaseは新tokenで再claim可能、retry delayは0〜3,600秒、attempt上限到達時はterminal fail。
+- Postgres runtimeへqueueをsecret-free injectionし、`GET /repository/readiness`に
+  `job_queue_enabled`だけを追加。memory modeはfalse、Postgres modeはtrue。
+- expected migration headを `0008_run_job_leases`へ更新した。現行async runnerへはまだ接続せず、
+  run result commit側のfencingなしに複数workerを動かさない安全境界を維持する。
+- SQLite state-machine testとPostgres dialect compile testでlease/reclaim/stale rejection/retry/limit/
+  `SKIP LOCKED`を固定した。全体進捗目安は約95%。次はfenced run commit＋worker loop＋restart recovery。
+
 ## Phase 1/5 bounded Postgres readiness and safe failure boundary (2026-07-21)
 
 - `VOXBENCH_POSTGRES_PROBE=true` の明示時だけstartupで固定 `SELECT 1` と
-  `alembic_version`を1回確認し、migration head `0007_run_runtime_state`完全一致時だけ`ready`を返す。
+  `alembic_version`を1回確認し、configured expected migration head完全一致時だけ`ready`を返す。
 - probe timeoutは `VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS` で10〜10,000ms、既定2,000ms。daemon workerを
   bounded joinし、接続/query失敗、migration不一致、timeoutをraw errorなしの固定aliasへ変換する。
 - probe既定offは従来どおり`configured/connectivity-and-migrations-not-checked`でnetworkアクセスしない。

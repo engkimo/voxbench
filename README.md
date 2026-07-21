@@ -144,7 +144,7 @@ not need to be written to `alembic.ini`.
 The Postgres readiness probe is disabled by default. When explicitly enabled, it
 runs once during startup in a daemon worker, waits at most the configured 10–10,000
 ms, executes fixed `SELECT 1` and Alembic-version queries, and reports `ready`
-only when the database contains exactly migration head `0007_run_runtime_state`.
+only when the database contains exactly migration head `0008_run_job_leases`.
 A connection/query failure, migration mismatch, or timeout reports `unavailable`
 with a fixed safe reason alias; startup does not echo or persist the underlying
 driver error. A timed-out driver call may continue in its daemon worker until the
@@ -160,11 +160,22 @@ decide whether an operation is safe to retry.
 Each repository save is one SQLAlchemy transaction. The current MVP replaces a
 run's normalized child rows atomically and records their ordinal positions so a
 process restart reconstructs recording, span, metric, verification, SIP, and RTP
-ordering deterministically. Apply migration `0007_run_runtime_state` before
+ordering deterministically. Apply migrations through `0008_run_job_leases` before
 enabling Postgres. The default `memory` mode remains compatible with existing
-local development and tests. Persistent background job leasing is still a
-separate follow-up; do not run multiple workers against the current in-process
-background runner.
+local development and tests.
+
+Postgres mode now also provisions a persistent `run_jobs` lease queue capability.
+Its state machine provides idempotent enqueue by run, `FOR UPDATE SKIP LOCKED`
+claiming, bounded 5–300 second leases, opaque lease tokens, heartbeat extension,
+delayed retry, and an attempt limit. Expired leases can be reclaimed with a new
+token, so stale workers cannot heartbeat or finalize a job through the queue.
+`GET /repository/readiness` exposes only `job_queue_enabled`; it does not expose
+worker or lease data.
+
+The current `/runs/async` endpoint still uses its existing single-process daemon
+runner. The persistent queue is not connected to execution until run-result
+commits also enforce the lease token as a fencing condition. Do not run multiple
+async workers yet; the next slice is the fenced worker loop and restart recovery.
 
 The engine harness also exposes `MinioRecordingSink` for the official MinIO
 Python client. Install `.[storage]` and provision the bucket separately. Stage WAVs are uploaded with

@@ -35,6 +35,7 @@ from voxbench.control_plane.audio_session import (
     AudioSessionLoginError,
     RemoteAudioSessionAuth,
 )
+from voxbench.control_plane.job_queue import RunJobQueue
 from voxbench.control_plane.models import (
     Metric as MetricRow,
 )
@@ -508,6 +509,7 @@ class RepositoryReadinessResponse(BaseModel):
     mode: Literal["memory", "postgres"]
     state: Literal["ready", "configured", "unavailable"]
     reason_alias: str | None = None
+    job_queue_enabled: bool = False
 
 
 class TimelineLanes(BaseModel):
@@ -1225,6 +1227,7 @@ class RunApiState:
     repository_readiness: RepositoryReadiness = field(
         default_factory=memory_repository_readiness
     )
+    job_queue: RunJobQueue | None = None
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

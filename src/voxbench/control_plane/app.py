@@ -12,6 +12,7 @@ from voxbench.control_plane.audio_session import (
     RemoteAudioSessionAuth,
     build_remote_audio_session_from_env,
 )
+from voxbench.control_plane.job_queue import RunJobQueue
 from voxbench.control_plane.repository_config import (
     EngineFactory,
     RepositoryReadiness,
@@ -41,6 +42,7 @@ def create_app(
     remote_audio_session_auth: RemoteAudioSessionAuth | None = None,
     repository: RunRepository | None = None,
     repository_readiness: RepositoryReadiness | None = None,
+    job_queue: RunJobQueue | None = None,
 ) -> FastAPI:
     app = FastAPI(title="VoxBench Control Plane")
     state = RunApiState(
@@ -56,6 +58,7 @@ def create_app(
             if repository_readiness is not None
             else {}
         ),
+        job_queue=job_queue,
     )
     app.state.voxbench = state
 
@@ -102,6 +105,7 @@ def create_app_from_env(
         remote_audio_session_auth=session_auth,
         repository=repository_runtime.repository,
         repository_readiness=repository_runtime.readiness,
+        job_queue=repository_runtime.job_queue,
     )
 
 
