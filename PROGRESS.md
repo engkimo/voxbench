@@ -1,5 +1,20 @@
 # 進捗
 
+## Product Web UX: audible quick demo and visible refresh (2026-07-22)
+
+- 画面先頭に3秒の`Run audible demo`を追加。API key/Asterisk不要の非無音合成toneを実行し、完了runを
+  自動選択して4 stageの録音を画面上部で再生できる。target loudnessは0 / +2.5 / +6 dBから選択可能。
+- 録音を右rail最下部から主column先頭へ、選択stage詳細をstage一覧直下へ移動。stage click時は詳細へscrollし、
+  metric未取得stageを誤って`pass`表示せず`not measured`とする。
+- same-runの`Fetch`でもtimelineを明示再取得。run/live-previewを2秒pollし、WebSocket error/close時には古い
+  snapshotを破棄してRESTへfallbackする。Vite `/api` proxyにもWebSocket転送を有効化した。
+- readinessのunknownをfailureと同一視せず`not checked`として表示。Recent runsを常時見える位置へ置き、
+  custom runとadvanced diagnosticsは初回操作を妨げない折り畳みにした。
+- Docker Postgres 16 + Alembic `0008_run_job_leases` + 実API上でquick demoの完了、4本×3秒の非無音WAV、
+  AGC +2.499 dB、0 violations、WebSocket snapshot、Web UI自動選択/再生導線を確認した。
+- backend/deployment基盤は約99.5%だが、製品UXを含む全体は約70%。残りの主な製品課題は、実音声uploadまたは
+  同梱speech sample、同期A/B再生、処理差の説明、初回ガイド、実通話を含むend-to-end usability検証。
+
 ## Phase 1/5 real Postgres deployment validation (2026-07-22)
 
 - Homebrew PostgreSQL 14を14.23へpatch更新し、削除済みICU 74参照を現行ICU 78へ修復。既存data directoryや

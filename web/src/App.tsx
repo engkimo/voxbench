@@ -87,6 +87,11 @@ type AsyncPayloadDraft = {
   [key: string]: unknown
 }
 
+type QuickDemoResponse = {
+  run_id: string
+  status: string
+}
+
 const ENVIRONMENT_PROFILES: EnvironmentProfile[] = [
   'local',
   'dev',
@@ -159,6 +164,30 @@ async function createAsyncRun(apiBase: string, payload: unknown): Promise<LiveRu
   if (!response.ok) {
     const detail = await response.text()
     throw new Error(`HTTP ${response.status}${detail ? ` ${detail}` : ''}`)
+  }
+  return response.json()
+}
+
+async function createQuickDemo(
+  apiBase: string,
+  targetRms: number,
+): Promise<QuickDemoResponse> {
+  const base = apiBase.replace(/\/$/, '')
+  const response = await fetch(`${base}/runs/live-demo/simulated`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      provider: 'gemini-live',
+      dry_run: true,
+      duration_ms: 3000,
+      input_rms: 1200,
+      target_rms: targetRms,
+      max_gain: 4,
+      noise_floor: 150,
+    }),
+  })
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`)
   }
   return response.json()
 }
@@ -396,11 +425,17 @@ export function App() {
   const [audioSessionError, setAudioSessionError] = useState<string | null>(null)
   const [audioSessionPending, setAudioSessionPending] = useState(false)
   const [audioSessionRevision, setAudioSessionRevision] = useState(0)
+  const [quickDemoPending, setQuickDemoPending] = useState(false)
+  const [quickDemoError, setQuickDemoError] = useState<string | null>(null)
+  const [quickDemoTargetRms, setQuickDemoTargetRms] = useState(1600)
+  const stageDetailRef = useRef<HTMLDivElement>(null)
 
   const timelineQuery = useQuery({
     queryKey: ['timeline', apiBase, runId],
     queryFn: () => fetchTimeline(apiBase, runId),
     enabled: runId.trim().length > 0,
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.lanes.recordings.length === 0 ? 1_000 : false,
   })
   const compareTimelineQuery = useQuery({
     queryKey: ['timeline-compare', apiBase, compareRunId],
@@ -410,10 +445,12 @@ export function App() {
   const runsQuery = useQuery({
     queryKey: ['runs', apiBase],
     queryFn: () => fetchRuns(apiBase),
+    refetchInterval: 2_000,
   })
   const livePreviewQuery = useQuery({
     queryKey: ['live-preview', apiBase],
     queryFn: () => fetchLivePreview(apiBase),
+    refetchInterval: 2_000,
   })
   const crossSessionTrendsQuery = useQuery({
     queryKey: ['cross-session-trends', apiBase],
@@ -448,9 +485,11 @@ export function App() {
     })
     socket.addEventListener('error', () => {
       setLiveSocketState('error')
+      setLivePreviewSocketRuns(null)
     })
     socket.addEventListener('close', () => {
       setLiveSocketState((current) => (current === 'error' ? 'error' : 'disconnected'))
+      setLivePreviewSocketRuns(null)
     })
 
     return () => {
@@ -460,8 +499,21 @@ export function App() {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setRunId(draftRunId.trim())
-    setCompareRunId(draftCompareRunId.trim())
+    const nextRunId = draftRunId.trim()
+    const nextCompareRunId = draftCompareRunId.trim()
+    const sameRun = nextRunId === runId
+    const sameCompareRun = nextCompareRunId === compareRunId
+    setRunId(nextRunId)
+    setCompareRunId(nextCompareRunId)
+    setLivePreviewSocketRuns(null)
+    if (sameRun && nextRunId) {
+      void timelineQuery.refetch()
+    }
+    if (sameCompareRun && nextCompareRunId) {
+      void compareTimelineQuery.refetch()
+    }
+    void runsQuery.refetch()
+    void livePreviewQuery.refetch()
   }
 
   async function submitAsyncRun(event: FormEvent<HTMLFormElement>) {
@@ -473,6 +525,8 @@ export function App() {
       const accepted = await createAsyncRun(apiBase, payload)
       setDraftRunId(accepted.run_id)
       setRunId(accepted.run_id)
+      setSelectedStageName(null)
+      setLivePreviewSocketRuns(null)
       void runsQuery.refetch()
       void livePreviewQuery.refetch()
       void crossSessionTrendsQuery.refetch()
@@ -481,6 +535,32 @@ export function App() {
     } finally {
       setAsyncRunPending(false)
     }
+  }
+
+  async function runQuickDemo() {
+    setQuickDemoPending(true)
+    setQuickDemoError(null)
+    try {
+      const completed = await createQuickDemo(apiBase, quickDemoTargetRms)
+      setDraftRunId(completed.run_id)
+      setRunId(completed.run_id)
+      setSelectedStageName(null)
+      setLivePreviewSocketRuns(null)
+      void runsQuery.refetch()
+      void livePreviewQuery.refetch()
+      void crossSessionTrendsQuery.refetch()
+    } catch (error) {
+      setQuickDemoError(error instanceof Error ? error.message : 'Audible demo failed')
+    } finally {
+      setQuickDemoPending(false)
+    }
+  }
+
+  function selectStage(stageName: string) {
+    setSelectedStageName(stageName)
+    window.requestAnimationFrame(() => {
+      stageDetailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
   }
 
   async function loadExamplePayload() {
@@ -616,6 +696,7 @@ export function App() {
             type="button"
             title="Refresh"
             onClick={() => {
+              setLivePreviewSocketRuns(null)
               void timelineQuery.refetch()
               void runsQuery.refetch()
               void livePreviewQuery.refetch()
@@ -631,6 +712,14 @@ export function App() {
         </form>
       </header>
 
+      <QuickDemoPanel
+        error={quickDemoError}
+        onRun={runQuickDemo}
+        onTargetRmsChange={setQuickDemoTargetRms}
+        pending={quickDemoPending}
+        targetRms={quickDemoTargetRms}
+      />
+
       <section className="summaryGrid">
         <SummaryTile icon={<Database size={18} />} label="Run" value={timeline?.run_id ?? '-'} />
         <SummaryTile icon={<Database size={18} />} label="Compare" value={compareTimeline?.run_id ?? '-'} />
@@ -643,7 +732,7 @@ export function App() {
         <SummaryTile
           icon={<ListChecks size={18} />}
           label="Readiness"
-          value={timeline ? readinessHeadline(timeline.readiness_summary) : '-'}
+          value={timeline ? readinessProductHeadline(timeline.readiness_summary) : '-'}
         />
       </section>
 
@@ -672,30 +761,6 @@ export function App() {
 
       {!timeline ? (
         <div className="recentRunsWide">
-          <AsyncRunPanel
-            agcParams={asyncAgcParams}
-            environment={asyncEnvironment}
-            error={asyncRunError}
-            examplePending={examplePayloadPending}
-            onAgcParamsChange={updateAsyncAgcParams}
-            onEnvironmentChange={updateAsyncEnvironment}
-            onLoadExample={loadExamplePayload}
-            onPayloadChange={setAsyncRunPayload}
-            onReadinessChange={updateAsyncReadiness}
-            onSubmit={submitAsyncRun}
-            payload={asyncRunPayload}
-            pending={asyncRunPending}
-            readinessChecklist={asyncPayloadDraft.readiness_checklist ?? []}
-          />
-          <LivePreviewPanel
-            connectionState={liveSocketState}
-            crossSessionError={crossSessionTrendsQuery.isError}
-            crossSessionLoading={crossSessionTrendsQuery.isPending}
-            crossSessionTrends={crossSessionTrendsQuery.data ?? []}
-            isError={livePreviewQuery.isError}
-            isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
-            runs={livePreviewRuns}
-          />
           <RecentRuns
             compareRunId={compareRunId}
             isError={runsQuery.isError}
@@ -711,53 +776,8 @@ export function App() {
             primaryRunId={runId}
             runs={runsQuery.data ?? []}
           />
-        </div>
-      ) : null}
-
-      {timeline ? (
-        <section className="timelineGrid">
-          <div className="timelineMain">
-            <div className="sectionHeader">
-              <Activity size={18} />
-              <h2>Stages</h2>
-            </div>
-            {compareTimeline ? (
-              <ComparisonTable primary={timeline} compare={compareTimeline} />
-            ) : null}
-            <div className="stageStack">
-              {timeline.lanes.stages.map((stage) => (
-                <StageLane
-                  compareEnabled={compareTimeline !== undefined}
-                  compareStage={compareStages?.get(stage.stage)}
-                  key={stage.stage}
-                  onSelect={() => setSelectedStageName(stage.stage)}
-                  selected={stage.stage === selectedStage?.stage}
-                  stage={stage}
-                />
-              ))}
-            </div>
-          </div>
-
-          <aside className="sideRail">
-            <LivePreviewPanel
-              connectionState={liveSocketState}
-              crossSessionError={crossSessionTrendsQuery.isError}
-              crossSessionLoading={crossSessionTrendsQuery.isPending}
-              crossSessionTrends={crossSessionTrendsQuery.data ?? []}
-              isError={livePreviewQuery.isError}
-              isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
-              runs={livePreviewRuns}
-            />
-            <HostMetricsPanel metrics={timeline.lanes.host} />
-            <SipLadderPanel events={timeline.lanes.sip_ladder} />
-            <RtpQualityPanel stats={timeline.lanes.rtp_quality} />
-            <EnvironmentPanel environment={timeline.environment} />
-            <ReadinessPanel
-              checklist={timeline.readiness_checklist}
-              environment={timeline.environment}
-              summary={timeline.readiness_summary}
-            />
-            <LaneStatus title="Turns" icon={<Headphones size={17} />} count={timeline.lanes.turns.length} />
+          <details className="collapsiblePanel">
+            <summary>Custom run configuration</summary>
             <AsyncRunPanel
               agcParams={asyncAgcParams}
               environment={asyncEnvironment}
@@ -773,6 +793,69 @@ export function App() {
               pending={asyncRunPending}
               readinessChecklist={asyncPayloadDraft.readiness_checklist ?? []}
             />
+          </details>
+          <details className="collapsiblePanel">
+            <summary>Live status and diagnostics</summary>
+            <div className="collapsiblePanelBody">
+              <LivePreviewPanel
+                connectionState={liveSocketState}
+                crossSessionError={crossSessionTrendsQuery.isError}
+                crossSessionLoading={crossSessionTrendsQuery.isPending}
+                crossSessionTrends={crossSessionTrendsQuery.data ?? []}
+                isError={livePreviewQuery.isError}
+                isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
+                runs={livePreviewRuns}
+              />
+            </div>
+          </details>
+        </div>
+      ) : null}
+
+      {timeline ? (
+        <section className="timelineGrid">
+          <div className="timelineMain">
+            {compareTimeline ? (
+              <ComparisonTable primary={timeline} compare={compareTimeline} />
+            ) : null}
+            <Recordings
+              apiBase={apiBase}
+              audioSessionRevision={audioSessionRevision}
+              recordings={timeline.lanes.recordings}
+              runId={timeline.run_id}
+            />
+            <div className="sectionHeader">
+              <Activity size={18} />
+              <h2>Stages</h2>
+            </div>
+            <div className="stageStack">
+              {timeline.lanes.stages.map((stage) => (
+                <StageLane
+                  compareEnabled={compareTimeline !== undefined}
+                  compareStage={compareStages?.get(stage.stage)}
+                  key={stage.stage}
+                  onSelect={() => selectStage(stage.stage)}
+                  selected={stage.stage === selectedStage?.stage}
+                  stage={stage}
+                />
+              ))}
+            </div>
+            {selectedStage ? (
+              <div ref={stageDetailRef}>
+                <StageDetail
+                  apiBase={apiBase}
+                  audioSessionRevision={audioSessionRevision}
+                  compareRecording={selectedCompareRecording}
+                  compareRunId={compareTimeline?.run_id}
+                  compareStage={selectedCompareStage}
+                  recording={selectedRecording}
+                  runId={timeline.run_id}
+                  stage={selectedStage}
+                />
+              </div>
+            ) : null}
+          </div>
+
+          <aside className="sideRail">
             <RecentRuns
               compareRunId={compareRunId}
               isError={runsQuery.isError}
@@ -788,28 +871,101 @@ export function App() {
               primaryRunId={runId}
               runs={runsQuery.data ?? []}
             />
-            {selectedStage ? (
-              <StageDetail
-                apiBase={apiBase}
-                audioSessionRevision={audioSessionRevision}
-                compareRecording={selectedCompareRecording}
-                compareRunId={compareTimeline?.run_id}
-                compareStage={selectedCompareStage}
-                recording={selectedRecording}
-                runId={timeline.run_id}
-                stage={selectedStage}
+            <details className="collapsiblePanel">
+              <summary>Custom run configuration</summary>
+              <AsyncRunPanel
+                agcParams={asyncAgcParams}
+                environment={asyncEnvironment}
+                error={asyncRunError}
+                examplePending={examplePayloadPending}
+                onAgcParamsChange={updateAsyncAgcParams}
+                onEnvironmentChange={updateAsyncEnvironment}
+                onLoadExample={loadExamplePayload}
+                onPayloadChange={setAsyncRunPayload}
+                onReadinessChange={updateAsyncReadiness}
+                onSubmit={submitAsyncRun}
+                payload={asyncRunPayload}
+                pending={asyncRunPending}
+                readinessChecklist={asyncPayloadDraft.readiness_checklist ?? []}
               />
-            ) : null}
-            <Recordings
-              apiBase={apiBase}
-              audioSessionRevision={audioSessionRevision}
-              recordings={timeline.lanes.recordings}
-              runId={timeline.run_id}
-            />
+            </details>
+            <details className="collapsiblePanel">
+              <summary>Advanced diagnostics</summary>
+              <div className="collapsiblePanelBody">
+                <LivePreviewPanel
+                  connectionState={liveSocketState}
+                  crossSessionError={crossSessionTrendsQuery.isError}
+                  crossSessionLoading={crossSessionTrendsQuery.isPending}
+                  crossSessionTrends={crossSessionTrendsQuery.data ?? []}
+                  isError={livePreviewQuery.isError}
+                  isLoading={livePreviewSocketRuns === null && livePreviewQuery.isPending}
+                  runs={livePreviewRuns}
+                />
+                <HostMetricsPanel metrics={timeline.lanes.host} />
+                <SipLadderPanel events={timeline.lanes.sip_ladder} />
+                <RtpQualityPanel stats={timeline.lanes.rtp_quality} />
+                <EnvironmentPanel environment={timeline.environment} />
+                <ReadinessPanel
+                  checklist={timeline.readiness_checklist}
+                  environment={timeline.environment}
+                  summary={timeline.readiness_summary}
+                />
+                <LaneStatus
+                  title="Turns"
+                  icon={<Headphones size={17} />}
+                  count={timeline.lanes.turns.length}
+                />
+              </div>
+            </details>
           </aside>
         </section>
       ) : null}
     </main>
+  )
+}
+
+function QuickDemoPanel({
+  error,
+  onRun,
+  onTargetRmsChange,
+  pending,
+  targetRms,
+}: {
+  error: string | null
+  onRun: () => void
+  onTargetRmsChange: (value: number) => void
+  pending: boolean
+  targetRms: number
+}) {
+  return (
+    <section className="quickDemoPanel">
+      <div className="quickDemoCopy">
+        <strong>Hear the pipeline in 3 seconds</strong>
+        <span>
+          Run an audible local demo, then listen to every stage and compare the AGC gain.
+        </span>
+      </div>
+      <div className="quickDemoActions">
+        <span>3-second synthetic tone · no provider key required</span>
+        <label>
+          Target loudness
+          <select
+            disabled={pending}
+            onChange={(event) => onTargetRmsChange(Number(event.target.value))}
+            value={targetRms}
+          >
+            <option value={1200}>Original · 0 dB</option>
+            <option value={1600}>Balanced · +2.5 dB</option>
+            <option value={2400}>Boosted · +6 dB</option>
+          </select>
+        </label>
+        <button disabled={pending} onClick={onRun} type="button">
+          <Play size={16} />
+          {pending ? 'Running demo' : 'Run audible demo'}
+        </button>
+      </div>
+      {error ? <div className="quickDemoError">{error}</div> : null}
+    </section>
   )
 }
 
@@ -1102,7 +1258,11 @@ function LivePreviewPanel({
       <div className="sectionHeader compact">
         <Activity size={17} />
         <h2>Live preview</h2>
-        <span className={`liveSocketBadge ${connectionState}`}>{connectionState}</span>
+        <span
+          className={`liveSocketBadge ${connectionState === 'error' || connectionState === 'disconnected' ? 'fallback' : connectionState}`}
+        >
+          {liveConnectionLabel(connectionState)}
+        </span>
       </div>
       {isLoading ? <div className="emptyInline">Loading live preview</div> : null}
       {isError ? <div className="emptyInline">Live preview unavailable</div> : null}
@@ -1141,7 +1301,8 @@ function LivePreviewPanel({
           const connection = run.provider_connection
           const rtpCollector = run.rtp_collector
           const blocked =
-            run.readiness_summary.incomplete_count > 0 ||
+            run.readiness_summary.failed_count > 0 ||
+            run.readiness_summary.manual_blocker_count > 0 ||
             connection.exhausted ||
             rtpCollector.state === 'failed' ||
             run.status === 'failed'
@@ -1480,6 +1641,7 @@ function StageLane({
   stage: TimelineStageLane
 }) {
   const failed = stage.violations.length > 0
+  const measured = stage.metrics.length > 0
   const compareBadge = compareStage
     ? compareStageBadge(stage, compareStage)
     : compareEnabled
@@ -1488,7 +1650,7 @@ function StageLane({
   const deltaChips = compareStage ? metricDeltaChips(stage, compareStage) : []
   return (
     <article
-      className={`stageLane ${failed ? 'failed' : 'passed'} ${selected ? 'selected' : ''}`}
+      className={`stageLane ${failed ? 'failed' : measured ? 'passed' : 'unmeasured'} ${selected ? 'selected' : ''}`}
       onClick={onSelect}
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -1504,9 +1666,11 @@ function StageLane({
           <h3>{stage.stage}</h3>
           <span>{stage.metrics.length} metrics</span>
         </div>
-        <span className={`statusBadge ${failed ? 'failed' : 'passed'}`}>
-          {failed ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
-          {failed ? `${stage.violations.length} fail` : 'pass'}
+        <span
+          className={`statusBadge ${failed ? 'failed' : measured ? 'passed' : 'unmeasured'}`}
+        >
+          {failed ? <AlertTriangle size={15} /> : measured ? <CheckCircle2 size={15} /> : null}
+          {failed ? `${stage.violations.length} fail` : measured ? 'pass' : 'not measured'}
         </span>
       </div>
       {compareBadge ? (
@@ -1582,7 +1746,9 @@ function ReadinessPanel({
         <ListChecks size={17} />
         <h2>Readiness</h2>
       </div>
-      <div className={`readinessSummary ${summary.incomplete_count > 0 ? 'blocked' : 'ready'}`}>
+      <div
+        className={`readinessSummary ${summary.failed_count > 0 || summary.manual_blocker_count > 0 ? 'blocked' : 'ready'}`}
+      >
         <strong>{readinessHeadline(summary)}</strong>
         <span>
           {summary.passed_count} pass / {summary.failed_count} fail / {summary.unknown_count} unknown
@@ -2156,8 +2322,11 @@ function Recordings({
     <section className="recordings">
       <div className="sectionHeader compact">
         <Headphones size={17} />
-        <h2>Recordings</h2>
+        <h2>Listen to every stage</h2>
       </div>
+      <p className="panelLead">
+        Start with resampler as the reference, then compare AGC, limiter, and serializer.
+      </p>
       <div className="recordingList">
         {recordings.map((recording) => {
           const src = `${base}/runs/${encodeURIComponent(runId)}/recordings/${encodeURIComponent(recording.stage)}/audio`
@@ -2171,7 +2340,7 @@ function Recordings({
                 controls
                 crossOrigin="use-credentials"
                 key={`${recording.stage}-${audioSessionRevision}`}
-                preload="none"
+                preload="metadata"
                 src={src}
               />
             </div>
@@ -2286,6 +2455,26 @@ function readinessHeadline(summary: ReadinessSummary) {
     return 'ready'
   }
   return `${summary.incomplete_count} incomplete`
+}
+
+function readinessProductHeadline(summary: ReadinessSummary) {
+  if (summary.failed_count > 0) {
+    return `${summary.failed_count} failed`
+  }
+  if (summary.manual_blocker_count > 0) {
+    return `${summary.manual_blocker_count} blocked`
+  }
+  if (summary.unknown_count > 0) {
+    return `${summary.unknown_count} not checked`
+  }
+  return 'ready'
+}
+
+function liveConnectionLabel(state: LiveSocketState) {
+  if (state === 'error' || state === 'disconnected') {
+    return 'REST fallback'
+  }
+  return state
 }
 
 function displayValue(value: string | number | null | undefined) {

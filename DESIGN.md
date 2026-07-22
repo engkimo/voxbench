@@ -80,6 +80,14 @@ AI音声エージェントは**ブラウザ（WebRTC）では動くのに、電�
 3. **Storage** — Postgres（必須）＋ MinIO（録音/PCAP）。scaleプロファイルでClickHouse/Timescale。
 4. **Web UI** — React/TS。コール検査の統合タイムラインが主役。
 
+### 3.1 Web first-use contract
+
+- 初回ユーザーはprovider keyや電話環境を用意せず、画面先頭の1操作で3秒の可聴demoを完了できる。
+- 録音とstage差分を診断情報より先に見せ、run作成後は対象runを自動選択する。
+- unknown/readiness未確認をfailureやpassとして扱わず、`not checked` / `not measured`として区別する。
+- WebSocketは即時性の最適化であり必須条件ではない。切断時はstale snapshotを残さずREST pollingへ退避する。
+- 合成tone demoはgain/pipeline動作の決定的な確認用であり、speech品質評価や実通話検証の代替とはしない。
+
 ---
 
 ## 4. ドメインモデル / DBスキーマ（Postgres）

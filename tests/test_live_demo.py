@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import wave
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -35,6 +36,7 @@ def test_simulated_live_demo_run_writes_timeline_audio_and_gain_metrics(tmp_path
             "target_rms": 4000,
             "max_gain": 3.0,
             "noise_floor": 100,
+            "duration_ms": 3000,
         },
     )
 
@@ -53,6 +55,18 @@ def test_simulated_live_demo_run_writes_timeline_audio_and_gain_metrics(tmp_path
         path = Path(recording["uri"].removeprefix("file://"))
         assert path.exists()
         assert path.read_bytes().startswith(b"RIFF")
+        assert recording["duration_ms"] == 3000.0
+
+    reference_path = Path(
+        next(
+            recording["uri"]
+            for recording in body["recordings"]
+            if recording["stage"] == "resampler"
+        ).removeprefix("file://")
+    )
+    with wave.open(str(reference_path), "rb") as reference:
+        assert reference.getnframes() / reference.getframerate() == 3.0
+        assert any(reference.readframes(reference.getnframes()))
 
     agc_metrics = [
         metric for metric in body["metrics"] if metric["stage"] == "agc"

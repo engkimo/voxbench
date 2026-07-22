@@ -342,6 +342,26 @@ Open `http://127.0.0.1:5173/`. The Web UI can inspect a run timeline, compare tw
 runs, play stage recordings, watch live run status, and start an async run from an
 example payload.
 
+For the shortest product walkthrough, use **Hear the pipeline in 3 seconds** at
+the top of the page:
+
+1. Choose the target loudness. **Balanced +2.5 dB** is the safe default.
+2. Select **Run audible demo**. No provider API key or Asterisk setup is needed.
+3. The completed run is selected automatically. Use **Listen to every stage** to
+   play the three-second recording before and after AGC/limiting.
+4. Run another target loudness, then select a previous result under **Recent
+   runs** or enter its ID in **Compare** to inspect the two results.
+
+The quick demo uses a local synthetic tone so gain changes are immediately
+audible and deterministic; it is not a speech-quality benchmark. Real speech,
+provider, SIP, and RTP validation still require the corresponding integration
+inputs. Custom payload controls and operational diagnostics are collapsed by
+default so they do not interrupt the first-use path.
+
+If `web/vite.config.ts` changes while the development server is already running,
+restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
+the UI falls back to REST polling if the socket is unavailable.
+
 ## Phase 4 pre-live workflow
 
 Phase 4 pre-live work is focused on demo/integration readiness before real

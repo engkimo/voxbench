@@ -75,6 +75,63 @@ a {
   font-size: 13px;
 }
 
+.quickDemoPanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0 0;
+  border: 1px solid #8bc4a5;
+  border-radius: 10px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f0faf4 0%, #edf7f8 100%);
+}
+
+.quickDemoCopy,
+.quickDemoActions {
+  display: grid;
+  gap: 5px;
+}
+
+.quickDemoCopy strong {
+  color: #173e39;
+  font-size: 18px;
+}
+
+.quickDemoCopy span,
+.quickDemoActions span {
+  color: #526a67;
+  font-size: 12px;
+}
+
+.quickDemoActions {
+  justify-items: end;
+}
+
+.quickDemoActions label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #526a67;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.quickDemoActions select {
+  min-height: 34px;
+  border: 1px solid #8fb7b2;
+  border-radius: 6px;
+  padding: 0 8px;
+  color: #173e39;
+  background: #ffffff;
+}
+
+.quickDemoError {
+  grid-column: 1 / -1;
+  color: #8e2f35;
+  font-size: 12px;
+}
+
 .runForm {
   display: grid;
   grid-template-columns: minmax(130px, 190px) minmax(200px, 330px) minmax(200px, 330px) auto auto;
@@ -237,6 +294,12 @@ a {
   min-width: 0;
 }
 
+.timelineMain {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
 .sectionHeader {
   display: flex;
   align-items: center;
@@ -387,6 +450,10 @@ a {
   border-left-color: #c84b52;
 }
 
+.stageLane.unmeasured {
+  border-left-color: #9aa7b4;
+}
+
 .stageLane.selected {
   border-color: #1f6f78;
   box-shadow: 0 0 0 2px rgba(31, 111, 120, 0.14);
@@ -436,6 +503,11 @@ a {
 .statusBadge.failed {
   color: #8e2f35;
   background: #ffe3e3;
+}
+
+.statusBadge.unmeasured {
+  color: #596775;
+  background: #eef3f6;
 }
 
 .compareBadge {
@@ -639,7 +711,20 @@ a {
 
 .recordingList {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 8px;
+}
+
+.recordings {
+  border-color: #9fcbd0;
+  background: #f9fdfd;
+}
+
+.panelLead {
+  margin: -3px 0 12px;
+  color: #596775;
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .recentRunList {
@@ -718,6 +803,41 @@ a {
 .stageDetail {
   display: grid;
   gap: 10px;
+  scroll-margin-top: 16px;
+}
+
+.collapsiblePanel {
+  border: 1px solid #d0d8e1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.collapsiblePanel > summary {
+  padding: 12px;
+  color: #3f4d5b;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.collapsiblePanel[open] > summary {
+  border-bottom: 1px solid #dde4eb;
+}
+
+.collapsiblePanel > .asyncRunPanel {
+  border: 0;
+}
+
+.collapsiblePanelBody {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.collapsiblePanelBody > section {
+  border: 0;
+  border-radius: 6px;
+  background: #f8fafc;
 }
 
 .asyncRunPanel {
@@ -947,10 +1067,9 @@ a {
   background: #e3f4ea;
 }
 
-.liveSocketBadge.error,
-.liveSocketBadge.disconnected {
-  color: #8e2f35;
-  background: #ffe3e3;
+.liveSocketBadge.fallback {
+  color: #7a5815;
+  background: #fff3cd;
 }
 
 .liveRunItem {
@@ -1755,6 +1874,14 @@ a {
 
   .topBar {
     display: grid;
+  }
+
+  .quickDemoPanel {
+    grid-template-columns: 1fr;
+  }
+
+  .quickDemoActions {
+    justify-items: start;
   }
 
   .runForm,
