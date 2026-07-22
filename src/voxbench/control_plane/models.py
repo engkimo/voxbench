@@ -159,8 +159,8 @@ class Span(TimestampMixin, Base):
     span_id: Mapped[str] = mapped_column(Text, nullable=False)
     parent_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    start_ns: Mapped[int] = mapped_column(nullable=False)
-    end_ns: Mapped[int] = mapped_column(nullable=False)
+    start_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    end_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
     attrs: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
 
 

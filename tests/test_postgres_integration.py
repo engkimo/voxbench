@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,8 +18,8 @@ from voxbench.control_plane.job_queue import (
     PostgresRunJobQueue,
     _claim_statement,
 )
-from voxbench.control_plane.models import Base
 from voxbench.control_plane.run_api import PostgresRunRepository, StoredRun
+from voxbench.engine_harness.models import SpanArtifact
 
 TEST_POSTGRES_URL_ENV = "VOXBENCH_TEST_POSTGRES_URL"
 
@@ -42,6 +46,9 @@ def postgres_runtime() -> PostgresRuntime:
     if parsed.drivername != "postgresql+psycopg" or not parsed.database:
         pytest.fail(f"{TEST_POSTGRES_URL_ENV} must use postgresql+psycopg")
     schema = f"voxbench_test_{uuid4().hex}"
+    migration_url = parsed.update_query_dict(
+        {"options": f"-c search_path={schema} -c statement_timeout=5000"}
+    ).render_as_string(hide_password=False)
     admin_engine = create_engine(database_url, hide_parameters=True, pool_pre_ping=True)
     test_engine = create_engine(
         database_url,
@@ -54,7 +61,16 @@ def postgres_runtime() -> PostgresRuntime:
     try:
         with admin_engine.begin() as connection:
             connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
-        Base.metadata.create_all(test_engine)
+        alembic_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+        with patch.dict(os.environ, {"VOXBENCH_DATABASE_URL": migration_url}):
+            command.upgrade(alembic_config, "head")
+        with test_engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT version_num FROM alembic_version"
+                ).scalar_one()
+                == "0008_run_job_leases"
+            )
         sessions = sessionmaker(bind=test_engine, expire_on_commit=False)
         yield PostgresRuntime(
             sessions=sessions,
@@ -84,6 +100,33 @@ def _run() -> StoredRun:
         spans=[],
         metrics=[],
     )
+
+
+def test_postgres_round_trips_epoch_nanosecond_spans(
+    postgres_runtime: PostgresRuntime,
+) -> None:
+    run = _run()
+    start_ns = 1_800_000_000_000_000_000
+    end_ns = start_ns + 1_000_000
+    run.spans = [
+        SpanArtifact(
+            trace_id="postgres-integration-trace",
+            span_id="postgres-integration-span",
+            parent_id=None,
+            name="postgres-integration",
+            start_ns=start_ns,
+            end_ns=end_ns,
+            attrs={},
+        )
+    ]
+
+    postgres_runtime.repository.save(run)
+
+    restored = postgres_runtime.repository.get(run.run_id)
+    assert restored is not None
+    assert [(span.start_ns, span.end_ns) for span in restored.spans] == [
+        (start_ns, end_ns)
+    ]
 
 
 def test_postgres_skip_locked_claims_next_job_without_waiting(

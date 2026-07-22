@@ -1,5 +1,19 @@
 # 進捗
 
+## Phase 1/5 real Postgres deployment validation (2026-07-22)
+
+- Homebrew PostgreSQL 14を14.23へpatch更新し、削除済みICU 74参照を現行ICU 78へ修復。既存data directoryや
+  serviceは使わず、使い捨てcluster・DB・portでproduction相当のmigration/API smokeを実走した。
+- fresh PostgresでAlembic標準`alembic_version.version_num VARCHAR(32)`を超える0004 revision IDが
+  migrationをrollbackする問題を検出。0004内でversion列を128文字へ拡張してからrevision更新するよう修正。
+- real Postgres integration fixtureを`Base.metadata.create_all()`からfull Alembic upgradeへ切替え、migration
+  history/headも継続検証するようにした。
+- spanのepoch nanosecondsをORMが32-bit `INTEGER` parameterとしてcastし、結果commitをoverflowさせる問題を
+  検出。modelを明示`BigInteger`へ合わせ、10^18台のstart/end ns round-trip testを追加した。
+- full migration、`SKIP LOCKED`、expired lease fencing、readiness probe、statement timeout、persistent
+  `/runs/async` workerとrecording生成を実Postgres 14.23上で確認。残りはmulti-process soak、shutdown/alertの
+  deployment運用接続。全体進捗目安は約99.5%。
+
 ## Phase 1/5 Postgres worker production-readiness contracts (2026-07-22)
 
 - `VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS`を100〜30,000ms、既定5,000msで追加し、production

@@ -212,8 +212,9 @@ The queue and fencing contracts are designed for multiple Postgres application
 processes, but production rollout should still validate real-Postgres concurrent
 claim behavior, shutdown telemetry, and deployment migrations before increasing
 worker count. The opt-in integration tests create and drop a unique schema in a
-disposable test database and directly verify locked-row skipping plus stale-lease
-fencing:
+disposable test database, apply the complete Alembic history through the expected
+head, and directly verify epoch-nanosecond span persistence, locked-row skipping,
+and stale-lease fencing:
 
 ```bash
 export VOXBENCH_TEST_POSTGRES_URL='postgresql+psycopg://user:<password>@localhost/testdb'
