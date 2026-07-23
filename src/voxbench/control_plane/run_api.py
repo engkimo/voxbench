@@ -1140,6 +1140,7 @@ RTP_LOSS_WARNING_PCT = 1.0
 RTP_JITTER_WARNING_MS = 30.0
 RTP_MOS_WARNING_SCORE = 3.5
 RTP_DEGRADATION_WINDOW_GAP_MS = 5_000.0
+STAGE_LEVEL_EVENT_THRESHOLD_DB = 1.0
 
 
 @dataclass(frozen=True)
@@ -1156,6 +1157,137 @@ class _RtpQualityEvidence:
     @property
     def evidence_refs(self) -> list[str]:
         return [f"rtp:{self.stat_index}:{trigger}" for trigger in self.triggers]
+
+
+@dataclass(frozen=True)
+class _StageSignalEvidence:
+    stage: str
+    t_rel_ms: float
+    input_rms: float | None
+    output_rms: float | None
+    delta_db: float
+    gain_applied: float | None
+    sample_count: int
+
+    @property
+    def event_id(self) -> str:
+        return f"stage-signal:{self.stage}"
+
+
+@dataclass(frozen=True)
+class _DurationContractionEvidence:
+    verification_index: int
+    previous_stage: str | None
+    stage: str
+    input_duration_ms: float
+    output_duration_ms: float
+    duration_ratio: float
+
+    @property
+    def missing_duration_ms(self) -> float:
+        return self.input_duration_ms - self.output_duration_ms
+
+    @property
+    def event_id(self) -> str:
+        return f"duration-contraction:{self.verification_index}"
+
+    @property
+    def correlation_alias(self) -> str:
+        return f"media-time:{self.stage}:{self.verification_index}"
+
+
+def _stage_signal_evidence(run: StoredRun) -> list[_StageSignalEvidence]:
+    metric_names = {"input_rms", "output_rms", "delta_db", "gain_applied"}
+    bundles: dict[tuple[str, datetime], dict[str, float]] = {}
+    for metric in run.metrics:
+        if metric.stage is None or metric.name not in metric_names:
+            continue
+        bundles.setdefault((metric.stage, metric.ts), {})[metric.name] = metric.value
+
+    stage_order = _pipeline_stage_names(run)
+    by_stage: dict[str, list[tuple[datetime, dict[str, float]]]] = {}
+    for (stage, ts), values in bundles.items():
+        if "delta_db" in values:
+            by_stage.setdefault(stage, []).append((ts, values))
+
+    evidence: list[_StageSignalEvidence] = []
+    for stage in stage_order:
+        candidates = by_stage.get(stage, [])
+        if not candidates:
+            continue
+        ts, values = max(
+            candidates,
+            key=lambda item: (abs(item[1]["delta_db"]), item[0]),
+        )
+        delta_db = values["delta_db"]
+        if abs(delta_db) < STAGE_LEVEL_EVENT_THRESHOLD_DB:
+            continue
+        evidence.append(
+            _StageSignalEvidence(
+                stage=stage,
+                t_rel_ms=_relative_seconds(ts, run.started_at) * 1000,
+                input_rms=values.get("input_rms"),
+                output_rms=values.get("output_rms"),
+                delta_db=delta_db,
+                gain_applied=values.get("gain_applied"),
+                sample_count=len(candidates),
+            )
+        )
+    return evidence
+
+
+def _duration_contraction_evidence(
+    run: StoredRun,
+) -> list[_DurationContractionEvidence]:
+    stage_names = _pipeline_stage_names(run)
+    previous_by_stage = {
+        stage: stage_names[index - 1] if index > 0 else None
+        for index, stage in enumerate(stage_names)
+    }
+    evidence: list[_DurationContractionEvidence] = []
+    for verification_index, verification in enumerate(run.verifications):
+        if (
+            verification.passed
+            or verification.invariant != "duration_preserving"
+        ):
+            continue
+        input_duration_ms = _plain_number(
+            verification.observed.get("input_duration_ms")
+        )
+        output_duration_ms = _plain_number(
+            verification.observed.get("output_duration_ms")
+        )
+        duration_ratio = _plain_number(verification.observed.get("duration_ratio"))
+        if (
+            input_duration_ms is None
+            or output_duration_ms is None
+            or duration_ratio is None
+            or input_duration_ms <= output_duration_ms
+        ):
+            continue
+        evidence.append(
+            _DurationContractionEvidence(
+                verification_index=verification_index,
+                previous_stage=previous_by_stage.get(verification.stage),
+                stage=verification.stage,
+                input_duration_ms=input_duration_ms,
+                output_duration_ms=output_duration_ms,
+                duration_ratio=duration_ratio,
+            )
+        )
+    return evidence
+
+
+def _pipeline_stage_names(run: StoredRun) -> list[str]:
+    return [
+        stage["type"] for stage in run.resolved_config["spec"]["media"]["pipeline"]
+    ]
+
+
+def _plain_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _rtp_quality_evidence(run: StoredRun) -> list[_RtpQualityEvidence]:
@@ -1285,6 +1417,53 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
         )
         metric_index += 1
 
+    for item in _stage_signal_evidence(run):
+        events.append(
+            TimelineTypedEvent(
+                event_id=item.event_id,
+                category="pipeline",
+                name=(
+                    "stage.level_increased"
+                    if item.delta_db > 0
+                    else "stage.level_decreased"
+                ),
+                t_rel_ms=item.t_rel_ms,
+                clock_domain="control_plane_wall",
+                stage=item.stage,
+                source="stage_signal_metrics",
+                correlation_alias=item.event_id,
+                attributes={
+                    "input_rms": item.input_rms,
+                    "output_rms": item.output_rms,
+                    "delta_db": item.delta_db,
+                    "gain_applied": item.gain_applied,
+                    "sample_count": item.sample_count,
+                    "event_threshold_db": STAGE_LEVEL_EVENT_THRESHOLD_DB,
+                },
+            )
+        )
+
+    for item in _duration_contraction_evidence(run):
+        events.append(
+            TimelineTypedEvent(
+                event_id=item.event_id,
+                category="pipeline",
+                name="stage.media_time_contracted",
+                t_rel_ms=item.output_duration_ms,
+                clock_domain="recording_media_time",
+                stage=item.stage,
+                source="duration_verification",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "previous_stage": item.previous_stage,
+                    "input_duration_ms": item.input_duration_ms,
+                    "output_duration_ms": item.output_duration_ms,
+                    "missing_duration_ms": item.missing_duration_ms,
+                    "duration_ratio": item.duration_ratio,
+                },
+            )
+        )
+
     for window_index, window in enumerate(_rtp_quality_windows(run)):
         correlation_alias = _rtp_window_alias(window_index, window)
         for item in window:
@@ -1410,6 +1589,25 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 },
             )
         )
+    for item in _duration_contraction_evidence(run):
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=f"media-time-missing:{item.verification_index}",
+                category="pipeline",
+                name="media_time_missing",
+                start_ms=item.output_duration_ms,
+                end_ms=item.input_duration_ms,
+                clock_domain="recording_media_time",
+                stage=item.stage,
+                source="duration_verification",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "previous_stage": item.previous_stage,
+                    "missing_duration_ms": item.missing_duration_ms,
+                    "duration_ratio": item.duration_ratio,
+                },
+            )
+        )
     return sorted(intervals, key=lambda interval: (interval.start_ms, interval.interval_id))
 
 
@@ -1509,25 +1707,64 @@ def _typed_timeline_incidents(
         for artifact in artifacts
         if artifact.stage is not None
     }
+    stage_names = _pipeline_stage_names(run)
+    previous_by_stage = {
+        stage: stage_names[index - 1] if index > 0 else None
+        for index, stage in enumerate(stage_names)
+    }
+    duration_evidence_by_verification = {
+        item.verification_index: item
+        for item in _duration_contraction_evidence(run)
+    }
+    signal_evidence_by_stage = {
+        item.stage: item for item in _stage_signal_evidence(run)
+    }
     incidents: list[TimelineIncident] = []
     failure_index = 0
-    for verification in run.verifications:
+    for verification_index, verification in enumerate(run.verifications):
         if verification.passed:
             continue
         evidence_refs = []
         artifact_id = artifact_by_stage.get(verification.stage)
         if artifact_id is not None:
             evidence_refs.append(artifact_id)
+        previous_stage = previous_by_stage.get(verification.stage)
+        previous_artifact_id = artifact_by_stage.get(previous_stage)
+        if previous_artifact_id is not None:
+            evidence_refs.insert(0, previous_artifact_id)
+        start_ms = 0.0
+        end_ms = duration_ms
+        title = f"{verification.stage}: {verification.invariant}"
+        summary = verification.detail
+        duration_evidence = duration_evidence_by_verification.get(verification_index)
+        signal_evidence = signal_evidence_by_stage.get(verification.stage)
+        if duration_evidence is not None:
+            start_ms = duration_evidence.output_duration_ms
+            end_ms = duration_evidence.input_duration_ms
+            title = f"Media time contracted at {verification.stage}"
+            summary = (
+                f"{duration_evidence.missing_duration_ms:g} ms missing between "
+                f"{duration_evidence.previous_stage or 'upstream'} and "
+                f"{verification.stage}"
+            )
+            evidence_refs.append(duration_evidence.event_id)
+        elif verification.invariant == "level_preserving":
+            title = f"Signal level contract failed at {verification.stage}"
+            delta_db = _plain_number(verification.observed.get("delta_db"))
+            if delta_db is not None:
+                summary = f"Stage changed RMS level by {delta_db:+.2f} dB"
+            if signal_evidence is not None:
+                evidence_refs.append(signal_evidence.event_id)
         incidents.append(
             TimelineIncident(
                 incident_id=f"verification:{failure_index}",
                 rule_id=verification.invariant,
                 category="pipeline",
                 severity="error",
-                title=f"{verification.stage}: {verification.invariant}",
-                summary=verification.detail,
-                start_ms=0,
-                end_ms=duration_ms,
+                title=title,
+                summary=summary,
+                start_ms=start_ms,
+                end_ms=end_ms,
                 confidence="certain",
                 stage=verification.stage,
                 observed=verification.observed,

@@ -389,6 +389,14 @@ not as a confirmed media gap: aggregate statistics do not contain the RTP sequen
 or packet-arrival evidence required to prove a missing-packet interval. The active
 thresholds are always included in the incident's Expected contract.
 
+Failed Stage duration checks are localized on recording media time. The inspector
+marks the output duration where contraction begins, shades the missing interval up
+to the previous Stage duration, and links both adjacent recordings as evidence.
+Stage signal metrics also emit one peak-change event per Stage when absolute RMS
+delta reaches 1 dB, carrying input/output RMS, delta dB, and applied gain. These are
+signal-level measurements, not LUFS loudness, true peak, or clipping measurements;
+those require dedicated collectors before VoxBench can make those claims.
+
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
 the UI falls back to REST polling if the socket is unavailable.

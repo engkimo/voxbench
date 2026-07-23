@@ -434,6 +434,12 @@ contractとしてevent化する。5秒以内の連続観測だけを1 degradatio
 cadenceなしにpacket gapや音切れを確定しない。閾値はincidentのExpected contractへ必ず返し、将来はscenario/
 manifest ruleへ移す。
 
+Stage間診断は既存verificationを再判定せず、確定した`duration_preserving` failureをmedia-time evidenceへ変換する。
+短縮後のoutput durationから直前Stageのinput durationまでを`media_time_missing` intervalとし、隣接する2つの
+recording artifactとcontraction eventを同じincidentへ結ぶ。level変化は同一timestampのinput/output RMS、
+delta dB、gain appliedを束ね、Stageごとに絶対値最大の変化（1dB以上）をevent化する。RMS/dBをLUFSや知覚
+loudnessと呼ばない。LUFS、true peak、clipping率は専用collectorを追加してから別contractとして扱う。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

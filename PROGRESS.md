@@ -1,5 +1,15 @@
 # 進捗
 
+## Product UX: Stage media-time and signal-level causality (2026-07-23)
+
+- failed `duration_preserving` verificationを共通時間軸上の`stage.media_time_contracted` eventへ変換。
+- 短縮後output durationから直前Stage input durationまでを`media_time_missing` intervalとして表示し、欠け始めへ
+  cursor/audio seekできる。incidentは直前/現在の2録音とeventをevidence refsに持つ。
+- 同一timestampのinput/output RMS、delta dB、gain appliedを束ね、Stageごとの最大変化が1dB以上なら
+  `stage.level_increased|decreased` eventを生成。level failure incidentから実測点へ移動できる。
+- duration/levelの判定は既存verification contractを再利用し、projection側に競合する閾値判定を増やさない。
+- RMS/dBはsignal levelとして扱い、未計測のLUFS/true peak/clippingとは区別。製品全体は約79%。
+
 ## Product UX: directional RTP degradation evidence (2026-07-23)
 
 - 方向別RTP観測をloss/jitter/MOSのtyped transport eventへ投影し、連続観測をdegradation intervalへ集約。

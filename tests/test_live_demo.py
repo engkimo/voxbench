@@ -96,6 +96,13 @@ def test_simulated_live_demo_run_writes_timeline_audio_and_gain_metrics(tmp_path
     assert {event["category"] for event in timeline["lanes"]["events"]} >= {
         "signaling",
     }
+    agc_level_event = next(
+        event
+        for event in timeline["lanes"]["events"]
+        if event["name"] == "stage.level_increased" and event["stage"] == "agc"
+    )
+    assert agc_level_event["attributes"]["gain_applied"] == 3.0
+    assert agc_level_event["attributes"]["delta_db"] > 9.0
     assert {series["category"] for series in timeline["lanes"]["series"]} >= {
         "pipeline",
         "transport",
@@ -106,9 +113,10 @@ def test_simulated_live_demo_run_writes_timeline_audio_and_gain_metrics(tmp_path
         if incident["stage"] == "agc"
     )
     assert agc_incident["rule_id"] == "level_preserving"
+    assert agc_incident["title"] == "Signal level contract failed at agc"
     assert agc_incident["severity"] == "error"
     assert agc_incident["confidence"] == "certain"
-    assert agc_incident["evidence_refs"]
+    assert "stage-signal:agc" in agc_incident["evidence_refs"]
 
 
 def test_simulated_live_demo_rejects_non_dry_run_when_provider_not_ready(
