@@ -1,5 +1,18 @@
 # 進捗
 
+## Product UX: persisted barge-in causal evidence (2026-07-23)
+
+- observer batchにsafe typed timeline eventを追加し、`timeline_events` table / migration
+  `0009_timeline_events`へevent ID、category、clock、direction、source、correlation alias、scalar attributesを永続化。
+- AudioSocketのbarge-inを、provider speech/interrupted通知、auto/request interrupt、truncate位置、playback queue
+  clear、完了の因果列として観測。provider item IDやraw payloadは保存しない。
+- 同じ相関aliasからconversation intervalと`Barge-in handled` incidentを導出。処理時間、interrupt経路、
+  played audio end、破棄frame/queue時間をObserved evidenceへ出し、未計測の可聴テールとは明確に区別する。
+- Call inspectorのincident drawerに時刻付きevidence chainを追加。各stepを押すと共通cursorと音声位置が移動する。
+- scalar barge-in metricは互換seriesとして維持し、typed eventがあるrunでは重複event markerを抑止する。
+- 次はdirectional media gap/burst loss、Stage間media-time contractionとgain/loudness、実音声でのbarge-in
+  usability検証。製品全体は約75%。
+
 ## Product UX: typed common-time-axis call inspector (2026-07-23)
 
 - 既存timelineを壊さず、`events` / `intervals` / `series` / `artifacts` / `incidents`のtyped projectionを追加。

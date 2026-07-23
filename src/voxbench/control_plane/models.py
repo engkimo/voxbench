@@ -198,6 +198,33 @@ class Metric(Base):
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class TimelineEvent(Base):
+    __tablename__ = "timeline_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "event_id", name="uq_timeline_events_run_event"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("runs.id"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(nullable=False, default=0)
+    event_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    clock_domain: Mapped[str] = mapped_column(String(64), nullable=False)
+    alignment_uncertainty_ms: Mapped[float | None] = mapped_column(nullable=True)
+    direction: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    stage: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stream_alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source: Mapped[str] = mapped_column(String(128), nullable=False)
+    correlation_alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attributes: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False, default=dict)
+
+
 class SipEvent(Base):
     __tablename__ = "sip_events"
 

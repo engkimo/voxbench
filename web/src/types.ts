@@ -46,6 +46,7 @@ export type TimelineTypedEvent = {
   stage: string | null
   stream_alias: string | null
   source: string
+  correlation_alias: string | null
   attributes: Record<string, unknown>
 }
 
@@ -61,6 +62,7 @@ export type TimelineTypedInterval = {
   stage: string | null
   stream_alias: string | null
   source: string
+  correlation_alias: string | null
   attributes: Record<string, unknown>
 }
 

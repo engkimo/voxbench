@@ -148,7 +148,7 @@ not need to be written to `alembic.ini`.
 The Postgres readiness probe is disabled by default. When explicitly enabled, it
 runs once during startup in a daemon worker, waits at most the configured 10–10,000
 ms, executes fixed `SELECT 1` and Alembic-version queries, and reports `ready`
-only when the database contains exactly migration head `0008_run_job_leases`.
+only when the database contains exactly migration head `0009_timeline_events`.
 A connection/query failure, migration mismatch, or timeout reports `unavailable`
 with a fixed safe reason alias; startup does not echo or persist the underlying
 driver error. A timed-out driver call may continue in its daemon worker until the
@@ -170,8 +170,8 @@ decide whether an operation is safe to retry.
 
 Each repository save is one SQLAlchemy transaction. The current MVP replaces a
 run's normalized child rows atomically and records their ordinal positions so a
-process restart reconstructs recording, span, metric, verification, SIP, and RTP
-ordering deterministically. Apply migrations through `0008_run_job_leases` before
+process restart reconstructs recording, span, metric, verification, SIP, RTP, and
+typed event ordering deterministically. Apply migrations through `0009_timeline_events` before
 enabling Postgres. The default `memory` mode remains compatible with existing
 local development and tests.
 
@@ -371,10 +371,15 @@ Run selections are deep-linkable without browser storage:
 http://127.0.0.1:5173/?run_id=<run_id>&compare_run_id=<optional_run_id>
 ```
 
-The typed timeline is currently a backward-compatible projection over persisted
-metrics, spans, SIP/RTP observations, recordings, and verification failures. It
-does not yet provide packet capture, AudioSocket/WebSocket frame decoding,
-sample-accurate cross-clock alignment, or typed caller/assistant speech intervals.
+The typed timeline remains backward compatible with persisted metrics, spans,
+SIP/RTP observations, recordings, and verification failures. AudioSocket barge-in
+steps are additionally persisted as safe correlated events: provider speech or
+interrupt notification, interrupt path, truncation position, playback queue clear,
+and completion. Selecting the derived incident shows that evidence chain on the
+shared cursor. Discarded queue duration is not presented as audible tail because
+the remote listener's actual playout is not yet observed. Packet capture,
+sample-accurate cross-clock alignment, and typed caller/assistant speech intervals
+remain future work.
 
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
@@ -521,6 +526,9 @@ realtime bridge uses stateful streaming resampling, paced 20 ms AudioSocket
 output, local playback clearing on barge-in, and failed-run aliases visible in
 Live preview. OpenAI server VAD cancels an interrupted response and the bridge
 truncates the unplayed assistant audio at the caller's playback position. Initial
+barge-in handling is recorded as one correlated causal sequence, including the
+interrupt path, truncation position, and queued frames discarded from local playback.
+These are bridge observations, not a claim about remote audible-tail duration. Initial
 provider connection is retried three times by default; use `--connect-attempts`
 and `--connect-backoff-seconds` to tune it. Mid-call disconnects fail the run
 as `provider-stream-ended` or `provider-session-error` instead of silently

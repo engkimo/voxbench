@@ -16,6 +16,16 @@ from urllib.request import Request, urlopen
 
 SipDirection = Literal["in", "out"]
 RtpDirection = Literal["received", "sent"]
+TimelineCategory = Literal[
+    "conversation",
+    "signaling",
+    "transport",
+    "buffer",
+    "pipeline",
+    "provider",
+    "runtime",
+    "session",
+]
 
 
 def _utc_now() -> datetime:
@@ -103,12 +113,45 @@ class RtpStats:
 
 
 @dataclass(frozen=True)
+class TimelineEvent:
+    event_id: str
+    category: TimelineCategory
+    name: str
+    source: str
+    correlation_alias: str | None = None
+    clock_domain: str = "control_plane_wall"
+    alignment_uncertainty_ms: float | None = None
+    direction: str | None = None
+    stage: str | None = None
+    stream_alias: str | None = None
+    attributes: dict[str, str | int | float | bool | None] = field(default_factory=dict)
+    ts: datetime = field(default_factory=_utc_now)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "event_id": self.event_id,
+            "category": self.category,
+            "name": self.name,
+            "ts": _timestamp(self.ts),
+            "clock_domain": self.clock_domain,
+            "alignment_uncertainty_ms": self.alignment_uncertainty_ms,
+            "direction": self.direction,
+            "stage": self.stage,
+            "stream_alias": self.stream_alias,
+            "source": self.source,
+            "correlation_alias": self.correlation_alias,
+            "attributes": self.attributes,
+        }
+
+
+@dataclass(frozen=True)
 class ObservationBatch:
     run_id: str
     metrics: tuple[MetricPoint, ...] = ()
     audio_chunks: tuple[AudioChunk, ...] = ()
     sip_events: tuple[SipEvent, ...] = ()
     rtp_stats: tuple[RtpStats, ...] = ()
+    timeline_events: tuple[TimelineEvent, ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -117,12 +160,17 @@ class ObservationBatch:
             "audio_chunks": [chunk.to_payload() for chunk in self.audio_chunks],
             "sip_events": [event.to_payload() for event in self.sip_events],
             "rtp_stats": [stats.to_payload() for stats in self.rtp_stats],
+            "timeline_events": [event.to_payload() for event in self.timeline_events],
         }
 
     @property
     def item_count(self) -> int:
-        return len(self.metrics) + len(self.audio_chunks) + len(self.sip_events) + len(
-            self.rtp_stats
+        return (
+            len(self.metrics)
+            + len(self.audio_chunks)
+            + len(self.sip_events)
+            + len(self.rtp_stats)
+            + len(self.timeline_events)
         )
 
 
@@ -187,6 +235,7 @@ class VoxBenchObserver:
         self._audio_chunks: list[AudioChunk] = []
         self._sip_events: list[SipEvent] = []
         self._rtp_stats: list[RtpStats] = []
+        self._timeline_events: list[TimelineEvent] = []
         self._lock = Lock()
 
     def observe_stage_audio(
@@ -259,6 +308,10 @@ class VoxBenchObserver:
         with self._lock:
             self._rtp_stats.append(stats)
 
+    def observe_timeline_event(self, event: TimelineEvent) -> None:
+        with self._lock:
+            self._timeline_events.append(event)
+
     def flush(self) -> int:
         """Send pending observations and restore them if the transport fails."""
 
@@ -269,11 +322,13 @@ class VoxBenchObserver:
                 audio_chunks=tuple(self._audio_chunks),
                 sip_events=tuple(self._sip_events),
                 rtp_stats=tuple(self._rtp_stats),
+                timeline_events=tuple(self._timeline_events),
             )
             self._metrics.clear()
             self._audio_chunks.clear()
             self._sip_events.clear()
             self._rtp_stats.clear()
+            self._timeline_events.clear()
         if batch.item_count == 0:
             return 0
         try:
@@ -284,6 +339,7 @@ class VoxBenchObserver:
                 self._audio_chunks[0:0] = batch.audio_chunks
                 self._sip_events[0:0] = batch.sip_events
                 self._rtp_stats[0:0] = batch.rtp_stats
+                self._timeline_events[0:0] = batch.timeline_events
             raise
         return batch.item_count
 
@@ -295,6 +351,7 @@ class VoxBenchObserver:
                 + len(self._audio_chunks)
                 + len(self._sip_events)
                 + len(self._rtp_stats)
+                + len(self._timeline_events)
             )
 
 

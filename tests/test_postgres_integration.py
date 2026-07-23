@@ -69,7 +69,7 @@ def postgres_runtime() -> PostgresRuntime:
                 connection.exec_driver_sql(
                     "SELECT version_num FROM alembic_version"
                 ).scalar_one()
-                == "0008_run_job_leases"
+                == "0009_timeline_events"
             )
         sessions = sessionmaker(bind=test_engine, expire_on_commit=False)
         yield PostgresRuntime(

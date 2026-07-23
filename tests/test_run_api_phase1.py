@@ -607,6 +607,7 @@ def test_ingest_sip_events_and_rtp_stats_into_timeline(tmp_path: Path) -> None:
             "stage": None,
             "stream_alias": None,
             "source": "sip_event",
+            "correlation_alias": None,
             "attributes": {
                 "method": "INVITE",
                 "status_code": 100,

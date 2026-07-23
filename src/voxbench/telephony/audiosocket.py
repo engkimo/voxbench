@@ -8,11 +8,17 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from time import monotonic
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from voxbench.media import Pcm16MonoStreamResampler
-from voxbench.observability import SipEvent, VoxBenchObserver
+from voxbench.observability import (
+    SipEvent,
+    TimelineCategory,
+    TimelineEvent,
+    VoxBenchObserver,
+)
 from voxbench.observability.observer import pcm_s16le_rms
 from voxbench.realtime_providers import AudioChunk as ProviderAudioChunk
 from voxbench.realtime_providers import (
@@ -311,6 +317,8 @@ class RealtimeCallSession:
     _inflight_playback_position: PlaybackPosition | None = None
     _inflight_started_at: float | None = None
     _current_provider_item: tuple[str, int] | None = None
+    _barge_in_sequence: int = 0
+    _barge_in_session_alias: str = field(default_factory=lambda: uuid4().hex[:12])
 
     async def send_audio(self, frame_type: int, pcm_s16le: bytes) -> None:
         input_rate = AUDIO_TYPE_SAMPLE_RATES[frame_type]
@@ -357,6 +365,25 @@ class RealtimeCallSession:
                 if isinstance(message, ProviderEvent):
                     self.observer.observe_metric(f"provider_{message.event_type}", 1.0)
                     if message.event_type in {"input_speech_started", "interrupted"}:
+                        self._barge_in_sequence += 1
+                        correlation_alias = (
+                            f"barge-in-{self._barge_in_session_alias}-"
+                            f"{self._barge_in_sequence}"
+                        )
+                        step = 1
+                        self._observe_barge_in_event(
+                            correlation_alias,
+                            step,
+                            name=f"provider_{message.event_type}",
+                            category=(
+                                "conversation"
+                                if message.event_type == "input_speech_started"
+                                else "provider"
+                            ),
+                            direction="caller_to_assistant",
+                        )
+                        step += 1
+                        interrupt_path = "provider-interrupted"
                         if message.event_type == "input_speech_started":
                             auto_interrupts = getattr(
                                 self.provider_session,
@@ -365,15 +392,33 @@ class RealtimeCallSession:
                             )
                             interrupt = getattr(self.provider_session, "interrupt", None)
                             if auto_interrupts:
+                                interrupt_path = "provider-auto"
                                 self.observer.observe_metric(
                                     "provider_auto_interrupts",
                                     1.0,
                                 )
+                                self._observe_barge_in_event(
+                                    correlation_alias,
+                                    step,
+                                    name="provider_auto_interrupt_confirmed",
+                                    category="provider",
+                                )
+                                step += 1
                             elif interrupt is not None and await interrupt():
+                                interrupt_path = "provider-request"
                                 self.observer.observe_metric(
                                     "provider_interrupt_requests",
                                     1.0,
                                 )
+                                self._observe_barge_in_event(
+                                    correlation_alias,
+                                    step,
+                                    name="provider_interrupt_requested",
+                                    category="provider",
+                                )
+                                step += 1
+                            else:
+                                interrupt_path = "unobserved"
                         truncate = getattr(
                             self.provider_session,
                             "truncate_audio",
@@ -402,6 +447,14 @@ class RealtimeCallSession:
                                 "provider_truncate_requests",
                                 1.0,
                             )
+                            self._observe_barge_in_event(
+                                correlation_alias,
+                                step,
+                                name="provider_truncate_requested",
+                                category="provider",
+                                attributes={"played_audio_end_ms": position.audio_end_ms},
+                            )
+                            step += 1
                         self._last_playback_position = None
                         self._last_enqueued_playback_position = None
                         self._inflight_playback_position = None
@@ -410,12 +463,40 @@ class RealtimeCallSession:
                         self._output_resampler = None
                         packet_buffer.clear()
                         dropped = await playback.clear()
+                        discarded_audio_ms = dropped * 20
+                        self._observe_barge_in_event(
+                            correlation_alias,
+                            step,
+                            name="playback_queue_cleared",
+                            category="buffer",
+                            direction="assistant_to_caller",
+                            attributes={
+                                "dropped_frames": dropped,
+                                "discarded_audio_ms": discarded_audio_ms,
+                            },
+                        )
+                        step += 1
                         self.observer.observe_metric("barge_in_events", 1.0)
                         if dropped:
                             self.observer.observe_metric(
                                 "output_frames_dropped",
                                 float(dropped),
                             )
+                        self._observe_barge_in_event(
+                            correlation_alias,
+                            step,
+                            name="barge_in_completed",
+                            category="conversation",
+                            direction="caller_to_assistant",
+                            attributes={
+                                "interrupt_path": interrupt_path,
+                                "played_audio_end_ms": (
+                                    position.audio_end_ms if position is not None else None
+                                ),
+                                "dropped_frames": dropped,
+                                "discarded_audio_ms": discarded_audio_ms,
+                            },
+                        )
                     continue
 
                 provider_audio = message
@@ -564,6 +645,29 @@ class RealtimeCallSession:
             item_id=inflight.item_id,
             content_index=inflight.content_index,
             audio_end_ms=min(inflight.audio_end_ms, frame_start_ms + elapsed_ms),
+        )
+
+    def _observe_barge_in_event(
+        self,
+        correlation_alias: str,
+        step: int,
+        *,
+        name: str,
+        category: TimelineCategory,
+        direction: str | None = None,
+        attributes: dict[str, str | int | float | bool | None] | None = None,
+    ) -> None:
+        self.observer.observe_timeline_event(
+            TimelineEvent(
+                event_id=f"{correlation_alias}:{step}",
+                category=category,
+                name=name,
+                source="audiosocket_bridge",
+                correlation_alias=correlation_alias,
+                direction=direction,
+                attributes=attributes or {},
+                ts=datetime.now(UTC),
+            )
         )
 
     def observe_dtmf(self, digit: str) -> None:

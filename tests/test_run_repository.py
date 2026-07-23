@@ -219,6 +219,37 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
                     "rtt_ms": 8.5,
                 }
             ],
+            "timeline_events": [
+                {
+                    "event_id": "barge-in-1:1",
+                    "category": "conversation",
+                    "name": "provider_input_speech_started",
+                    "source": "audiosocket_bridge",
+                    "correlation_alias": "barge-in-1",
+                },
+                {
+                    "event_id": "barge-in-1:2",
+                    "category": "buffer",
+                    "name": "playback_queue_cleared",
+                    "source": "audiosocket_bridge",
+                    "correlation_alias": "barge-in-1",
+                    "attributes": {
+                        "dropped_frames": 2,
+                        "discarded_audio_ms": 40,
+                    },
+                },
+                {
+                    "event_id": "barge-in-1:3",
+                    "category": "conversation",
+                    "name": "barge_in_completed",
+                    "source": "audiosocket_bridge",
+                    "correlation_alias": "barge-in-1",
+                    "attributes": {
+                        "interrupt_path": "provider-request",
+                        "played_audio_end_ms": 60,
+                    },
+                },
+            ],
         },
     )
     failed = first_client.post(
@@ -243,6 +274,26 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
     assert timeline["lanes"]["sip_ladder"][0]["method"] == "INVITE"
     assert timeline["lanes"]["rtp_quality"][0]["rtt_ms"] == 8.5
     assert timeline["lanes"]["recordings"][0]["stage"] == "agc"
+    assert [
+        event["event_id"]
+        for event in timeline["lanes"]["events"]
+        if event["correlation_alias"]
+    ] == [
+        "barge-in-1:1",
+        "barge-in-1:2",
+        "barge-in-1:3",
+    ]
+    barge_in = next(
+        incident
+        for incident in timeline["lanes"]["incidents"]
+        if incident["rule_id"] == "barge_in_sequence"
+    )
+    assert barge_in["observed"]["discarded_audio_ms"] == 40.0
+    assert barge_in["evidence_refs"] == [
+        "barge-in-1:1",
+        "barge-in-1:2",
+        "barge-in-1:3",
+    ]
 
 
 def test_postgres_repository_commits_result_and_job_completion_atomically(
@@ -597,7 +648,7 @@ def test_postgres_engine_applies_bounded_session_statement_timeout(monkeypatch) 
 
 
 def test_opt_in_postgres_probe_reports_ready_only_at_expected_migration_head() -> None:
-    engine = _sqlite_probe_engine("0008_run_job_leases")
+    engine = _sqlite_probe_engine("0009_timeline_events")
 
     runtime = build_run_repository_from_env(
         _postgres_environment(),

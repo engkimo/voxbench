@@ -59,6 +59,9 @@ from voxbench.control_plane.models import (
     Span as SpanRow,
 )
 from voxbench.control_plane.models import (
+    TimelineEvent as TimelineEventRow,
+)
+from voxbench.control_plane.models import (
     Verification as VerificationRow,
 )
 from voxbench.control_plane.repository_config import (
@@ -71,7 +74,12 @@ from voxbench.control_plane.storage_config import (
     local_storage_readiness,
 )
 from voxbench.engine_harness.harness import EngineHarness
-from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact, SpanArtifact
+from voxbench.engine_harness.models import (
+    MetricArtifact,
+    RecordingArtifact,
+    SpanArtifact,
+    TimelineEventArtifact,
+)
 from voxbench.engine_harness.storage import (
     LocalRecordingSink,
     RecordingSink,
@@ -350,6 +358,7 @@ class TimelineTypedEvent(BaseModel):
     stage: str | None = None
     stream_alias: str | None = None
     source: str
+    correlation_alias: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -365,6 +374,7 @@ class TimelineTypedInterval(BaseModel):
     stage: str | None = None
     stream_alias: str | None = None
     source: str
+    correlation_alias: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -535,6 +545,60 @@ class RtpStatObservationRequest(BaseModel):
     rtt_ms: float | None = Field(default=None, ge=0)
 
 
+class TimelineEventObservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    event_id: str = Field(min_length=1, max_length=128)
+    category: TimelineCategory
+    name: str = Field(min_length=1, max_length=128)
+    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    clock_domain: str = Field(default="control_plane_wall", min_length=1, max_length=64)
+    alignment_uncertainty_ms: float | None = Field(default=None, ge=0)
+    direction: str | None = Field(default=None, min_length=1, max_length=32)
+    stage: str | None = Field(default=None, min_length=1, max_length=255)
+    stream_alias: str | None = Field(default=None, min_length=1, max_length=128)
+    source: str = Field(min_length=1, max_length=128)
+    correlation_alias: str | None = Field(default=None, min_length=1, max_length=128)
+    attributes: dict[str, str | int | float | bool | None] = Field(
+        default_factory=dict,
+        max_length=16,
+    )
+
+    @field_validator(
+        "event_id",
+        "name",
+        "clock_domain",
+        "direction",
+        "stage",
+        "stream_alias",
+        "source",
+        "correlation_alias",
+    )
+    @classmethod
+    def validate_reference_fields(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_reference_text(value, info.field_name)
+
+    @field_validator("attributes")
+    @classmethod
+    def validate_attributes(
+        cls,
+        value: dict[str, str | int | float | bool | None],
+    ) -> dict[str, str | int | float | bool | None]:
+        result: dict[str, str | int | float | bool | None] = {}
+        for key, item in value.items():
+            safe_key = _validate_reference_text(key, "attributes key")
+            if not safe_key or len(safe_key) > 64:
+                raise ValueError("attribute keys must contain 1 to 64 characters")
+            if isinstance(item, str):
+                item = _validate_reference_text(item, f"attribute '{safe_key}'")
+                if len(item) > 256:
+                    raise ValueError("string attribute values must not exceed 256 characters")
+            result[safe_key] = item
+        return result
+
+
 class ObservationBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -546,11 +610,24 @@ class ObservationBatchRequest(BaseModel):
     )
     sip_events: list[SipEventObservationRequest] = Field(default_factory=list, max_length=64)
     rtp_stats: list[RtpStatObservationRequest] = Field(default_factory=list, max_length=64)
+    timeline_events: list[TimelineEventObservationRequest] = Field(
+        default_factory=list,
+        max_length=128,
+    )
 
     @model_validator(mode="after")
     def require_observation(self) -> "ObservationBatchRequest":
-        if not (self.metrics or self.audio_chunks or self.sip_events or self.rtp_stats):
+        if not (
+            self.metrics
+            or self.audio_chunks
+            or self.sip_events
+            or self.rtp_stats
+            or self.timeline_events
+        ):
             raise ValueError("at least one observation is required")
+        event_ids = [event.event_id for event in self.timeline_events]
+        if len(event_ids) != len(set(event_ids)):
+            raise ValueError("timeline event_id values must be unique within a batch")
         return self
 
 
@@ -560,6 +637,7 @@ class ObservationBatchResponse(BaseModel):
     audio_chunk_count: int
     sip_event_count: int
     rtp_stat_count: int
+    timeline_event_count: int
     recording_count: int
 
 
@@ -748,6 +826,7 @@ class StoredRun:
     verifications: list[VerificationResult] = field(default_factory=list)
     sip_events: list[SipEventResponse] = field(default_factory=list)
     rtp_stats: list[RtpStatResponse] = field(default_factory=list)
+    timeline_events: list[TimelineEventArtifact] = field(default_factory=list)
     environment: RunEnvironmentMetadata = field(default_factory=RunEnvironmentMetadata)
     readiness_checklist: list[ReadinessChecklistItem] = field(
         default_factory=_default_readiness_checklist,
@@ -1028,6 +1107,16 @@ _TIMELINE_EVENT_METRICS: dict[str, TimelineCategory] = {
     "provider_truncate_requests": "provider",
 }
 
+_TYPED_BARGE_IN_METRICS = {
+    "barge_in_events",
+    "output_frames_dropped",
+    "provider_auto_interrupts",
+    "provider_input_speech_started",
+    "provider_interrupt_requests",
+    "provider_interrupted",
+    "provider_truncate_requests",
+}
+
 _TIMELINE_UNITS = {
     "active_tasks": "count",
     "cpu": "percent",
@@ -1069,10 +1158,34 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
             )
         )
 
+    persisted_names = {event.name for event in run.timeline_events}
+    events.extend(
+        TimelineTypedEvent(
+            event_id=event.event_id,
+            category=event.category,
+            name=event.name,
+            t_rel_ms=_relative_seconds(event.ts, run.started_at) * 1000,
+            clock_domain=event.clock_domain,
+            alignment_uncertainty_ms=event.alignment_uncertainty_ms,
+            direction=event.direction,
+            stage=event.stage,
+            stream_alias=event.stream_alias,
+            source=event.source,
+            correlation_alias=event.correlation_alias,
+            attributes=event.attributes,
+        )
+        for event in run.timeline_events
+    )
+
     metric_index = 0
     for metric in run.metrics:
         category = _TIMELINE_EVENT_METRICS.get(metric.name)
-        if category is None or metric.value <= 0:
+        if (
+            category is None
+            or metric.value <= 0
+            or metric.name in persisted_names
+            or (run.timeline_events and metric.name in _TYPED_BARGE_IN_METRICS)
+        ):
             continue
         events.append(
             TimelineTypedEvent(
@@ -1125,6 +1238,30 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 clock_domain="otel_epoch_ns",
                 stage=stage,
                 source="otel_span",
+                attributes={"duration_ms": end_ms - start_ms},
+            )
+        )
+    for correlation_alias, events in _correlated_barge_in_events(run).items():
+        start = min(events, key=lambda event: event.ts)
+        completed = next(
+            (event for event in reversed(events) if event.name == "barge_in_completed"),
+            None,
+        )
+        if completed is None:
+            continue
+        start_ms = _relative_seconds(start.ts, run.started_at) * 1000
+        end_ms = max(start_ms, _relative_seconds(completed.ts, run.started_at) * 1000)
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=f"barge-in:{correlation_alias}",
+                category="conversation",
+                name="barge_in",
+                start_ms=start_ms,
+                end_ms=end_ms,
+                clock_domain="control_plane_wall",
+                direction="caller_to_assistant",
+                source="audiosocket_bridge",
+                correlation_alias=correlation_alias,
                 attributes={"duration_ms": end_ms - start_ms},
             )
         )
@@ -1269,7 +1406,89 @@ def _typed_timeline_incidents(
                 evidence_refs=["run:failure"],
             )
         )
+    for correlation_alias, events in _correlated_barge_in_events(run).items():
+        completed = next(
+            (event for event in reversed(events) if event.name == "barge_in_completed"),
+            None,
+        )
+        if completed is None:
+            continue
+        start = min(events, key=lambda event: event.ts)
+        start_ms = _relative_seconds(start.ts, run.started_at) * 1000
+        end_ms = max(start_ms, _relative_seconds(completed.ts, run.started_at) * 1000)
+        cleared = next(
+            (event for event in events if event.name == "playback_queue_cleared"),
+            completed,
+        )
+        dropped_frames = _numeric_attribute(cleared.attributes, "dropped_frames")
+        discarded_ms = _numeric_attribute(cleared.attributes, "discarded_audio_ms")
+        played_audio_end_ms = _numeric_attribute(
+            completed.attributes,
+            "played_audio_end_ms",
+        )
+        interrupt_path = str(completed.attributes.get("interrupt_path", "unobserved"))
+        summary = "Playback queue cleared"
+        if discarded_ms is not None:
+            summary += f"; {discarded_ms:g} ms queued audio discarded"
+        incidents.append(
+            TimelineIncident(
+                incident_id=f"barge-in:{correlation_alias}",
+                rule_id="barge_in_sequence",
+                category="conversation",
+                severity="info",
+                title="Barge-in handled",
+                summary=summary,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                confidence="high",
+                direction="caller_to_assistant",
+                observed={
+                    "handling_duration_ms": end_ms - start_ms,
+                    "interrupt_path": interrupt_path,
+                    "played_audio_end_ms": played_audio_end_ms,
+                    "dropped_frames": dropped_frames,
+                    "discarded_audio_ms": discarded_ms,
+                },
+                expected={
+                    "interrupt_path": "provider-auto-or-request",
+                    "playback_queue_cleared": True,
+                    "truncate_when_position_available": True,
+                },
+                evidence_refs=[event.event_id for event in events],
+            )
+        )
     return incidents
+
+
+def _correlated_barge_in_events(
+    run: StoredRun,
+) -> dict[str, list[TimelineEventArtifact]]:
+    groups: dict[str, list[TimelineEventArtifact]] = {}
+    for event in run.timeline_events:
+        if event.correlation_alias is None:
+            continue
+        if event.name not in {
+            "provider_input_speech_started",
+            "provider_interrupted",
+            "provider_auto_interrupt_confirmed",
+            "provider_interrupt_requested",
+            "provider_truncate_requested",
+            "playback_queue_cleared",
+            "barge_in_completed",
+        }:
+            continue
+        groups.setdefault(event.correlation_alias, []).append(event)
+    return {
+        alias: sorted(events, key=lambda event: (event.ts, event.event_id))
+        for alias, events in groups.items()
+    }
+
+
+def _numeric_attribute(attributes: Mapping[str, Any], name: str) -> float | None:
+    value = attributes.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 def _metric_timeline_category(metric: MetricArtifact) -> TimelineCategory:
@@ -1470,6 +1689,7 @@ class PostgresRunRepository:
             VerificationRow,
             SipEventRow,
             RtpStatRow,
+            TimelineEventRow,
         )
         for child_model in child_models:
             session.execute(delete(child_model).where(child_model.run_id == run_uuid))
@@ -1550,6 +1770,25 @@ class PostgresRunRepository:
                 )
                 for ordinal, item in enumerate(run.rtp_stats)
             ]
+            + [
+                TimelineEventRow(
+                    run_id=run_uuid,
+                    ordinal=ordinal,
+                    event_id=item.event_id,
+                    category=item.category,
+                    name=item.name,
+                    ts=item.ts,
+                    clock_domain=item.clock_domain,
+                    alignment_uncertainty_ms=item.alignment_uncertainty_ms,
+                    direction=item.direction,
+                    stage=item.stage,
+                    stream_alias=item.stream_alias,
+                    source=item.source,
+                    correlation_alias=item.correlation_alias,
+                    attributes=item.attributes,
+                )
+                for ordinal, item in enumerate(run.timeline_events)
+            ]
         )
 
     def get(self, run_id: str) -> StoredRun | None:
@@ -1613,6 +1852,11 @@ class PostgresRunRepository:
             select(RtpStatRow)
             .where(RtpStatRow.run_id == run_uuid)
             .order_by(RtpStatRow.ordinal, RtpStatRow.id)
+        ).all()
+        timeline_events = session.scalars(
+            select(TimelineEventRow)
+            .where(TimelineEventRow.run_id == run_uuid)
+            .order_by(TimelineEventRow.ordinal, TimelineEventRow.id)
         ).all()
         restored_recordings = [
             RecordingArtifact(
@@ -1689,6 +1933,23 @@ class PostgresRunRepository:
                     rtt_ms=item.rtt_ms,
                 )
                 for item in rtp_stats
+            ],
+            timeline_events=[
+                TimelineEventArtifact(
+                    event_id=item.event_id,
+                    category=item.category,
+                    name=item.name,
+                    ts=_as_utc(item.ts),
+                    clock_domain=item.clock_domain,
+                    alignment_uncertainty_ms=item.alignment_uncertainty_ms,
+                    direction=item.direction,
+                    stage=item.stage,
+                    stream_alias=item.stream_alias,
+                    source=item.source,
+                    correlation_alias=item.correlation_alias,
+                    attributes=item.attributes,
+                )
+                for item in timeline_events
             ],
             environment=RunEnvironmentMetadata.model_validate(row.environment_metadata),
             readiness_checklist=[
@@ -2406,7 +2667,9 @@ def create_runs_router() -> APIRouter:
         configured_stages = _configured_stage_names(stored)
         referenced_stages = {
             metric.stage for metric in request.metrics if metric.stage is not None
-        } | {chunk.stage for chunk in request.audio_chunks}
+        } | {chunk.stage for chunk in request.audio_chunks} | {
+            event.stage for event in request.timeline_events if event.stage is not None
+        }
         unknown_stages = sorted(referenced_stages - configured_stages)
         if unknown_stages:
             raise HTTPException(
@@ -2475,6 +2738,25 @@ def create_runs_router() -> APIRouter:
             )
             for stat in request.rtp_stats
         )
+        existing_event_ids = {event.event_id for event in stored.timeline_events}
+        stored.timeline_events.extend(
+            TimelineEventArtifact(
+                event_id=event.event_id,
+                category=event.category,
+                name=event.name,
+                ts=event.ts,
+                clock_domain=event.clock_domain,
+                alignment_uncertainty_ms=event.alignment_uncertainty_ms,
+                direction=event.direction,
+                stage=event.stage,
+                stream_alias=event.stream_alias,
+                source=event.source,
+                correlation_alias=event.correlation_alias,
+                attributes=event.attributes,
+            )
+            for event in request.timeline_events
+            if event.event_id not in existing_event_ids
+        )
         api_state.repository.save(stored)
         return ObservationBatchResponse(
             run_id=stored.run_id,
@@ -2482,6 +2764,7 @@ def create_runs_router() -> APIRouter:
             audio_chunk_count=len(request.audio_chunks),
             sip_event_count=len(request.sip_events),
             rtp_stat_count=len(request.rtp_stats),
+            timeline_event_count=len(request.timeline_events),
             recording_count=len(stored.recordings),
         )
 

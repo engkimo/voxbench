@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -39,6 +39,22 @@ class MetricArtifact:
     name: str
     value: float
     ts: datetime
+
+
+@dataclass(frozen=True)
+class TimelineEventArtifact:
+    event_id: str
+    category: str
+    name: str
+    ts: datetime
+    clock_domain: str = "control_plane_wall"
+    alignment_uncertainty_ms: float | None = None
+    direction: str | None = None
+    stage: str | None = None
+    stream_alias: str | None = None
+    source: str = "observer"
+    correlation_alias: str | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

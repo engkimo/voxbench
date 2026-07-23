@@ -982,6 +982,37 @@ a {
   font-size: 10px;
 }
 
+.incidentEvidenceChain {
+  display: grid;
+  gap: 4px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.incidentEvidenceChain button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-left: 2px solid #24808b;
+  padding: 3px 6px;
+  color: #43525f;
+  background: #f3f8fa;
+  font: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.incidentEvidenceChain time {
+  flex: 0 0 auto;
+  color: #6c7a87;
+  font-variant-numeric: tabular-nums;
+}
+
 .incidentSeverity {
   display: inline-flex;
   border-radius: 999px;

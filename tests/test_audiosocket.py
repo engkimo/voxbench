@@ -280,6 +280,23 @@ def test_realtime_call_session_drops_buffered_audio_on_barge_in() -> None:
     assert any(metric.name == "barge_in_events" for metric in metrics)
     assert any(metric.name == "output_frames_dropped" for metric in metrics)
     assert any(metric.name == "provider_interrupt_requests" for metric in metrics)
+    events = [event for batch in transport.batches for event in batch.timeline_events]
+    assert [event.name for event in events] == [
+        "provider_input_speech_started",
+        "provider_interrupt_requested",
+        "playback_queue_cleared",
+        "barge_in_completed",
+    ]
+    correlation_aliases = {event.correlation_alias for event in events}
+    assert len(correlation_aliases) == 1
+    correlation_alias = next(iter(correlation_aliases))
+    assert correlation_alias is not None
+    assert correlation_alias.startswith("barge-in-")
+    assert events[-2].attributes == {
+        "dropped_frames": 2,
+        "discarded_audio_ms": 40,
+    }
+    assert events[-1].attributes["interrupt_path"] == "provider-request"
 
 
 def test_realtime_call_session_truncates_openai_item_at_played_position() -> None:
@@ -340,6 +357,16 @@ def test_realtime_call_session_truncates_openai_item_at_played_position() -> Non
     metrics = [metric for batch in transport.batches for metric in batch.metrics]
     assert any(metric.name == "provider_truncate_requests" for metric in metrics)
     assert any(metric.name == "provider_auto_interrupts" for metric in metrics)
+    events = [event for batch in transport.batches for event in batch.timeline_events]
+    assert [event.name for event in events] == [
+        "provider_input_speech_started",
+        "provider_auto_interrupt_confirmed",
+        "provider_truncate_requested",
+        "playback_queue_cleared",
+        "barge_in_completed",
+    ]
+    assert events[2].attributes["played_audio_end_ms"] == 20
+    assert events[-1].attributes["interrupt_path"] == "provider-auto"
 
 
 def test_realtime_server_fails_when_persistent_provider_stream_ends() -> None:

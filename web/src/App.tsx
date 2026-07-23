@@ -1007,6 +1007,11 @@ function LinkedCallInspector({
     timeline.lanes.incidents.find(
       (incident) => incident.incident_id === selectedIncidentId,
     ) ?? null
+  const selectedEvidenceEvents = selectedIncident
+    ? timeline.lanes.events.filter((event) =>
+        selectedIncident.evidence_refs.includes(event.event_id),
+      )
+    : []
   const selectedArtifact =
     audioArtifacts.find((artifact) => artifact.artifact_id === selectedArtifactId) ??
     audioArtifacts[0]
@@ -1250,6 +1255,18 @@ function LinkedCallInspector({
               {formatTimelineTime(selectedIncident.start_ms)}–
               {formatTimelineTime(selectedIncident.end_ms)}
             </small>
+            {selectedEvidenceEvents.length > 0 ? (
+              <ol className="incidentEvidenceChain" aria-label="Correlated evidence chain">
+                {selectedEvidenceEvents.map((event) => (
+                  <li key={event.event_id}>
+                    <button onClick={() => moveCursor(event.t_rel_ms)} type="button">
+                      <span>{event.name.replaceAll('_', ' ')}</span>
+                      <time>{formatTimelineTime(event.t_rel_ms)}</time>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
           </div>
           <JsonBlock label="Observed evidence" value={selectedIncident.observed} />
           <JsonBlock label="Expected contract" value={selectedIncident.expected} />

@@ -9,6 +9,8 @@ from voxbench.observability.observer import (
     RtpDirection,
     RtpStats,
     SipEvent,
+    TimelineCategory,
+    TimelineEvent,
     VoxBenchObserver,
 )
 
@@ -21,5 +23,7 @@ __all__ = [
     "RtpDirection",
     "RtpStats",
     "SipEvent",
+    "TimelineCategory",
+    "TimelineEvent",
     "VoxBenchObserver",
 ]

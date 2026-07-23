@@ -157,6 +157,23 @@ def test_observation_batch_rejects_unknown_stage_and_raw_sip_fields(tmp_path: Pa
     )
     assert raw_sip.status_code == 422
 
+    unsafe_event = client.post(
+        "/v1/observations",
+        json={
+            "run_id": run_id,
+            "timeline_events": [
+                {
+                    "event_id": "unsafe-event",
+                    "category": "provider",
+                    "name": "provider_event",
+                    "source": "integration-test",
+                    "attributes": {"provider_ref": "https://provider.example/item"},
+                }
+            ],
+        },
+    )
+    assert unsafe_event.status_code == 422
+
 
 def test_observer_restores_pending_items_when_transport_fails() -> None:
     observer = VoxBenchObserver("run-1", FailingTransport())

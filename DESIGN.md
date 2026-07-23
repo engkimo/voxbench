@@ -422,8 +422,11 @@ primitiveは`run_id`に加え、source clock domain、run起点の相対ms、ali
 direction、stage、stream aliasを表現できること。PCAP capture time、RTP timestamp、provider clock、host
 monotonic、wall clockを同一精度と仮定しない。clock関係が保証できない片道遅延は`indeterminate`とする。
 
-初期実装は既存のmetrics/spans/SIP/RTP/recordings/verificationsからの後方互換projectionであり、新規永続tableを
-要求しない。typed turn/barge-in/media-gap collectorを追加するときにevent/interval永続境界を導入する。
+既存のmetrics/spans/SIP/RTP/recordings/verificationsは後方互換projectionとして維持する。collectorが観測した
+因果イベントは`timeline_events`へsafe scalar attributesと相関aliasだけを永続化し、raw provider payload、
+provider item ID、URL、secretを持ち込まない。barge-inはprovider VAD通知、interrupt経路、truncate位置、
+playback queue clear、完了を同じ相関aliasで結ぶ。queueから破棄した時間は観測値だが、相手に実際に聞こえた
+可聴テールではないため、そのようには表示しない。media-gapやtyped turnも同じevent境界を利用する。
 
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
