@@ -25,6 +25,94 @@ export type TimelineRecording = {
   duration_ms: number
 }
 
+export type TimelineCategory =
+  | 'conversation'
+  | 'signaling'
+  | 'transport'
+  | 'buffer'
+  | 'pipeline'
+  | 'provider'
+  | 'runtime'
+  | 'session'
+
+export type TimelineTypedEvent = {
+  event_id: string
+  category: TimelineCategory
+  name: string
+  t_rel_ms: number
+  clock_domain: string
+  alignment_uncertainty_ms: number | null
+  direction: string | null
+  stage: string | null
+  stream_alias: string | null
+  source: string
+  attributes: Record<string, unknown>
+}
+
+export type TimelineTypedInterval = {
+  interval_id: string
+  category: TimelineCategory
+  name: string
+  start_ms: number
+  end_ms: number
+  clock_domain: string
+  alignment_uncertainty_ms: number | null
+  direction: string | null
+  stage: string | null
+  stream_alias: string | null
+  source: string
+  attributes: Record<string, unknown>
+}
+
+export type TimelineSeriesPoint = {
+  t_rel_ms: number
+  value: number
+}
+
+export type TimelineTypedSeries = {
+  series_id: string
+  category: TimelineCategory
+  name: string
+  unit: string | null
+  clock_domain: string
+  alignment_uncertainty_ms: number | null
+  direction: string | null
+  stage: string | null
+  stream_alias: string | null
+  source: string
+  points: TimelineSeriesPoint[]
+}
+
+export type TimelineTypedArtifact = {
+  artifact_id: string
+  category: TimelineCategory
+  name: string
+  kind: 'audio' | 'trace' | 'report' | 'capture' | 'config'
+  start_ms: number
+  duration_ms: number | null
+  stage: string | null
+  direction: string | null
+  artifact_ref: string
+  metadata: Record<string, unknown>
+}
+
+export type TimelineIncident = {
+  incident_id: string
+  rule_id: string
+  category: TimelineCategory
+  severity: 'info' | 'warning' | 'error'
+  title: string
+  summary: string
+  start_ms: number
+  end_ms: number
+  confidence: 'certain' | 'high' | 'medium' | 'low'
+  stage: string | null
+  direction: string | null
+  observed: Record<string, unknown>
+  expected: Record<string, unknown>
+  evidence_refs: string[]
+}
+
 export type StorageReadiness = {
   mode: 'local' | 'minio' | 'injected'
   state: 'ready' | 'configured' | 'unavailable'
@@ -108,6 +196,11 @@ export type TimelineResponse = {
     turns: Record<string, unknown>[]
     host: TimelineMetricPoint[]
     recordings: TimelineRecording[]
+    events: TimelineTypedEvent[]
+    intervals: TimelineTypedInterval[]
+    series: TimelineTypedSeries[]
+    artifacts: TimelineTypedArtifact[]
+    incidents: TimelineIncident[]
   }
 }
 

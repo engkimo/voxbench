@@ -408,6 +408,23 @@ provider_caps:
 
 UI挙動：違反ステージを赤マーカー→クリックでその瞬間のSIP/RTP/host文脈へジャンプ。隣接ステージの録音をA/B再生。「botが黙った瞬間にCPUが張り付いていたか」が1画面で分かる。
 
+### 10.1 Typed common-time-axis projection
+
+既存の互換laneに加え、UIとcollectorの共通契約として以下5 primitiveを返す。
+
+- `events`: SIP、VAD、cancel、queue clear、packet gapなどの点。
+- `intervals`: speech、provider generation、playback、span、silence/gapなどの区間。
+- `series`: RMS/gain、jitter/loss、queue depth、CPU/loop lagなどの時系列。
+- `artifacts`: Stage WAV、report、明示的lab modeのrestricted captureなどの参照。
+- `incidents`: rule/versionとevidenceを束ねた人間向け診断。証明できない因果は断言しない。
+
+primitiveは`run_id`に加え、source clock domain、run起点の相対ms、alignment uncertainty、collector source、
+direction、stage、stream aliasを表現できること。PCAP capture time、RTP timestamp、provider clock、host
+monotonic、wall clockを同一精度と仮定しない。clock関係が保証できない片道遅延は`indeterminate`とする。
+
+初期実装は既存のmetrics/spans/SIP/RTP/recordings/verificationsからの後方互換projectionであり、新規永続tableを
+要求しない。typed turn/barge-in/media-gap collectorを追加するときにevent/interval永続境界を導入する。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

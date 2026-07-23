@@ -493,6 +493,31 @@ def test_get_run_timeline_groups_stage_metrics_and_recordings(tmp_path: Path) ->
         "serializer",
     }
     assert len(timeline["lanes"]["recordings"]) == len(run["recordings"])
+    assert timeline["lanes"]["events"] == []
+    assert timeline["lanes"]["incidents"] == []
+    assert {artifact["stage"] for artifact in timeline["lanes"]["artifacts"]} == {
+        "resampler",
+        "agc",
+        "limiter",
+        "serializer",
+    }
+    assert all(
+        artifact["artifact_ref"].startswith("recording:")
+        for artifact in timeline["lanes"]["artifacts"]
+    )
+    assert {series["category"] for series in timeline["lanes"]["series"]} >= {
+        "pipeline",
+        "runtime",
+    }
+    assert all(
+        point["t_rel_ms"] >= 0
+        for series in timeline["lanes"]["series"]
+        for point in series["points"]
+    )
+    assert {interval["category"] for interval in timeline["lanes"]["intervals"]} >= {
+        "pipeline",
+        "session",
+    }
 
     serializer_stage = _stage_lane(timeline, "serializer")
     assert serializer_stage["violations"] == []
@@ -570,6 +595,38 @@ def test_ingest_sip_events_and_rtp_stats_into_timeline(tmp_path: Path) -> None:
         }
     ]
     assert timeline["lanes"]["rtp_quality"][0]["ts"] >= 0
+    assert timeline["lanes"]["events"] == [
+        {
+            "event_id": "sip:0",
+            "category": "signaling",
+            "name": "sip.invite",
+            "t_rel_ms": timeline["lanes"]["events"][0]["t_rel_ms"],
+            "clock_domain": "control_plane_wall",
+            "alignment_uncertainty_ms": None,
+            "direction": "in",
+            "stage": None,
+            "stream_alias": None,
+            "source": "sip_event",
+            "attributes": {
+                "method": "INVITE",
+                "status_code": 100,
+                "summary_alias": "invite-received",
+            },
+        }
+    ]
+    assert timeline["lanes"]["events"][0]["t_rel_ms"] >= 0
+    transport_series = [
+        series
+        for series in timeline["lanes"]["series"]
+        if series["category"] == "transport"
+    ]
+    assert {series["name"] for series in transport_series} == {
+        "jitter_ms",
+        "loss_pct",
+        "mos",
+        "rtt_ms",
+    }
+    assert all(series["direction"] == "received" for series in transport_series)
 
     invalid_rtp_response = client.post(
         "/v1/rtp-stats",

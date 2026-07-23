@@ -669,6 +669,7 @@ a {
 .environmentPanel,
 .hostMetricsPanel,
 .livePreviewPanel,
+.linkedInspector,
 .recordings,
 .recentRuns,
 .readinessPanel,
@@ -679,6 +680,327 @@ a {
   border-radius: 8px;
   padding: 12px;
   background: #ffffff;
+}
+
+.linkedInspector {
+  min-width: 0;
+  border-color: #9bbfc6;
+  background: linear-gradient(180deg, #fbfefe 0%, #f7fafc 100%);
+}
+
+.inspectorCursorReadout {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #175e66;
+  background: #e0f1f3;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.incidentStrip {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 12px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.incidentChip {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border-color: #d6a2a5;
+  padding: 6px 9px;
+  color: #7f2d33;
+  background: #fff4f4;
+  font-size: 11px;
+}
+
+.incidentChip.warning {
+  border-color: #d8be76;
+  color: #735617;
+  background: #fff8df;
+}
+
+.incidentChip.info {
+  border-color: #a8bdcf;
+  color: #38566f;
+  background: #eef5fa;
+}
+
+.incidentChip.selected {
+  box-shadow: 0 0 0 2px rgba(200, 75, 82, 0.2);
+}
+
+.incidentChip em {
+  opacity: 0.75;
+  font-style: normal;
+}
+
+.inspectorHealthy {
+  width: 100%;
+  border: 1px solid #b8d8c6;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #286646;
+  background: #f0faf4;
+  font-size: 12px;
+}
+
+.inspectorTimeline {
+  min-width: 700px;
+  overflow: hidden;
+  border: 1px solid #d7e1e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.linkedInspector:has(.inspectorTimeline) {
+  overflow-x: auto;
+}
+
+.inspectorRulerRow,
+.inspectorLane {
+  display: grid;
+  grid-template-columns: 132px minmax(560px, 1fr);
+  min-width: 700px;
+}
+
+.inspectorRulerRow {
+  border-bottom: 1px solid #d7e1e8;
+  background: #eef4f6;
+}
+
+.inspectorLane + .inspectorLane {
+  border-top: 1px solid #edf1f4;
+}
+
+.inspectorLaneLabel {
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  min-height: 46px;
+  border-right: 1px solid #d7e1e8;
+  padding: 7px 9px;
+  color: #314251;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.inspectorLaneLabel span {
+  color: #7b8794;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.inspectorRuler {
+  position: relative;
+  min-height: 46px;
+}
+
+.inspectorRuler span {
+  position: absolute;
+  bottom: 6px;
+  color: #657384;
+  font-size: 10px;
+  transform: translateX(-50%);
+}
+
+.inspectorRuler span:first-child {
+  transform: none;
+}
+
+.inspectorRuler span:last-child {
+  transform: translateX(-100%);
+}
+
+.inspectorTrack {
+  position: relative;
+  min-height: 46px;
+  overflow: hidden;
+  cursor: crosshair;
+  background-image: linear-gradient(to right, #e5ebf0 1px, transparent 1px);
+  background-size: 25% 100%;
+}
+
+.inspectorTrack.unobserved {
+  cursor: default;
+  background-color: #f7f9fb;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 7px,
+    rgba(124, 137, 150, 0.07) 7px,
+    rgba(124, 137, 150, 0.07) 14px
+  );
+}
+
+.inspectorArtifactBar,
+.inspectorIntervalBar {
+  position: absolute;
+  left: 0;
+  border-radius: 999px;
+}
+
+.inspectorArtifactBar {
+  top: 17px;
+  height: 12px;
+  background: rgba(31, 111, 120, 0.24);
+}
+
+.inspectorIntervalBar {
+  top: 20px;
+  height: 6px;
+  background: #6e8ca5;
+}
+
+.inspectorSeriesPoint,
+.inspectorEventMarker,
+.inspectorIncidentMarker {
+  position: absolute;
+  z-index: 2;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  transform: translateX(-50%);
+}
+
+.inspectorSeriesPoint {
+  top: 20px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3c8290;
+}
+
+.inspectorEventMarker {
+  top: 10px;
+  width: 3px;
+  height: 26px;
+  border-radius: 2px;
+  background: #735ea8;
+}
+
+.inspectorIncidentMarker {
+  top: 7px;
+  width: 10px;
+  height: 32px;
+  border-radius: 3px;
+  background: #c84b52;
+}
+
+.inspectorIncidentMarker.warning {
+  background: #c08b24;
+}
+
+.inspectorIncidentMarker.info {
+  background: #567f9d;
+}
+
+.inspectorCursor {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+  background: #d83d45;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65);
+  transform: translateX(-1px);
+}
+
+.inspectorControls {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.2fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.inspectorControls > label,
+.inspectorAudioControl label {
+  display: grid;
+  gap: 5px;
+  color: #526270;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.inspectorControls input[type="range"] {
+  width: 100%;
+  accent-color: #c84b52;
+}
+
+.inspectorAudioControl {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) minmax(180px, 1fr);
+  align-items: end;
+  gap: 8px;
+}
+
+.inspectorAudioControl select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid #b9c5d1;
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #ffffff;
+}
+
+.inspectorAudioControl audio {
+  width: 100%;
+  height: 34px;
+}
+
+.incidentEvidence {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.8fr) minmax(160px, 0.8fr);
+  gap: 9px;
+  margin-top: 12px;
+  border-top: 1px solid #d7e1e8;
+  padding-top: 12px;
+}
+
+.incidentEvidence > div:first-child {
+  min-width: 0;
+}
+
+.incidentEvidence strong {
+  display: block;
+  margin-top: 6px;
+  color: #26323f;
+  font-size: 13px;
+}
+
+.incidentEvidence p {
+  margin: 4px 0;
+  color: #526270;
+  font-size: 12px;
+}
+
+.incidentEvidence small {
+  color: #7b8794;
+  font-size: 10px;
+}
+
+.incidentSeverity {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #8e2f35;
+  background: #ffe3e3;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.incidentSeverity.warning {
+  color: #735617;
+  background: #fff3cd;
+}
+
+.incidentSeverity.info {
+  color: #38566f;
+  background: #e7f1f8;
 }
 
 .recentRunsWide {
@@ -1884,6 +2206,11 @@ a {
     justify-items: start;
   }
 
+  .inspectorControls,
+  .incidentEvidence {
+    grid-template-columns: 1fr;
+  }
+
   .runForm,
   .audioSessionPanel,
   .summaryGrid {
@@ -1915,6 +2242,10 @@ a {
   .recordingMeta {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .inspectorAudioControl {
+    grid-template-columns: 1fr;
   }
 
   .recentRunMeta {

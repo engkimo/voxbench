@@ -103,6 +103,18 @@ ProviderConnectionState = Literal[
 ]
 RtpCollectorState = Literal["inactive", "connected", "collecting", "failed"]
 CrossSessionTrendState = Literal["insufficient", "stable", "increasing"]
+TimelineCategory = Literal[
+    "conversation",
+    "signaling",
+    "transport",
+    "buffer",
+    "pipeline",
+    "provider",
+    "runtime",
+    "session",
+]
+TimelineSeverity = Literal["info", "warning", "error"]
+TimelineConfidence = Literal["certain", "high", "medium", "low"]
 
 CROSS_SESSION_METRIC_NAMES = ("active_tasks", "memory_rss_bytes")
 CROSS_SESSION_MIN_SAMPLES = 3
@@ -327,6 +339,84 @@ class TimelineRecording(BaseModel):
     duration_ms: float
 
 
+class TimelineTypedEvent(BaseModel):
+    event_id: str
+    category: TimelineCategory
+    name: str
+    t_rel_ms: float
+    clock_domain: str
+    alignment_uncertainty_ms: float | None = None
+    direction: str | None = None
+    stage: str | None = None
+    stream_alias: str | None = None
+    source: str
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelineTypedInterval(BaseModel):
+    interval_id: str
+    category: TimelineCategory
+    name: str
+    start_ms: float
+    end_ms: float
+    clock_domain: str
+    alignment_uncertainty_ms: float | None = None
+    direction: str | None = None
+    stage: str | None = None
+    stream_alias: str | None = None
+    source: str
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelineSeriesPoint(BaseModel):
+    t_rel_ms: float
+    value: float
+
+
+class TimelineTypedSeries(BaseModel):
+    series_id: str
+    category: TimelineCategory
+    name: str
+    unit: str | None = None
+    clock_domain: str
+    alignment_uncertainty_ms: float | None = None
+    direction: str | None = None
+    stage: str | None = None
+    stream_alias: str | None = None
+    source: str
+    points: list[TimelineSeriesPoint]
+
+
+class TimelineTypedArtifact(BaseModel):
+    artifact_id: str
+    category: TimelineCategory
+    name: str
+    kind: Literal["audio", "trace", "report", "capture", "config"]
+    start_ms: float
+    duration_ms: float | None = None
+    stage: str | None = None
+    direction: str | None = None
+    artifact_ref: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelineIncident(BaseModel):
+    incident_id: str
+    rule_id: str
+    category: TimelineCategory
+    severity: TimelineSeverity
+    title: str
+    summary: str
+    start_ms: float
+    end_ms: float
+    confidence: TimelineConfidence
+    stage: str | None = None
+    direction: str | None = None
+    observed: dict[str, Any] = Field(default_factory=dict)
+    expected: dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class SipEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -529,6 +619,11 @@ class TimelineLanes(BaseModel):
     turns: list[dict[str, Any]]
     host: list[TimelineMetricPoint]
     recordings: list[TimelineRecording]
+    events: list[TimelineTypedEvent]
+    intervals: list[TimelineTypedInterval]
+    series: list[TimelineTypedSeries]
+    artifacts: list[TimelineTypedArtifact]
+    incidents: list[TimelineIncident]
 
 
 class TimelineResponse(BaseModel):
@@ -786,6 +881,11 @@ class StoredRun:
             )
             for stat in self.rtp_stats
         ]
+        typed_events = _typed_timeline_events(self)
+        typed_intervals = _typed_timeline_intervals(self)
+        typed_series = _typed_timeline_series(self)
+        typed_artifacts = _typed_timeline_artifacts(self)
+        typed_incidents = _typed_timeline_incidents(self, typed_artifacts)
         return TimelineResponse(
             run_id=self.run_id,
             t0=self.started_at,
@@ -810,6 +910,11 @@ class StoredRun:
                     TimelineRecording(**recording.__dict__)
                     for recording in self.recordings
                 ],
+                events=typed_events,
+                intervals=typed_intervals,
+                series=typed_series,
+                artifacts=typed_artifacts,
+                incidents=typed_incidents,
             ),
         )
 
@@ -906,6 +1011,302 @@ class StoredRun:
             events_collected=events_collected,
             failures=failures,
         )
+
+
+_TIMELINE_EVENT_METRICS: dict[str, TimelineCategory] = {
+    "barge_in_events": "conversation",
+    "dtmf_events": "conversation",
+    "output_frames_dropped": "buffer",
+    "provider_auto_interrupts": "provider",
+    "provider_input_speech_started": "conversation",
+    "provider_interrupt_requests": "provider",
+    "provider_interrupted": "provider",
+    "provider_response_done": "provider",
+    "provider_response_started": "provider",
+    "provider_stream_ended": "provider",
+    "provider_stream_errors": "provider",
+    "provider_truncate_requests": "provider",
+}
+
+_TIMELINE_UNITS = {
+    "active_tasks": "count",
+    "cpu": "percent",
+    "delta_db": "dB",
+    "frame_cadence_jitter_ms": "ms",
+    "frames_in": "count",
+    "frames_out": "count",
+    "gain_applied": "ratio",
+    "input_rms": "pcm-rms",
+    "jitter_ms": "ms",
+    "loop_lag": "ms",
+    "loss_pct": "percent",
+    "mos": "score",
+    "output_frames_dropped": "count",
+    "output_rms": "pcm-rms",
+    "provider_input_rms": "pcm-rms",
+    "rtt_ms": "ms",
+}
+
+
+def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
+    events: list[TimelineTypedEvent] = []
+    for index, event in enumerate(run.sip_events):
+        attributes: dict[str, Any] = {"method": event.method}
+        if event.status_code is not None:
+            attributes["status_code"] = event.status_code
+        if event.summary_alias is not None:
+            attributes["summary_alias"] = event.summary_alias
+        events.append(
+            TimelineTypedEvent(
+                event_id=f"sip:{index}",
+                category="signaling",
+                name=f"sip.{event.method.lower()}",
+                t_rel_ms=_relative_seconds(event.ts, run.started_at) * 1000,
+                clock_domain="control_plane_wall",
+                direction=event.direction,
+                source="sip_event",
+                attributes=attributes,
+            )
+        )
+
+    metric_index = 0
+    for metric in run.metrics:
+        category = _TIMELINE_EVENT_METRICS.get(metric.name)
+        if category is None or metric.value <= 0:
+            continue
+        events.append(
+            TimelineTypedEvent(
+                event_id=f"metric-event:{metric_index}",
+                category=category,
+                name=metric.name,
+                t_rel_ms=_relative_seconds(metric.ts, run.started_at) * 1000,
+                clock_domain="control_plane_wall",
+                stage=metric.stage,
+                source="metric_observation",
+                attributes={"value": metric.value},
+            )
+        )
+        metric_index += 1
+
+    if run.failure_alias is not None:
+        events.append(
+            TimelineTypedEvent(
+                event_id="run:failure",
+                category="session",
+                name="run_failed",
+                t_rel_ms=_relative_seconds(
+                    run.ended_at or run.started_at,
+                    run.started_at,
+                )
+                * 1000,
+                clock_domain="control_plane_wall",
+                source="run_state",
+                attributes={"failure_alias": run.failure_alias},
+            )
+        )
+    return sorted(events, key=lambda event: (event.t_rel_ms, event.event_id))
+
+
+def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
+    intervals: list[TimelineTypedInterval] = []
+    origin_ns = int(run.started_at.timestamp() * 1_000_000_000)
+    for index, span in enumerate(run.spans):
+        stage_value = span.attrs.get("voxbench.stage")
+        stage = stage_value if isinstance(stage_value, str) else None
+        start_ms = max(0.0, (span.start_ns - origin_ns) / 1_000_000)
+        end_ms = max(start_ms, (span.end_ns - origin_ns) / 1_000_000)
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=f"span:{index}",
+                category="pipeline" if stage is not None else "session",
+                name=span.name,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                clock_domain="otel_epoch_ns",
+                stage=stage,
+                source="otel_span",
+                attributes={"duration_ms": end_ms - start_ms},
+            )
+        )
+    return sorted(intervals, key=lambda interval: (interval.start_ms, interval.interval_id))
+
+
+def _typed_timeline_series(run: StoredRun) -> list[TimelineTypedSeries]:
+    metric_groups: dict[
+        tuple[TimelineCategory, str | None, str],
+        list[TimelineSeriesPoint],
+    ] = {}
+    for metric in run.metrics:
+        category = _metric_timeline_category(metric)
+        key = (category, metric.stage, metric.name)
+        metric_groups.setdefault(key, []).append(
+            TimelineSeriesPoint(
+                t_rel_ms=_relative_seconds(metric.ts, run.started_at) * 1000,
+                value=metric.value,
+            )
+        )
+
+    series: list[TimelineTypedSeries] = []
+    for index, ((category, stage, name), points) in enumerate(
+        sorted(metric_groups.items(), key=lambda item: tuple(str(part) for part in item[0]))
+    ):
+        series.append(
+            TimelineTypedSeries(
+                series_id=f"metric:{index}",
+                category=category,
+                name=name,
+                unit=_timeline_unit(name),
+                clock_domain="control_plane_wall",
+                stage=stage,
+                source="metric_observation",
+                points=sorted(points, key=lambda point: point.t_rel_ms),
+            )
+        )
+
+    rtp_values = (
+        ("jitter_ms", "jitter_ms"),
+        ("loss_pct", "loss_pct"),
+        ("mos", "mos"),
+        ("rtt_ms", "rtt_ms"),
+    )
+    rtp_groups: dict[tuple[str | None, str], list[TimelineSeriesPoint]] = {}
+    for stat in run.rtp_stats:
+        for attribute, name in rtp_values:
+            value = getattr(stat, attribute)
+            if value is None:
+                continue
+            rtp_groups.setdefault((stat.direction, name), []).append(
+                TimelineSeriesPoint(
+                    t_rel_ms=_relative_seconds(stat.ts, run.started_at) * 1000,
+                    value=value,
+                )
+            )
+    for index, ((direction, name), points) in enumerate(
+        sorted(rtp_groups.items(), key=lambda item: tuple(str(part) for part in item[0]))
+    ):
+        series.append(
+            TimelineTypedSeries(
+                series_id=f"rtp:{index}",
+                category="transport",
+                name=name,
+                unit=_timeline_unit(name),
+                clock_domain="control_plane_wall",
+                direction=direction,
+                stream_alias=f"rtp-{direction or 'unknown'}",
+                source="rtp_stats",
+                points=sorted(points, key=lambda point: point.t_rel_ms),
+            )
+        )
+    return series
+
+
+def _typed_timeline_artifacts(run: StoredRun) -> list[TimelineTypedArtifact]:
+    return [
+        TimelineTypedArtifact(
+            artifact_id=f"recording:{index}",
+            category="pipeline",
+            name=f"{recording.stage} recording",
+            kind="audio",
+            start_ms=0,
+            duration_ms=recording.duration_ms,
+            stage=recording.stage,
+            artifact_ref=f"recording:{recording.stage}",
+            metadata={"format": recording.format},
+        )
+        for index, recording in enumerate(run.recordings)
+    ]
+
+
+def _typed_timeline_incidents(
+    run: StoredRun,
+    artifacts: list[TimelineTypedArtifact],
+) -> list[TimelineIncident]:
+    duration_ms = _run_timeline_duration_ms(run)
+    artifact_by_stage = {
+        artifact.stage: artifact.artifact_id
+        for artifact in artifacts
+        if artifact.stage is not None
+    }
+    incidents: list[TimelineIncident] = []
+    failure_index = 0
+    for verification in run.verifications:
+        if verification.passed:
+            continue
+        evidence_refs = []
+        artifact_id = artifact_by_stage.get(verification.stage)
+        if artifact_id is not None:
+            evidence_refs.append(artifact_id)
+        incidents.append(
+            TimelineIncident(
+                incident_id=f"verification:{failure_index}",
+                rule_id=verification.invariant,
+                category="pipeline",
+                severity="error",
+                title=f"{verification.stage}: {verification.invariant}",
+                summary=verification.detail,
+                start_ms=0,
+                end_ms=duration_ms,
+                confidence="certain",
+                stage=verification.stage,
+                observed=verification.observed,
+                expected=verification.expected,
+                evidence_refs=evidence_refs,
+            )
+        )
+        failure_index += 1
+    if run.failure_alias is not None:
+        incidents.append(
+            TimelineIncident(
+                incident_id="run:failure",
+                rule_id="run_failure",
+                category="session",
+                severity="error",
+                title="Run failed",
+                summary=run.failure_alias,
+                start_ms=duration_ms,
+                end_ms=duration_ms,
+                confidence="certain",
+                evidence_refs=["run:failure"],
+            )
+        )
+    return incidents
+
+
+def _metric_timeline_category(metric: MetricArtifact) -> TimelineCategory:
+    if metric.stage is not None:
+        return "pipeline"
+    if metric.name in {"barge_in_events", "dtmf_events"}:
+        return "conversation"
+    if metric.name == "output_frames_dropped":
+        return "buffer"
+    if metric.name.startswith("provider_"):
+        return "provider"
+    return "runtime"
+
+
+def _timeline_unit(name: str) -> str | None:
+    if name in _TIMELINE_UNITS:
+        return _TIMELINE_UNITS[name]
+    if name.endswith("_ms"):
+        return "ms"
+    if name.endswith("_pct"):
+        return "percent"
+    if name.endswith("_events") or name.endswith("_failures"):
+        return "count"
+    return None
+
+
+def _run_timeline_duration_ms(run: StoredRun) -> float:
+    recording_duration = max(
+        (recording.duration_ms for recording in run.recordings),
+        default=0.0,
+    )
+    ended_duration = (
+        max(0.0, (run.ended_at - run.started_at).total_seconds() * 1000)
+        if run.ended_at is not None
+        else 0.0
+    )
+    return max(recording_duration, ended_duration)
 
 
 class RunRepository(Protocol):

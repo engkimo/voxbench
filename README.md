@@ -358,6 +358,24 @@ provider, SIP, and RTP validation still require the corresponding integration
 inputs. Custom payload controls and operational diagnostics are collapsed by
 default so they do not interrupt the first-use path.
 
+After a run is selected, **Call inspector** projects existing observations onto
+one shared ruler. It distinguishes typed point events, span intervals, numeric
+series, audio artifacts, and derived incidents. Selecting an incident moves the
+shared cursor and opens its observed/expected evidence; selecting a stage audio
+artifact lets playback and the ruler follow the same cursor. Missing conversation
+telemetry is shown as `not observed`, never as healthy.
+
+Run selections are deep-linkable without browser storage:
+
+```text
+http://127.0.0.1:5173/?run_id=<run_id>&compare_run_id=<optional_run_id>
+```
+
+The typed timeline is currently a backward-compatible projection over persisted
+metrics, spans, SIP/RTP observations, recordings, and verification failures. It
+does not yet provide packet capture, AudioSocket/WebSocket frame decoding,
+sample-accurate cross-clock alignment, or typed caller/assistant speech intervals.
+
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
 the UI falls back to REST polling if the socket is unavailable.

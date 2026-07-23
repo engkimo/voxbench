@@ -93,6 +93,22 @@ def test_simulated_live_demo_run_writes_timeline_audio_and_gain_metrics(tmp_path
         "delta_db",
         "gain_applied",
     }
+    assert {event["category"] for event in timeline["lanes"]["events"]} >= {
+        "signaling",
+    }
+    assert {series["category"] for series in timeline["lanes"]["series"]} >= {
+        "pipeline",
+        "transport",
+    }
+    agc_incident = next(
+        incident
+        for incident in timeline["lanes"]["incidents"]
+        if incident["stage"] == "agc"
+    )
+    assert agc_incident["rule_id"] == "level_preserving"
+    assert agc_incident["severity"] == "error"
+    assert agc_incident["confidence"] == "certain"
+    assert agc_incident["evidence_refs"]
 
 
 def test_simulated_live_demo_rejects_non_dry_run_when_provider_not_ready(

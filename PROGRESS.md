@@ -1,5 +1,20 @@
 # 進捗
 
+## Product UX: typed common-time-axis call inspector (2026-07-23)
+
+- 既存timelineを壊さず、`events` / `intervals` / `series` / `artifacts` / `incidents`のtyped projectionを追加。
+  各要素はcategory、相対ms、clock domain、direction/stage/stream、sourceを表現できる。
+- SIPをsignaling event、RTP jitter/loss/MOS/RTTをdirection別transport series、Stage/host/provider metricsを
+  series、OTel spanをinterval、WAVをaudio artifact、verification failureをevidence付きincidentへ投影する。
+- raw Call-ID、span attrs、storage URIを新projectionへ複製しない。artifactはsafe `recording:<stage>`参照とformatだけを持つ。
+- WebにCall inspectorを追加。1本のruler/cursorでConversation、Signaling、Transport、Buffers、Pipeline、
+  Provider、Host、Sessionを結び、incident選択、Observed/Expected drawer、cursor位置からのStage音声再生を実装。
+- `?run_id=...&compare_run_id=...`のdeep linkを追加し、browser storageを使わずrun選択を共有・再現できる。
+- Docker Postgres上の3秒failure runでAGC incident、SIP marker、方向別RTP points、audio artifactsを画面確認。
+  Web build、full suite 288 passed/3 skipped、real Postgres 3 passed、Ruff、npm audit high以上0件。
+- 製品全体は約73%。次はtyped barge-in causal sequence、directional media-gap/burst-loss事件、Stage間の
+  media-time contraction/gain series、AudioSocket/chan_websocket semantic decoder、clock alignment confidence。
+
 ## Product Web UX: audible quick demo and visible refresh (2026-07-22)
 
 - 画面先頭に3秒の`Run audible demo`を追加。API key/Asterisk不要の非無音合成toneを実行し、完了runを

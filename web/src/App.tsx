@@ -15,7 +15,15 @@ import {
   Signal,
   Waves,
 } from 'lucide-react'
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  FormEvent,
+  MouseEvent as ReactMouseEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import WaveSurfer from 'wavesurfer.js'
 
 import type {
@@ -28,6 +36,8 @@ import type {
   RunSummary,
   RunEnvironmentMetadata,
   TimelineMetricPoint,
+  TimelineCategory,
+  TimelineIncident,
   TimelineRecording,
   TimelineRtpStat,
   TimelineResponse,
@@ -98,6 +108,17 @@ const ENVIRONMENT_PROFILES: EnvironmentProfile[] = [
   'demo',
   'integration',
   'staging',
+]
+
+const INSPECTOR_CATEGORIES: TimelineCategory[] = [
+  'conversation',
+  'signaling',
+  'transport',
+  'buffer',
+  'pipeline',
+  'provider',
+  'runtime',
+  'session',
 ]
 
 const READINESS_CONTROLS: Array<Pick<ReadinessChecklistItem, 'item_id' | 'label'>> = [
@@ -408,12 +429,20 @@ function commaList(value: string) {
     .filter(Boolean)
 }
 
+function timelineQueryParameter(name: 'run_id' | 'compare_run_id') {
+  return new URLSearchParams(window.location.search).get(name)?.trim() ?? ''
+}
+
 export function App() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE)
-  const [draftRunId, setDraftRunId] = useState('')
-  const [draftCompareRunId, setDraftCompareRunId] = useState('')
-  const [runId, setRunId] = useState('')
-  const [compareRunId, setCompareRunId] = useState('')
+  const [draftRunId, setDraftRunId] = useState(() => timelineQueryParameter('run_id'))
+  const [draftCompareRunId, setDraftCompareRunId] = useState(() =>
+    timelineQueryParameter('compare_run_id'),
+  )
+  const [runId, setRunId] = useState(() => timelineQueryParameter('run_id'))
+  const [compareRunId, setCompareRunId] = useState(() =>
+    timelineQueryParameter('compare_run_id'),
+  )
   const [selectedStageName, setSelectedStageName] = useState<string | null>(null)
   const [livePreviewSocketRuns, setLivePreviewSocketRuns] = useState<LiveRunStatus[] | null>(null)
   const [liveSocketState, setLiveSocketState] = useState<LiveSocketState>('connecting')
@@ -466,6 +495,26 @@ export function App() {
     queryFn: () => fetchAudioSessionStatus(apiBase),
     enabled: storageReadinessQuery.data?.web_audio_session_enabled === true,
   })
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (runId) {
+      params.set('run_id', runId)
+    } else {
+      params.delete('run_id')
+    }
+    if (compareRunId) {
+      params.set('compare_run_id', compareRunId)
+    } else {
+      params.delete('compare_run_id')
+    }
+    const query = params.toString()
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+    )
+  }, [compareRunId, runId])
 
   useEffect(() => {
     const url = liveWebSocketUrl(apiBase)
@@ -817,6 +866,12 @@ export function App() {
             {compareTimeline ? (
               <ComparisonTable primary={timeline} compare={compareTimeline} />
             ) : null}
+            <LinkedCallInspector
+              apiBase={apiBase}
+              audioSessionRevision={audioSessionRevision}
+              runId={timeline.run_id}
+              timeline={timeline}
+            />
             <Recordings
               apiBase={apiBase}
               audioSessionRevision={audioSessionRevision}
@@ -921,6 +976,286 @@ export function App() {
         </section>
       ) : null}
     </main>
+  )
+}
+
+function LinkedCallInspector({
+  apiBase,
+  audioSessionRevision,
+  runId,
+  timeline,
+}: {
+  apiBase: string
+  audioSessionRevision: number
+  runId: string
+  timeline: TimelineResponse
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const audioArtifacts = timeline.lanes.artifacts.filter(
+    (artifact) => artifact.kind === 'audio' && artifact.stage,
+  )
+  const [cursorMs, setCursorMs] = useState(0)
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(
+    timeline.lanes.incidents[0]?.incident_id ?? null,
+  )
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(
+    audioArtifacts[0]?.artifact_id ?? null,
+  )
+
+  const durationMs = inspectorDurationMs(timeline)
+  const selectedIncident =
+    timeline.lanes.incidents.find(
+      (incident) => incident.incident_id === selectedIncidentId,
+    ) ?? null
+  const selectedArtifact =
+    audioArtifacts.find((artifact) => artifact.artifact_id === selectedArtifactId) ??
+    audioArtifacts[0]
+  const visibleCategories = INSPECTOR_CATEGORIES.filter(
+    (category) => category === 'conversation' || inspectorCategoryCount(timeline, category) > 0,
+  )
+  const base = apiBase.replace(/\/$/, '')
+  const audioSrc = selectedArtifact?.stage
+    ? `${base}/runs/${encodeURIComponent(runId)}/recordings/${encodeURIComponent(selectedArtifact.stage)}/audio`
+    : null
+
+  useEffect(() => {
+    setCursorMs(0)
+    setSelectedIncidentId(timeline.lanes.incidents[0]?.incident_id ?? null)
+    setSelectedArtifactId(audioArtifacts[0]?.artifact_id ?? null)
+  }, [runId])
+
+  function moveCursor(nextMs: number, seekAudio = true) {
+    const bounded = Math.max(0, Math.min(durationMs, nextMs))
+    setCursorMs(bounded)
+    if (seekAudio && audioRef.current) {
+      const audioDurationMs = Number.isFinite(audioRef.current.duration)
+        ? audioRef.current.duration * 1000
+        : durationMs
+      audioRef.current.currentTime = Math.min(bounded, audioDurationMs) / 1000
+    }
+  }
+
+  function moveCursorFromTrack(event: ReactMouseEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const ratio = bounds.width > 0 ? (event.clientX - bounds.left) / bounds.width : 0
+    moveCursor(ratio * durationMs)
+  }
+
+  function selectIncident(incident: TimelineIncident) {
+    setSelectedIncidentId(incident.incident_id)
+    moveCursor(incident.start_ms)
+  }
+
+  return (
+    <section className="linkedInspector">
+      <div className="sectionHeader compact">
+        <Activity size={17} />
+        <h2>Call inspector</h2>
+        <span className="inspectorCursorReadout">Cursor {formatTimelineTime(cursorMs)}</span>
+      </div>
+      <p className="panelLead">
+        One cursor links call events, transport, pipeline evidence, provider lifecycle, and host state.
+      </p>
+
+      <div className="incidentStrip" aria-label="Detected incidents">
+        {timeline.lanes.incidents.length > 0 ? (
+          timeline.lanes.incidents.map((incident) => (
+            <button
+              className={`incidentChip ${incident.severity} ${incident.incident_id === selectedIncidentId ? 'selected' : ''}`}
+              key={incident.incident_id}
+              onClick={() => selectIncident(incident)}
+              type="button"
+            >
+              <AlertTriangle size={14} />
+              <span>{incident.title}</span>
+              <em>{formatTimelineTime(incident.start_ms)}</em>
+            </button>
+          ))
+        ) : (
+          <div className="inspectorHealthy">
+            No detected incidents. Missing lanes remain explicitly marked as not observed.
+          </div>
+        )}
+      </div>
+
+      <div className="inspectorTimeline">
+        <div className="inspectorRulerRow">
+          <div className="inspectorLaneLabel">Shared time</div>
+          <div className="inspectorRuler">
+            {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
+              <span key={ratio} style={{ left: `${ratio * 100}%` }}>
+                {formatTimelineTime(durationMs * ratio)}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {visibleCategories.map((category) => {
+          const events = timeline.lanes.events.filter((event) => event.category === category)
+          const intervals = timeline.lanes.intervals.filter(
+            (interval) => interval.category === category,
+          )
+          const series = timeline.lanes.series.filter((item) => item.category === category)
+          const artifacts = timeline.lanes.artifacts.filter(
+            (artifact) => artifact.category === category,
+          )
+          const incidents = timeline.lanes.incidents.filter(
+            (incident) => incident.category === category,
+          )
+          const observed = events.length + intervals.length + series.length + artifacts.length > 0
+          const seriesPoints = sampleInspectorPoints(series, 100)
+          const artifactDuration = Math.max(
+            0,
+            ...artifacts.map((artifact) => artifact.duration_ms ?? 0),
+          )
+          return (
+            <div className="inspectorLane" key={category}>
+              <div className="inspectorLaneLabel">
+                <strong>{timelineCategoryLabel(category)}</strong>
+                <span>
+                  {observed ? `${inspectorCategoryCount(timeline, category)} evidence` : 'not observed'}
+                </span>
+              </div>
+              <div
+                className={`inspectorTrack ${observed ? '' : 'unobserved'}`}
+                onClick={moveCursorFromTrack}
+              >
+                {artifactDuration > 0 ? (
+                  <span
+                    className="inspectorArtifactBar"
+                    style={{ width: `${timePositionPercent(artifactDuration, durationMs)}%` }}
+                    title={`${artifacts.length} artifacts · ${formatTimelineTime(artifactDuration)}`}
+                  />
+                ) : null}
+                {intervals.map((interval) => (
+                  <span
+                    className="inspectorIntervalBar"
+                    key={interval.interval_id}
+                    style={{
+                      left: `${timePositionPercent(interval.start_ms, durationMs)}%`,
+                      width: `${Math.max(0.4, timePositionPercent(interval.end_ms - interval.start_ms, durationMs))}%`,
+                    }}
+                    title={`${interval.name} · ${formatTimelineTime(interval.start_ms)}–${formatTimelineTime(interval.end_ms)}`}
+                  />
+                ))}
+                {seriesPoints.map(({ point, series: pointSeries }, index) => (
+                  <button
+                    aria-label={`${pointSeries.name} ${displayValue(point.value)} ${pointSeries.unit ?? ''} at ${formatTimelineTime(point.t_rel_ms)}`}
+                    className="inspectorSeriesPoint"
+                    key={`${pointSeries.series_id}-${index}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      moveCursor(point.t_rel_ms)
+                    }}
+                    style={{ left: `${timePositionPercent(point.t_rel_ms, durationMs)}%` }}
+                    title={`${pointSeries.name}: ${displayValue(point.value)} ${pointSeries.unit ?? ''}`}
+                    type="button"
+                  />
+                ))}
+                {events.map((event) => (
+                  <button
+                    aria-label={`${event.name} at ${formatTimelineTime(event.t_rel_ms)}`}
+                    className="inspectorEventMarker"
+                    key={event.event_id}
+                    onClick={(clickEvent) => {
+                      clickEvent.stopPropagation()
+                      moveCursor(event.t_rel_ms)
+                    }}
+                    style={{ left: `${timePositionPercent(event.t_rel_ms, durationMs)}%` }}
+                    title={`${event.name} · ${event.direction ?? event.stage ?? event.source}`}
+                    type="button"
+                  />
+                ))}
+                {incidents.map((incident) => (
+                  <button
+                    aria-label={`${incident.title} incident`}
+                    className={`inspectorIncidentMarker ${incident.severity}`}
+                    key={incident.incident_id}
+                    onClick={(clickEvent) => {
+                      clickEvent.stopPropagation()
+                      selectIncident(incident)
+                    }}
+                    style={{ left: `${timePositionPercent(incident.start_ms, durationMs)}%` }}
+                    title={incident.summary}
+                    type="button"
+                  />
+                ))}
+                <span
+                  className="inspectorCursor"
+                  style={{ left: `${timePositionPercent(cursorMs, durationMs)}%` }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="inspectorControls">
+        <label>
+          Shared cursor
+          <input
+            aria-label="Shared timeline cursor"
+            max={durationMs}
+            min={0}
+            onChange={(event) => moveCursor(Number(event.target.value))}
+            step={10}
+            type="range"
+            value={cursorMs}
+          />
+        </label>
+        {audioArtifacts.length > 0 ? (
+          <div className="inspectorAudioControl">
+            <label>
+              Listen at cursor
+              <select
+                onChange={(event) => setSelectedArtifactId(event.target.value)}
+                value={selectedArtifact?.artifact_id ?? ''}
+              >
+                {audioArtifacts.map((artifact) => (
+                  <option key={artifact.artifact_id} value={artifact.artifact_id}>
+                    {artifact.stage}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {audioSrc ? (
+              <audio
+                controls
+                crossOrigin="use-credentials"
+                key={`${selectedArtifact?.artifact_id}-${audioSessionRevision}`}
+                onLoadedMetadata={() => moveCursor(cursorMs)}
+                onTimeUpdate={(event) => setCursorMs(event.currentTarget.currentTime * 1000)}
+                preload="metadata"
+                ref={audioRef}
+                src={audioSrc}
+              />
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      {selectedIncident ? (
+        <div className="incidentEvidence">
+          <div>
+            <span className={`incidentSeverity ${selectedIncident.severity}`}>
+              {selectedIncident.severity}
+            </span>
+            <strong>{selectedIncident.title}</strong>
+            <p>{selectedIncident.summary}</p>
+            <small>
+              {selectedIncident.stage ?? selectedIncident.direction ?? selectedIncident.category}
+              {' · '}
+              confidence {selectedIncident.confidence}
+              {' · '}
+              {formatTimelineTime(selectedIncident.start_ms)}–
+              {formatTimelineTime(selectedIncident.end_ms)}
+            </small>
+          </div>
+          <JsonBlock label="Observed evidence" value={selectedIncident.observed} />
+          <JsonBlock label="Expected contract" value={selectedIncident.expected} />
+        </div>
+      ) : null}
+    </section>
   )
 }
 
@@ -2455,6 +2790,82 @@ function readinessHeadline(summary: ReadinessSummary) {
     return 'ready'
   }
   return `${summary.incomplete_count} incomplete`
+}
+
+function inspectorDurationMs(timeline: TimelineResponse) {
+  const values = [1_000]
+  for (const event of timeline.lanes.events) {
+    values.push(event.t_rel_ms)
+  }
+  for (const interval of timeline.lanes.intervals) {
+    values.push(interval.end_ms)
+  }
+  for (const series of timeline.lanes.series) {
+    for (const point of series.points) {
+      values.push(point.t_rel_ms)
+    }
+  }
+  for (const artifact of timeline.lanes.artifacts) {
+    values.push(artifact.start_ms + (artifact.duration_ms ?? 0))
+  }
+  for (const incident of timeline.lanes.incidents) {
+    values.push(incident.end_ms)
+  }
+  return Math.max(...values)
+}
+
+function inspectorCategoryCount(timeline: TimelineResponse, category: TimelineCategory) {
+  return (
+    timeline.lanes.events.filter((event) => event.category === category).length +
+    timeline.lanes.intervals.filter((interval) => interval.category === category).length +
+    timeline.lanes.series.filter((series) => series.category === category).length +
+    timeline.lanes.artifacts.filter((artifact) => artifact.category === category).length +
+    timeline.lanes.incidents.filter((incident) => incident.category === category).length
+  )
+}
+
+function sampleInspectorPoints(
+  series: TimelineResponse['lanes']['series'],
+  maximum: number,
+): Array<{
+  series: TimelineResponse['lanes']['series'][number]
+  point: TimelineResponse['lanes']['series'][number]['points'][number]
+}> {
+  const all = series.flatMap((item) =>
+    item.points.map((point) => ({ series: item, point })),
+  )
+  if (all.length <= maximum) {
+    return all
+  }
+  const stride = all.length / maximum
+  return Array.from({ length: maximum }, (_, index) => all[Math.floor(index * stride)])
+}
+
+function timePositionPercent(valueMs: number, durationMs: number) {
+  return Math.max(0, Math.min(100, (valueMs / Math.max(durationMs, 1)) * 100))
+}
+
+function formatTimelineTime(valueMs: number) {
+  const seconds = Math.max(0, valueMs) / 1000
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60)
+    return `${minutes}:${(seconds % 60).toFixed(1).padStart(4, '0')}`
+  }
+  return `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`
+}
+
+function timelineCategoryLabel(category: TimelineCategory) {
+  const labels: Record<TimelineCategory, string> = {
+    conversation: 'Conversation',
+    signaling: 'Signaling',
+    transport: 'Transport',
+    buffer: 'Buffers',
+    pipeline: 'Pipeline',
+    provider: 'Provider',
+    runtime: 'Host',
+    session: 'Session',
+  }
+  return labels[category]
 }
 
 function readinessProductHeadline(summary: ReadinessSummary) {
