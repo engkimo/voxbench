@@ -1136,6 +1136,90 @@ _TIMELINE_UNITS = {
     "rtt_ms": "ms",
 }
 
+RTP_LOSS_WARNING_PCT = 1.0
+RTP_JITTER_WARNING_MS = 30.0
+RTP_MOS_WARNING_SCORE = 3.5
+RTP_DEGRADATION_WINDOW_GAP_MS = 5_000.0
+
+
+@dataclass(frozen=True)
+class _RtpQualityEvidence:
+    stat_index: int
+    direction_ordinal: int
+    direction: RtpDirection | None
+    t_rel_ms: float
+    loss_pct: float | None
+    jitter_ms: float | None
+    mos: float | None
+    triggers: tuple[str, ...]
+
+    @property
+    def evidence_refs(self) -> list[str]:
+        return [f"rtp:{self.stat_index}:{trigger}" for trigger in self.triggers]
+
+
+def _rtp_quality_evidence(run: StoredRun) -> list[_RtpQualityEvidence]:
+    grouped: dict[RtpDirection | None, list[tuple[int, RtpStatResponse]]] = {}
+    for stat_index, stat in enumerate(run.rtp_stats):
+        grouped.setdefault(stat.direction, []).append((stat_index, stat))
+
+    evidence: list[_RtpQualityEvidence] = []
+    for direction, values in grouped.items():
+        ordered = sorted(values, key=lambda item: (item[1].ts, item[0]))
+        for direction_ordinal, (stat_index, stat) in enumerate(ordered):
+            triggers: list[str] = []
+            if stat.loss_pct is not None and stat.loss_pct >= RTP_LOSS_WARNING_PCT:
+                triggers.append("loss")
+            if stat.jitter_ms is not None and stat.jitter_ms >= RTP_JITTER_WARNING_MS:
+                triggers.append("jitter")
+            if stat.mos is not None and stat.mos <= RTP_MOS_WARNING_SCORE:
+                triggers.append("mos")
+            if not triggers:
+                continue
+            evidence.append(
+                _RtpQualityEvidence(
+                    stat_index=stat_index,
+                    direction_ordinal=direction_ordinal,
+                    direction=direction,
+                    t_rel_ms=_relative_seconds(stat.ts, run.started_at) * 1000,
+                    loss_pct=stat.loss_pct,
+                    jitter_ms=stat.jitter_ms,
+                    mos=stat.mos,
+                    triggers=tuple(triggers),
+                )
+            )
+    return sorted(
+        evidence,
+        key=lambda item: (item.t_rel_ms, item.direction or "", item.stat_index),
+    )
+
+
+def _rtp_quality_windows(run: StoredRun) -> list[list[_RtpQualityEvidence]]:
+    by_direction: dict[RtpDirection | None, list[_RtpQualityEvidence]] = {}
+    for item in _rtp_quality_evidence(run):
+        by_direction.setdefault(item.direction, []).append(item)
+
+    windows: list[list[_RtpQualityEvidence]] = []
+    for values in by_direction.values():
+        current: list[_RtpQualityEvidence] = []
+        for item in sorted(values, key=lambda value: value.t_rel_ms):
+            if current:
+                previous = current[-1]
+                is_consecutive = item.direction_ordinal == previous.direction_ordinal + 1
+                is_nearby = (
+                    item.t_rel_ms - previous.t_rel_ms <= RTP_DEGRADATION_WINDOW_GAP_MS
+                )
+                if not (is_consecutive and is_nearby):
+                    windows.append(current)
+                    current = []
+            current.append(item)
+        if current:
+            windows.append(current)
+    return sorted(
+        windows,
+        key=lambda window: (window[0].t_rel_ms, window[0].direction or ""),
+    )
+
 
 def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
     events: list[TimelineTypedEvent] = []
@@ -1201,6 +1285,43 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
         )
         metric_index += 1
 
+    for window_index, window in enumerate(_rtp_quality_windows(run)):
+        correlation_alias = _rtp_window_alias(window_index, window)
+        for item in window:
+            for trigger in item.triggers:
+                if trigger == "loss":
+                    name = "rtp.loss_elevated"
+                    attributes = {
+                        "loss_pct": item.loss_pct,
+                        "warning_threshold_pct": RTP_LOSS_WARNING_PCT,
+                    }
+                elif trigger == "jitter":
+                    name = "rtp.jitter_elevated"
+                    attributes = {
+                        "jitter_ms": item.jitter_ms,
+                        "warning_threshold_ms": RTP_JITTER_WARNING_MS,
+                    }
+                else:
+                    name = "rtp.mos_degraded"
+                    attributes = {
+                        "mos": item.mos,
+                        "warning_below_or_equal": RTP_MOS_WARNING_SCORE,
+                    }
+                events.append(
+                    TimelineTypedEvent(
+                        event_id=f"rtp:{item.stat_index}:{trigger}",
+                        category="transport",
+                        name=name,
+                        t_rel_ms=item.t_rel_ms,
+                        clock_domain="control_plane_wall",
+                        direction=item.direction,
+                        stream_alias=f"rtp-{item.direction or 'unknown'}",
+                        source="rtp_quality_rule_v1",
+                        correlation_alias=correlation_alias,
+                        attributes=attributes,
+                    )
+                )
+
     if run.failure_alias is not None:
         events.append(
             TimelineTypedEvent(
@@ -1263,6 +1384,30 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 source="audiosocket_bridge",
                 correlation_alias=correlation_alias,
                 attributes={"duration_ms": end_ms - start_ms},
+            )
+        )
+    for window_index, window in enumerate(_rtp_quality_windows(run)):
+        start_ms = window[0].t_rel_ms
+        end_ms = max(start_ms, window[-1].t_rel_ms)
+        triggers = sorted({trigger for item in window for trigger in item.triggers})
+        correlation_alias = _rtp_window_alias(window_index, window)
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=correlation_alias,
+                category="transport",
+                name="rtp_quality_degradation",
+                start_ms=start_ms,
+                end_ms=end_ms,
+                clock_domain="control_plane_wall",
+                direction=window[0].direction,
+                stream_alias=f"rtp-{window[0].direction or 'unknown'}",
+                source="rtp_quality_rule_v1",
+                correlation_alias=correlation_alias,
+                attributes={
+                    "duration_ms": end_ms - start_ms,
+                    "sample_count": len(window),
+                    "triggers": triggers,
+                },
             )
         )
     return sorted(intervals, key=lambda interval: (interval.start_ms, interval.interval_id))
@@ -1457,7 +1602,74 @@ def _typed_timeline_incidents(
                 evidence_refs=[event.event_id for event in events],
             )
         )
+    for window_index, window in enumerate(_rtp_quality_windows(run)):
+        loss_samples = [item.loss_pct for item in window if "loss" in item.triggers]
+        jitter_samples = [
+            item.jitter_ms for item in window if "jitter" in item.triggers
+        ]
+        mos_samples = [item.mos for item in window if "mos" in item.triggers]
+        triggers = sorted({trigger for item in window for trigger in item.triggers})
+        loss_burst_suspected = any(
+            "loss" in previous.triggers and "loss" in current.triggers
+            for previous, current in pairwise(window)
+        )
+        if loss_burst_suspected:
+            title = "RTP loss burst suspected"
+        elif triggers == ["loss"]:
+            title = "RTP packet loss elevated"
+        elif triggers == ["jitter"]:
+            title = "RTP jitter elevated"
+        elif triggers == ["mos"]:
+            title = "RTP quality degraded"
+        else:
+            title = "RTP quality degradation"
+        direction = window[0].direction
+        trigger_summary = ", ".join(triggers)
+        summary = (
+            f"{direction or 'unknown-direction'} RTP: {trigger_summary} across "
+            f"{len(window)} observation{'s' if len(window) != 1 else ''}"
+        )
+        incidents.append(
+            TimelineIncident(
+                incident_id=_rtp_window_alias(window_index, window),
+                rule_id="rtp_quality_degradation_v1",
+                category="transport",
+                severity="warning",
+                title=title,
+                summary=summary,
+                start_ms=window[0].t_rel_ms,
+                end_ms=max(window[0].t_rel_ms, window[-1].t_rel_ms),
+                confidence="medium",
+                direction=direction,
+                observed={
+                    "sample_count": len(window),
+                    "triggers": triggers,
+                    "peak_loss_pct": max(loss_samples) if loss_samples else None,
+                    "peak_jitter_ms": max(jitter_samples) if jitter_samples else None,
+                    "minimum_mos": min(mos_samples) if mos_samples else None,
+                    "loss_burst_suspected": loss_burst_suspected,
+                },
+                expected={
+                    "loss_pct_below": RTP_LOSS_WARNING_PCT,
+                    "jitter_ms_below": RTP_JITTER_WARNING_MS,
+                    "mos_above": RTP_MOS_WARNING_SCORE,
+                    "packet_gap_confirmation": "RTP sequence or arrival cadence required",
+                },
+                evidence_refs=[
+                    evidence_ref
+                    for item in window
+                    for evidence_ref in item.evidence_refs
+                ],
+            )
+        )
     return incidents
+
+
+def _rtp_window_alias(
+    window_index: int,
+    window: list[_RtpQualityEvidence],
+) -> str:
+    return f"rtp-degradation:{window[0].direction or 'unknown'}:{window_index}"
 
 
 def _correlated_barge_in_events(

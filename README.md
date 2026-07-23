@@ -381,6 +381,14 @@ the remote listener's actual playout is not yet observed. Packet capture,
 sample-accurate cross-clock alignment, and typed caller/assistant speech intervals
 remain future work.
 
+Directional RTP observations also produce transport evidence when loss reaches
+1%, jitter reaches 30 ms, or MOS falls to 3.5 or below. Consecutive degraded
+observations within five seconds are grouped into one interval and incident.
+Two consecutive elevated-loss observations are labeled `RTP loss burst suspected`,
+not as a confirmed media gap: aggregate statistics do not contain the RTP sequence
+or packet-arrival evidence required to prove a missing-packet interval. The active
+thresholds are always included in the incident's Expected contract.
+
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
 the UI falls back to REST polling if the socket is unavailable.

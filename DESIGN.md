@@ -428,6 +428,12 @@ provider item ID、URL、secretを持ち込まない。barge-inはprovider VAD�
 playback queue clear、完了を同じ相関aliasで結ぶ。queueから破棄した時間は観測値だが、相手に実際に聞こえた
 可聴テールではないため、そのようには表示しない。media-gapやtyped turnも同じevent境界を利用する。
 
+RTP集計観測からはdirectionごとにloss 1%以上、jitter 30ms以上、MOS 3.5以下をprovisional warning
+contractとしてevent化する。5秒以内の連続観測だけを1 degradation windowへまとめ、連続する2点以上でlossが
+閾値を超えた場合も`loss burst suspected`（medium confidence）に留める。RTP sequence numberまたはpacket arrival
+cadenceなしにpacket gapや音切れを確定しない。閾値はincidentのExpected contractへ必ず返し、将来はscenario/
+manifest ruleへ移す。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

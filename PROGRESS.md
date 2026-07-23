@@ -1,5 +1,16 @@
 # 進捗
 
+## Product UX: directional RTP degradation evidence (2026-07-23)
+
+- 方向別RTP観測をloss/jitter/MOSのtyped transport eventへ投影し、連続観測をdegradation intervalへ集約。
+- provisional warning contractをloss 1%以上、jitter 30ms以上、MOS 3.5以下としてExpected evidenceにも明示。
+- 5秒以内の連続した悪化だけを同一windowへまとめ、連続lossは`RTP loss burst suspected`、単点はpacket loss/
+  jitter/MOS degradationとしてwarning incidentを生成する。
+- incidentはdirection、sample count、peak loss/jitter、minimum MOS、根拠event IDを持ち、Call inspectorの
+  evidence chainから各観測時刻へ移動できる。
+- aggregate RTCP/RTP statsだけではpacket gapを証明できないためconfidenceはmedium。sequence/arrival cadenceを
+  取得する次段でgap確定へ昇格する。製品全体は約77%。
+
 ## Product UX: persisted barge-in causal evidence (2026-07-23)
 
 - observer batchにsafe typed timeline eventを追加し、`timeline_events` table / migration

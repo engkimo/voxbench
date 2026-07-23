@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import struct
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,110 @@ def test_observer_streams_audio_metrics_sip_and_rtp_to_control_plane(tmp_path: P
         },
     )
     assert rejected.status_code == 409
+
+
+def test_rtp_degradation_projects_directional_evidence_windows(tmp_path: Path) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    run_id = client.post("/runs/observed", json=_observed_run_payload()).json()["run_id"]
+    t0 = datetime.fromisoformat(client.get(f"/runs/{run_id}/timeline").json()["t0"])
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+    observer.observe_rtp_stats(
+        RtpStats(
+            jitter_ms=12,
+            loss_pct=2,
+            mos=4.0,
+            direction="received",
+            ts=t0 + timedelta(seconds=1),
+        )
+    )
+    observer.observe_rtp_stats(
+        RtpStats(
+            jitter_ms=35,
+            loss_pct=3,
+            mos=3.2,
+            direction="received",
+            ts=t0 + timedelta(seconds=2),
+        )
+    )
+    observer.observe_rtp_stats(
+        RtpStats(
+            jitter_ms=45,
+            loss_pct=0.1,
+            mos=4.1,
+            direction="sent",
+            ts=t0 + timedelta(seconds=1, milliseconds=500),
+        )
+    )
+    observer.observe_rtp_stats(
+        RtpStats(
+            jitter_ms=5,
+            loss_pct=0,
+            mos=4.4,
+            direction="received",
+            ts=t0 + timedelta(seconds=8),
+        )
+    )
+
+    assert observer.flush() == 4
+    lanes = client.get(f"/runs/{run_id}/timeline").json()["lanes"]
+    transport_events = [
+        event for event in lanes["events"] if event["category"] == "transport"
+    ]
+    assert [event["name"] for event in transport_events] == [
+        "rtp.loss_elevated",
+        "rtp.jitter_elevated",
+        "rtp.jitter_elevated",
+        "rtp.loss_elevated",
+        "rtp.mos_degraded",
+    ]
+    assert {event["direction"] for event in transport_events} == {"received", "sent"}
+    received_aliases = {
+        event["correlation_alias"]
+        for event in transport_events
+        if event["direction"] == "received"
+    }
+    assert len(received_aliases) == 1
+
+    transport_intervals = [
+        interval
+        for interval in lanes["intervals"]
+        if interval["category"] == "transport"
+    ]
+    assert len(transport_intervals) == 2
+    assert transport_intervals[0]["start_ms"] == pytest.approx(1000)
+    assert transport_intervals[0]["end_ms"] == pytest.approx(2000)
+
+    transport_incidents = [
+        incident
+        for incident in lanes["incidents"]
+        if incident["category"] == "transport"
+    ]
+    received_incident = next(
+        incident
+        for incident in transport_incidents
+        if incident["direction"] == "received"
+    )
+    sent_incident = next(
+        incident for incident in transport_incidents if incident["direction"] == "sent"
+    )
+    assert received_incident["title"] == "RTP loss burst suspected"
+    assert received_incident["confidence"] == "medium"
+    assert received_incident["observed"] == {
+        "sample_count": 2,
+        "triggers": ["jitter", "loss", "mos"],
+        "peak_loss_pct": 3.0,
+        "peak_jitter_ms": 35.0,
+        "minimum_mos": 3.2,
+        "loss_burst_suspected": True,
+    }
+    assert received_incident["evidence_refs"] == [
+        "rtp:0:loss",
+        "rtp:1:loss",
+        "rtp:1:jitter",
+        "rtp:1:mos",
+    ]
+    assert sent_incident["title"] == "RTP jitter elevated"
+    assert sent_incident["observed"]["loss_burst_suspected"] is False
 
 
 def test_observation_batch_rejects_unknown_stage_and_raw_sip_fields(tmp_path: Path) -> None:
