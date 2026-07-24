@@ -397,6 +397,15 @@ delta reaches 1 dB, carrying input/output RMS, delta dB, and applied gain. These
 signal-level measurements, not LUFS loudness, true peak, or clipping measurements;
 those require dedicated collectors before VoxBench can make those claims.
 
+Observed PCM Stage output now includes sample peak dBFS, PCM16 full-scale sample
+percentage, digital-silence sample percentage, and chunk duration. The first Stage
+where full-scale endpoint samples appear produces a medium-confidence
+`Clipping suspected` incident; downstream propagation does not create duplicate
+incidents. This is not an intersample true-peak or definitive clipping measurement.
+Digital silence below -60 dBFS for at least 98% of samples is joined into evidence
+windows of 200 ms or longer. Silence remains evidence-only until caller/assistant
+speech context can establish that the interval was unexpected.
+
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
 the UI falls back to REST polling if the socket is unavailable.

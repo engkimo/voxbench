@@ -1119,12 +1119,14 @@ _TYPED_BARGE_IN_METRICS = {
 
 _TIMELINE_UNITS = {
     "active_tasks": "count",
+    "audio_chunk_duration_ms": "ms",
     "cpu": "percent",
     "delta_db": "dB",
     "frame_cadence_jitter_ms": "ms",
     "frames_in": "count",
     "frames_out": "count",
     "gain_applied": "ratio",
+    "full_scale_sample_pct": "percent",
     "input_rms": "pcm-rms",
     "jitter_ms": "ms",
     "loop_lag": "ms",
@@ -1134,6 +1136,8 @@ _TIMELINE_UNITS = {
     "output_rms": "pcm-rms",
     "provider_input_rms": "pcm-rms",
     "rtt_ms": "ms",
+    "sample_peak_dbfs": "dBFS",
+    "silence_sample_pct": "percent",
 }
 
 RTP_LOSS_WARNING_PCT = 1.0
@@ -1141,6 +1145,10 @@ RTP_JITTER_WARNING_MS = 30.0
 RTP_MOS_WARNING_SCORE = 3.5
 RTP_DEGRADATION_WINDOW_GAP_MS = 5_000.0
 STAGE_LEVEL_EVENT_THRESHOLD_DB = 1.0
+STAGE_SILENCE_THRESHOLD_DBFS = -60.0
+STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
+STAGE_SILENCE_MIN_WINDOW_MS = 200.0
+STAGE_SILENCE_MAX_OBSERVATION_GAP_MS = 100.0
 
 
 @dataclass(frozen=True)
@@ -1196,6 +1204,34 @@ class _DurationContractionEvidence:
         return f"media-time:{self.stage}:{self.verification_index}"
 
 
+@dataclass(frozen=True)
+class _StageFullScaleEvidence:
+    stage: str
+    previous_stage: str | None
+    t_rel_ms: float
+    full_scale_sample_pct: float
+    sample_peak_dbfs: float | None
+    sample_count: int
+
+    @property
+    def event_id(self) -> str:
+        return f"stage-full-scale:{self.stage}"
+
+
+@dataclass(frozen=True)
+class _StageSilenceWindow:
+    stage: str
+    window_index: int
+    start_ms: float
+    end_ms: float
+    observation_count: int
+    peak_silence_sample_pct: float
+
+    @property
+    def correlation_alias(self) -> str:
+        return f"stage-silence:{self.stage}:{self.window_index}"
+
+
 def _stage_signal_evidence(run: StoredRun) -> list[_StageSignalEvidence]:
     metric_names = {"input_rms", "output_rms", "delta_db", "gain_applied"}
     bundles: dict[tuple[str, datetime], dict[str, float]] = {}
@@ -1234,6 +1270,114 @@ def _stage_signal_evidence(run: StoredRun) -> list[_StageSignalEvidence]:
             )
         )
     return evidence
+
+
+def _stage_quality_bundles(
+    run: StoredRun,
+) -> dict[str, list[tuple[datetime, dict[str, float]]]]:
+    quality_metric_names = {
+        "audio_chunk_duration_ms",
+        "full_scale_sample_pct",
+        "sample_peak_dbfs",
+        "silence_sample_pct",
+    }
+    bundles: dict[tuple[str, datetime], dict[str, float]] = {}
+    for metric in run.metrics:
+        if metric.stage is None or metric.name not in quality_metric_names:
+            continue
+        bundles.setdefault((metric.stage, metric.ts), {})[metric.name] = metric.value
+    by_stage: dict[str, list[tuple[datetime, dict[str, float]]]] = {}
+    for (stage, ts), values in bundles.items():
+        by_stage.setdefault(stage, []).append((ts, values))
+    return {
+        stage: sorted(values, key=lambda item: item[0])
+        for stage, values in by_stage.items()
+    }
+
+
+def _stage_full_scale_evidence(run: StoredRun) -> list[_StageFullScaleEvidence]:
+    bundles_by_stage = _stage_quality_bundles(run)
+    evidence: list[_StageFullScaleEvidence] = []
+    previous_stage: str | None = None
+    previous_peak_pct: float | None = None
+    for stage in _pipeline_stage_names(run):
+        bundles = bundles_by_stage.get(stage, [])
+        candidates = [
+            (ts, values)
+            for ts, values in bundles
+            if values.get("full_scale_sample_pct", 0.0) > 0.0
+        ]
+        current_peak_pct = max(
+            (values.get("full_scale_sample_pct", 0.0) for _, values in bundles),
+            default=0.0,
+        )
+        if candidates and (previous_peak_pct is None or previous_peak_pct <= 0.0):
+            ts, values = max(
+                candidates,
+                key=lambda item: (item[1]["full_scale_sample_pct"], item[0]),
+            )
+            evidence.append(
+                _StageFullScaleEvidence(
+                    stage=stage,
+                    previous_stage=previous_stage,
+                    t_rel_ms=_relative_seconds(ts, run.started_at) * 1000,
+                    full_scale_sample_pct=values["full_scale_sample_pct"],
+                    sample_peak_dbfs=values.get("sample_peak_dbfs"),
+                    sample_count=len(bundles),
+                )
+            )
+        previous_stage = stage
+        previous_peak_pct = current_peak_pct if bundles else None
+    return evidence
+
+
+def _stage_silence_windows(run: StoredRun) -> list[_StageSilenceWindow]:
+    bundles_by_stage = _stage_quality_bundles(run)
+    windows: list[_StageSilenceWindow] = []
+    for stage in _pipeline_stage_names(run):
+        current: list[tuple[float, float, float]] = []
+
+        def finish_window(stage_name: str = stage) -> None:
+            nonlocal current
+            duration_ms = sum(item[1] for item in current)
+            if current and duration_ms >= STAGE_SILENCE_MIN_WINDOW_MS:
+                windows.append(
+                    _StageSilenceWindow(
+                        stage=stage_name,
+                        window_index=sum(
+                            window.stage == stage_name for window in windows
+                        ),
+                        start_ms=current[0][0],
+                        end_ms=current[0][0] + duration_ms,
+                        observation_count=len(current),
+                        peak_silence_sample_pct=max(item[2] for item in current),
+                    )
+                )
+            current = []
+
+        for ts, values in bundles_by_stage.get(stage, []):
+            silence_pct = values.get("silence_sample_pct")
+            duration_ms = values.get("audio_chunk_duration_ms")
+            if (
+                silence_pct is None
+                or duration_ms is None
+                or duration_ms <= 0
+                or silence_pct < STAGE_SILENCE_SAMPLE_THRESHOLD_PCT
+            ):
+                finish_window()
+                continue
+            start_ms = _relative_seconds(ts, run.started_at) * 1000
+            if current:
+                previous_start_ms, previous_duration_ms, _ = current[-1]
+                allowed_gap_ms = max(
+                    STAGE_SILENCE_MAX_OBSERVATION_GAP_MS,
+                    previous_duration_ms * 2,
+                )
+                if start_ms - previous_start_ms > allowed_gap_ms:
+                    finish_window()
+            current.append((start_ms, duration_ms, silence_pct))
+        finish_window()
+    return windows
 
 
 def _duration_contraction_evidence(
@@ -1443,6 +1587,47 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
             )
         )
 
+    for item in _stage_full_scale_evidence(run):
+        events.append(
+            TimelineTypedEvent(
+                event_id=item.event_id,
+                category="pipeline",
+                name="stage.full_scale_samples_detected",
+                t_rel_ms=item.t_rel_ms,
+                clock_domain="control_plane_wall",
+                stage=item.stage,
+                source="pcm_sample_quality",
+                correlation_alias=item.event_id,
+                attributes={
+                    "previous_stage": item.previous_stage,
+                    "full_scale_sample_pct": item.full_scale_sample_pct,
+                    "sample_peak_dbfs": item.sample_peak_dbfs,
+                    "sample_count": item.sample_count,
+                    "clipping_status": "suspected",
+                },
+            )
+        )
+
+    for item in _stage_silence_windows(run):
+        events.append(
+            TimelineTypedEvent(
+                event_id=f"{item.correlation_alias}:start",
+                category="pipeline",
+                name="stage.digital_silence_started",
+                t_rel_ms=item.start_ms,
+                clock_domain="control_plane_wall",
+                stage=item.stage,
+                source="pcm_sample_quality",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": item.end_ms - item.start_ms,
+                    "observation_count": item.observation_count,
+                    "peak_silence_sample_pct": item.peak_silence_sample_pct,
+                    "silence_threshold_dbfs": STAGE_SILENCE_THRESHOLD_DBFS,
+                },
+            )
+        )
+
     for item in _duration_contraction_evidence(run):
         events.append(
             TimelineTypedEvent(
@@ -1539,6 +1724,26 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 stage=stage,
                 source="otel_span",
                 attributes={"duration_ms": end_ms - start_ms},
+            )
+        )
+    for item in _stage_silence_windows(run):
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=item.correlation_alias,
+                category="pipeline",
+                name="digital_silence",
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                clock_domain="control_plane_wall",
+                stage=item.stage,
+                source="pcm_sample_quality",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": item.end_ms - item.start_ms,
+                    "observation_count": item.observation_count,
+                    "peak_silence_sample_pct": item.peak_silence_sample_pct,
+                    "incident_status": "evidence_only_without_speech_context",
+                },
             )
         )
     for correlation_alias, events in _correlated_barge_in_events(run).items():
@@ -1773,6 +1978,45 @@ def _typed_timeline_incidents(
             )
         )
         failure_index += 1
+    for item in _stage_full_scale_evidence(run):
+        evidence_refs = []
+        previous_artifact_id = artifact_by_stage.get(item.previous_stage)
+        if previous_artifact_id is not None:
+            evidence_refs.append(previous_artifact_id)
+        artifact_id = artifact_by_stage.get(item.stage)
+        if artifact_id is not None:
+            evidence_refs.append(artifact_id)
+        evidence_refs.append(item.event_id)
+        incidents.append(
+            TimelineIncident(
+                incident_id=f"full-scale:{item.stage}",
+                rule_id="pcm_full_scale_samples_v1",
+                category="pipeline",
+                severity="warning",
+                title=f"Clipping suspected at {item.stage}",
+                summary=(
+                    f"{item.full_scale_sample_pct:.3g}% of observed samples reached "
+                    "a PCM16 full-scale endpoint"
+                ),
+                start_ms=item.t_rel_ms,
+                end_ms=item.t_rel_ms,
+                confidence="medium",
+                stage=item.stage,
+                observed={
+                    "full_scale_sample_pct": item.full_scale_sample_pct,
+                    "sample_peak_dbfs": item.sample_peak_dbfs,
+                    "sample_count": item.sample_count,
+                    "first_observed_after_stage": item.previous_stage,
+                },
+                expected={
+                    "full_scale_sample_pct": 0.0,
+                    "clipping_confirmation": (
+                        "waveform plateau or oversampled true-peak evidence required"
+                    ),
+                },
+                evidence_refs=evidence_refs,
+            )
+        )
     if run.failure_alias is not None:
         incidents.append(
             TimelineIncident(

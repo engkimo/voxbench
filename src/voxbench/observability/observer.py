@@ -16,6 +16,11 @@ from urllib.request import Request, urlopen
 
 SipDirection = Literal["in", "out"]
 RtpDirection = Literal["received", "sent"]
+PCM16_FULL_SCALE = 32768.0
+PCM16_SILENCE_THRESHOLD_DBFS = -60.0
+PCM16_SILENCE_AMPLITUDE = round(
+    PCM16_FULL_SCALE * 10 ** (PCM16_SILENCE_THRESHOLD_DBFS / 20.0)
+)
 TimelineCategory = Literal[
     "conversation",
     "signaling",
@@ -252,9 +257,21 @@ class VoxBenchObserver:
     ) -> None:
         """Measure one stage boundary and optionally retain its output as a WAV tap."""
 
+        if sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be positive")
+        if channels <= 0:
+            raise ValueError("channels must be positive")
+        if len(output_pcm_s16le) % (2 * channels):
+            raise ValueError("output PCM16LE must contain complete channel frames")
         observed_at = ts or _utc_now()
         input_rms = pcm_s16le_rms(input_pcm_s16le)
         output_rms = pcm_s16le_rms(output_pcm_s16le)
+        sample_peak_dbfs, full_scale_sample_pct, silence_sample_pct = (
+            pcm_s16le_quality(output_pcm_s16le)
+        )
+        sample_count = len(output_pcm_s16le) // 2
+        frame_count = sample_count / channels
+        chunk_duration_ms = frame_count / sample_rate_hz * 1000.0
         metrics = [
             MetricPoint(stage=stage, name="input_rms", value=input_rms, ts=observed_at),
             MetricPoint(stage=stage, name="output_rms", value=output_rms, ts=observed_at),
@@ -262,6 +279,30 @@ class VoxBenchObserver:
                 stage=stage,
                 name="delta_db",
                 value=_delta_db(input_rms, output_rms),
+                ts=observed_at,
+            ),
+            MetricPoint(
+                stage=stage,
+                name="sample_peak_dbfs",
+                value=sample_peak_dbfs,
+                ts=observed_at,
+            ),
+            MetricPoint(
+                stage=stage,
+                name="full_scale_sample_pct",
+                value=full_scale_sample_pct,
+                ts=observed_at,
+            ),
+            MetricPoint(
+                stage=stage,
+                name="silence_sample_pct",
+                value=silence_sample_pct,
+                ts=observed_at,
+            ),
+            MetricPoint(
+                stage=stage,
+                name="audio_chunk_duration_ms",
+                value=chunk_duration_ms,
                 ts=observed_at,
             ),
         ]
@@ -366,6 +407,32 @@ def pcm_s16le_rms(pcm: bytes) -> float:
     samples = struct.iter_unpack("<h", pcm)
     square_sum = sum(sample[0] * sample[0] for sample in samples)
     return math.sqrt(square_sum / sample_count)
+
+
+def pcm_s16le_quality(pcm: bytes) -> tuple[float, float, float]:
+    """Return sample peak dBFS, full-scale sample %, and digital-silence sample %."""
+
+    if len(pcm) % 2:
+        raise ValueError("PCM16LE data length must be divisible by two")
+    sample_count = 0
+    peak = 0
+    full_scale_count = 0
+    silence_count = 0
+    for (value,) in struct.iter_unpack("<h", pcm):
+        sample_count += 1
+        peak = max(peak, abs(value))
+        full_scale_count += value in {-32768, 32767}
+        silence_count += abs(value) <= PCM16_SILENCE_AMPLITUDE
+    if sample_count == 0:
+        return -120.0, 0.0, 0.0
+    sample_peak_dbfs = (
+        20.0 * math.log10(peak / PCM16_FULL_SCALE) if peak > 0 else -120.0
+    )
+    return (
+        sample_peak_dbfs,
+        full_scale_count / sample_count * 100.0,
+        silence_count / sample_count * 100.0,
+    )
 
 
 def _delta_db(input_rms: float, output_rms: float) -> float:

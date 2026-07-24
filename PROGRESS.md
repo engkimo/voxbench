@@ -1,5 +1,17 @@
 # 進捗
 
+## Product UX: PCM peak, clipping suspicion, and silence evidence (2026-07-24)
+
+- Stage output PCMから`sample_peak_dbfs`、`full_scale_sample_pct`、`silence_sample_pct`、
+  `audio_chunk_duration_ms`を依存追加なしで観測し、既存metric/series/Postgres経路へ保存。
+- PCM16 extrema sampleが最初に出現したStageを`stage.full_scale_samples_detected` eventと
+  `Clipping suspected` warningへ投影。sample peak、extrema率、直前/現在録音をevidenceに持つ。
+- upstreamですでにfull-scaleなら下流Stageへ同じincidentを量産しない。clipping確定にはplateau/oversampled
+  true peakが必要としてconfidence mediumを維持する。
+- -60dBFS以下が98%以上のchunkを連結し、200ms以上を`digital_silence` intervalとして表示。発話文脈なしでは
+  正常なpauseと区別できないためevidence-onlyで、false positive incidentを出さない。
+- LUFSとintersample true peakは未実装のまま正直に分離。製品全体は約81%。
+
 ## Product UX: Stage media-time and signal-level causality (2026-07-23)
 
 - failed `duration_preserving` verificationを共通時間軸上の`stage.media_time_contracted` eventへ変換。

@@ -440,6 +440,12 @@ recording artifactとcontraction eventを同じincidentへ結ぶ。level変化�
 delta dB、gain appliedを束ね、Stageごとに絶対値最大の変化（1dB以上）をevent化する。RMS/dBをLUFSや知覚
 loudnessと呼ばない。LUFS、true peak、clipping率は専用collectorを追加してから別contractとして扱う。
 
+PCM sample quality collectorはStage outputごとにsample peak dBFS、PCM16 extrema sample率、-60dBFS以下の
+sample率、chunk durationを測る。extrema sampleはclippingの必要条件になり得るが十分条件ではないため、最初に
+出現したStageだけを`Clipping suspected`（medium confidence）とし、waveform plateauまたはoversampled true
+peakなしにclippingを確定しない。98%以上digital silenceが200ms以上連続した区間はevidenceとして表示するが、
+発話区間との重なりが分からない段階では異常incidentにしない。sample peakをintersample true peakと呼ばない。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

@@ -92,7 +92,7 @@ def test_observer_streams_audio_metrics_sip_and_rtp_to_control_plane(tmp_path: P
         )
     )
 
-    assert observer.flush() == 7
+    assert observer.flush() == 11
     assert observer.pending_count == 0
 
     timeline = client.get(f"/runs/{run_id}/timeline").json()
@@ -106,6 +106,10 @@ def test_observer_streams_audio_metrics_sip_and_rtp_to_control_plane(tmp_path: P
     assert agc_metrics["output_rms"] == pytest.approx(2000.0)
     assert agc_metrics["delta_db"] == pytest.approx(6.0206, rel=1e-4)
     assert agc_metrics["gain_applied"] == pytest.approx(2.0)
+    assert agc_metrics["sample_peak_dbfs"] == pytest.approx(-24.2884, rel=1e-4)
+    assert agc_metrics["full_scale_sample_pct"] == 0.0
+    assert agc_metrics["silence_sample_pct"] == 0.0
+    assert agc_metrics["audio_chunk_duration_ms"] == 10.0
     assert len(timeline["lanes"]["sip_ladder"]) == 1
     assert len(timeline["lanes"]["rtp_quality"]) == 1
     assert timeline["lanes"]["rtp_quality"][0]["direction"] == "received"
@@ -128,6 +132,83 @@ def test_observer_streams_audio_metrics_sip_and_rtp_to_control_plane(tmp_path: P
         },
     )
     assert rejected.status_code == 409
+
+
+def test_pcm_quality_projects_clipping_suspicion_and_silence_window(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    run_id = client.post("/runs/observed", json=_observed_run_payload()).json()["run_id"]
+    t0 = datetime.fromisoformat(client.get(f"/runs/{run_id}/timeline").json()["t0"])
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+    full_scale = _pcm(32767)
+    observer.observe_stage_audio(
+        stage="resampler",
+        input_pcm_s16le=full_scale,
+        output_pcm_s16le=full_scale,
+        sample_rate_hz=8_000,
+        ts=t0 + timedelta(milliseconds=100),
+    )
+    silence = _pcm(0)
+    for index in range(10):
+        observer.observe_stage_audio(
+            stage="agc",
+            input_pcm_s16le=silence,
+            output_pcm_s16le=silence,
+            sample_rate_hz=8_000,
+            record_output=False,
+            ts=t0 + timedelta(seconds=1, milliseconds=index * 20),
+        )
+
+    assert observer.flush() == 78
+    lanes = client.get(f"/runs/{run_id}/timeline").json()["lanes"]
+    full_scale_event = next(
+        event
+        for event in lanes["events"]
+        if event["name"] == "stage.full_scale_samples_detected"
+    )
+    assert full_scale_event["stage"] == "resampler"
+    assert full_scale_event["attributes"]["full_scale_sample_pct"] == 100.0
+    assert full_scale_event["attributes"]["sample_peak_dbfs"] == pytest.approx(
+        -0.000265,
+        rel=1e-3,
+    )
+    clipping_incident = next(
+        incident
+        for incident in lanes["incidents"]
+        if incident["rule_id"] == "pcm_full_scale_samples_v1"
+    )
+    assert clipping_incident["title"] == "Clipping suspected at resampler"
+    assert clipping_incident["confidence"] == "medium"
+    assert clipping_incident["evidence_refs"] == [
+        "recording:0",
+        "stage-full-scale:resampler",
+    ]
+
+    silence_event = next(
+        event
+        for event in lanes["events"]
+        if event["name"] == "stage.digital_silence_started"
+    )
+    silence_interval = next(
+        interval
+        for interval in lanes["intervals"]
+        if interval["name"] == "digital_silence"
+    )
+    assert silence_event["stage"] == "agc"
+    assert silence_event["t_rel_ms"] == pytest.approx(1000)
+    assert silence_interval["start_ms"] == pytest.approx(1000)
+    assert silence_interval["end_ms"] == pytest.approx(1200)
+    assert silence_interval["attributes"] == {
+        "duration_ms": 200.0,
+        "observation_count": 10,
+        "peak_silence_sample_pct": 100.0,
+        "incident_status": "evidence_only_without_speech_context",
+    }
+    assert all(
+        incident["rule_id"] != "digital_silence"
+        for incident in lanes["incidents"]
+    )
 
 
 def test_rtp_degradation_projects_directional_evidence_windows(tmp_path: Path) -> None:
