@@ -453,6 +453,18 @@ aliasで投影する。その区間と最終pipeline Stageのdigital silenceが2
 assistant出力境界の証拠だが、remote endpointのjitter buffer、decode、speaker playoutは観測していない。
 したがって「相手に無音が聞こえた」とは断定せず、incidentのObserved/Expectedにremote playout未観測を明記する。
 
+provider input VADのspeech start/stopは同じsafe correlation aliasで`caller_speech` intervalへ投影する。stop通知が
+欠けた場合はrun終端までの区間とし、bridge close時に`completion_observed=false`を残す。これはprovider VADの
+判断区間であり、sample-accurateなcaller waveform segmentationではない。
+
+assistant playbackはAudioSocket bridgeがframeをsocketへ書き始めた点をstart、最後に書いたframeの予定時間経過、
+barge-in、stream end、call closeをstopとしてburst単位で記録する。前frame完了後の待ちがそのframe durationを
+超えた場合はmedia gapとしてburstを分ける。provider item IDは保存せずprocess-local safe aliasだけを使い、
+`written_audio_ms`はAsteriskへ書いたPCM時間を表す。remote jitter buffer、decode、speaker playoutを観測した値
+ではない。playback evidenceを持つrunではdead-air相関をprovider response・最終Stage silence・playbackの
+3区間intersectionへ狭め、bridgeが音声を書いていない生成待ちをdead airと誤認しない。旧runはprovider lifecycle
+だけを使うfallbackを維持する。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

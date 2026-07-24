@@ -1,5 +1,18 @@
 # 進捗
 
+## Product UX: typed caller speech and assistant playback (2026-07-24)
+
+- provider VADの`input_speech_started` / `stopped`を同一safe correlation aliasで永続化し、
+  `caller_speech` intervalへ投影。stop欠落時はcall closeで`completion_observed=false`を明示する。
+- AudioSocketへ実際にframeを書き始めた時刻とburst終了を`assistant_playback_started` / `stopped` event、
+  `assistant_playback` intervalとして記録。raw provider item IDは保存せず、書き込んだaudio時間だけを保持する。
+- 前frame完了から次frame開始までが前frame durationを超えた場合は別playback burstとし、無音gapを1本の
+  playback envelopeで覆わない。barge-in、stream end、call closeもstop reasonとして区別する。
+- playback evidenceがあるrunのdead-air warningは、provider response・最終Stage digital silence・実playbackの
+  3区間が200ms以上重なる場合だけ生成。旧runはprovider context fallbackを維持する。
+- bridge frame writeはAsteriskへ渡した境界でありremote playoutではない。caller VADもprovider判定境界として
+  表示し、sample-accurate speechや相手の可聴状態を断定しない。製品全体は約85%。
+
 ## Product UX: provider-response dead-air correlation (2026-07-24)
 
 - 既存の`provider_response_started` / `provider_response_done` metricを、同一correlation aliasを持つ

@@ -1263,9 +1263,32 @@ class _ProviderResponseEvidence:
 
 
 @dataclass(frozen=True)
+class _CorrelatedActivityEvidence:
+    correlation_alias: str
+    start_event: TimelineEventArtifact
+    stop_event: TimelineEventArtifact | None
+    start_ms: float
+    end_ms: float
+
+    @property
+    def completion_observed(self) -> bool:
+        if self.stop_event is None:
+            return False
+        return self.stop_event.attributes.get("completion_observed") is not False
+
+    @property
+    def evidence_refs(self) -> list[str]:
+        refs = [self.start_event.event_id]
+        if self.stop_event is not None:
+            refs.append(self.stop_event.event_id)
+        return refs
+
+
+@dataclass(frozen=True)
 class _AssistantOutputDeadAirEvidence:
     silence: _StageSilenceWindow
     provider_response: _ProviderResponseEvidence
+    assistant_playback: _CorrelatedActivityEvidence | None
     start_ms: float
     end_ms: float
 
@@ -1333,6 +1356,83 @@ def _provider_response_evidence(run: StoredRun) -> list[_ProviderResponseEvidenc
     return sorted(responses, key=lambda item: (item.start_ms, item.response_index))
 
 
+def _correlated_activity_evidence(
+    run: StoredRun,
+    *,
+    start_name: str,
+    stop_name: str,
+) -> list[_CorrelatedActivityEvidence]:
+    grouped: dict[str, list[TimelineEventArtifact]] = {}
+    for event in run.timeline_events:
+        if (
+            event.correlation_alias is None
+            or event.name not in {start_name, stop_name}
+        ):
+            continue
+        grouped.setdefault(event.correlation_alias, []).append(event)
+    evidence: list[_CorrelatedActivityEvidence] = []
+    timeline_end_ms = _run_timeline_duration_ms(run)
+    for correlation_alias, events in grouped.items():
+        ordered = sorted(events, key=lambda event: (event.ts, event.event_id))
+        start_event = next(
+            (event for event in ordered if event.name == start_name),
+            None,
+        )
+        if start_event is None:
+            continue
+        stop_event = next(
+            (
+                event
+                for event in ordered
+                if event.name == stop_name and event.ts >= start_event.ts
+            ),
+            None,
+        )
+        start_ms = max(
+            0.0,
+            _relative_seconds(start_event.ts, run.started_at) * 1000,
+        )
+        end_ms = (
+            max(
+                start_ms,
+                _relative_seconds(stop_event.ts, run.started_at) * 1000,
+            )
+            if stop_event is not None
+            else max(start_ms, timeline_end_ms)
+        )
+        evidence.append(
+            _CorrelatedActivityEvidence(
+                correlation_alias=correlation_alias,
+                start_event=start_event,
+                stop_event=stop_event,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+        )
+    return sorted(
+        evidence,
+        key=lambda item: (item.start_ms, item.correlation_alias),
+    )
+
+
+def _caller_speech_evidence(run: StoredRun) -> list[_CorrelatedActivityEvidence]:
+    return _correlated_activity_evidence(
+        run,
+        start_name="provider_input_speech_started",
+        stop_name="provider_input_speech_stopped",
+    )
+
+
+def _assistant_playback_evidence(
+    run: StoredRun,
+) -> list[_CorrelatedActivityEvidence]:
+    return _correlated_activity_evidence(
+        run,
+        start_name="assistant_playback_started",
+        stop_name="assistant_playback_stopped",
+    )
+
+
 def _assistant_output_dead_air_evidence(
     run: StoredRun,
 ) -> list[_AssistantOutputDeadAirEvidence]:
@@ -1345,21 +1445,38 @@ def _assistant_output_dead_air_evidence(
         for window in _stage_silence_windows(run)
         if window.stage == final_stage
     ]
+    playback_evidence = _assistant_playback_evidence(run)
+    playback_contexts: list[_CorrelatedActivityEvidence | None] = (
+        list(playback_evidence) if playback_evidence else [None]
+    )
     evidence: list[_AssistantOutputDeadAirEvidence] = []
     for silence in silence_windows:
         for response in _provider_response_evidence(run):
-            start_ms = max(silence.start_ms, response.start_ms)
-            end_ms = min(silence.end_ms, response.end_ms)
-            if end_ms - start_ms < ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS:
-                continue
-            evidence.append(
-                _AssistantOutputDeadAirEvidence(
-                    silence=silence,
-                    provider_response=response,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
+            for playback in playback_contexts:
+                start_ms = max(
+                    silence.start_ms,
+                    response.start_ms,
+                    playback.start_ms if playback is not None else 0.0,
                 )
-            )
+                end_ms = min(
+                    silence.end_ms,
+                    response.end_ms,
+                    playback.end_ms if playback is not None else response.end_ms,
+                )
+                if (
+                    end_ms - start_ms
+                    < ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS
+                ):
+                    continue
+                evidence.append(
+                    _AssistantOutputDeadAirEvidence(
+                        silence=silence,
+                        provider_response=response,
+                        assistant_playback=playback,
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                    )
+                )
     return evidence
 
 
@@ -1917,6 +2034,54 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 },
             )
         )
+    for item in _caller_speech_evidence(run):
+        stop_attributes = (
+            item.stop_event.attributes if item.stop_event is not None else {}
+        )
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=f"caller-speech:{item.correlation_alias}",
+                category="conversation",
+                name="caller_speech",
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                clock_domain="control_plane_wall",
+                direction="caller_to_assistant",
+                source="audiosocket_bridge",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": item.end_ms - item.start_ms,
+                    "completion_observed": item.completion_observed,
+                    "stop_reason": stop_attributes.get("stop_reason"),
+                    "observation_boundary": "provider_input_vad",
+                },
+            )
+        )
+    for item in _assistant_playback_evidence(run):
+        stop_attributes = (
+            item.stop_event.attributes if item.stop_event is not None else {}
+        )
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=f"assistant-playback:{item.correlation_alias}",
+                category="conversation",
+                name="assistant_playback",
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                clock_domain="control_plane_wall",
+                direction="assistant_to_caller",
+                source="audiosocket_bridge",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": item.end_ms - item.start_ms,
+                    "completion_observed": item.completion_observed,
+                    "written_audio_ms": stop_attributes.get("written_audio_ms"),
+                    "stop_reason": stop_attributes.get("stop_reason"),
+                    "observation_boundary": "audiosocket_frame_write",
+                    "remote_playout_observed": False,
+                },
+            )
+        )
     dead_air_silence_aliases = {
         item.silence.correlation_alias
         for item in _assistant_output_dead_air_evidence(run)
@@ -2230,6 +2395,14 @@ def _typed_timeline_incidents(
         )
         if response.done_event_id is not None:
             evidence_refs.append(response.done_event_id)
+        if item.assistant_playback is not None:
+            evidence_refs.extend(item.assistant_playback.evidence_refs)
+        playback_stop_attributes = (
+            item.assistant_playback.stop_event.attributes
+            if item.assistant_playback is not None
+            and item.assistant_playback.stop_event is not None
+            else {}
+        )
         incidents.append(
             TimelineIncident(
                 incident_id=(
@@ -2242,7 +2415,12 @@ def _typed_timeline_incidents(
                 title="Assistant output dead air suspected",
                 summary=(
                     f"{item.overlap_ms:g} ms digital silence at "
-                    f"{item.silence.stage} while provider response was active"
+                    f"{item.silence.stage} "
+                    + (
+                        "during observed assistant playback"
+                        if item.assistant_playback is not None
+                        else "while provider response was active"
+                    )
                 ),
                 start_ms=item.start_ms,
                 end_ms=item.end_ms,
@@ -2258,6 +2436,12 @@ def _typed_timeline_incidents(
                         response.end_ms - response.start_ms
                     ),
                     "provider_completion_observed": response.completed,
+                    "assistant_playback_observed": (
+                        item.assistant_playback is not None
+                    ),
+                    "assistant_playback_written_audio_ms": (
+                        playback_stop_attributes.get("written_audio_ms")
+                    ),
                     "remote_playout_observed": False,
                 },
                 expected={

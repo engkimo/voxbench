@@ -413,6 +413,21 @@ cursor. Silence at an intermediate Stage or outside the provider interval remain
 evidence-only. Confidence stays medium because remote decode and playout are not
 observed; VoxBench does not claim that the caller definitively heard silence.
 
+Provider input VAD start and stop notifications now form a typed `caller_speech`
+interval. Missing stop notifications are closed at the run boundary with
+`completion_observed: false`, rather than being presented as a complete turn.
+AudioSocket frame writes similarly produce `assistant_playback` bursts with a
+safe local correlation alias, written PCM duration, and an explicit stop reason
+such as media gap, barge-in, stream end, or call close. Raw provider item IDs are
+not persisted. These intervals describe provider VAD and bridge socket writes,
+not sample-accurate speech segmentation or remote audible playout.
+
+For runs carrying playback evidence, dead-air correlation now requires at least
+200 ms of overlap across the provider response, final-Stage digital silence, and
+observed assistant playback. This avoids classifying a response-generation wait
+where the bridge has not started writing audio as playback dead air. Older runs
+without playback events retain the provider-response fallback.
+
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
 the UI falls back to REST polling if the socket is unavailable.

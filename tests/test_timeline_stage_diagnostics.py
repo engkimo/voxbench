@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from voxbench.control_plane.run_api import StoredRun
-from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact
+from voxbench.engine_harness.models import (
+    MetricArtifact,
+    RecordingArtifact,
+    TimelineEventArtifact,
+)
 from voxbench.verification import VerificationResult
 
 
@@ -311,6 +315,8 @@ def test_timeline_correlates_final_stage_silence_with_provider_response() -> Non
         "silence_window_duration_ms": 300,
         "provider_response_duration_ms": 500,
         "provider_completion_observed": True,
+        "assistant_playback_observed": False,
+        "assistant_playback_written_audio_ms": None,
         "remote_playout_observed": False,
     }
     assert incident.expected == {
@@ -322,4 +328,166 @@ def test_timeline_correlates_final_stage_silence_with_provider_response() -> Non
         "stage-silence:serializer:0:start",
         "provider-response:0:start",
         "provider-response:0:done",
+    ]
+
+
+def test_timeline_projects_speech_playback_and_narrows_dead_air() -> None:
+    t0 = datetime(2026, 7, 24, tzinfo=UTC)
+    metrics = [
+        MetricArtifact(
+            stage=None,
+            name="provider_response_started",
+            value=1,
+            ts=t0,
+        ),
+        MetricArtifact(
+            stage=None,
+            name="provider_response_done",
+            value=1,
+            ts=t0 + timedelta(seconds=1),
+        ),
+    ]
+    for chunk_index in range(40):
+        ts = t0 + timedelta(milliseconds=chunk_index * 20)
+        metrics.extend(
+            [
+                MetricArtifact(
+                    stage="serializer",
+                    name="silence_sample_pct",
+                    value=100,
+                    ts=ts,
+                ),
+                MetricArtifact(
+                    stage="serializer",
+                    name="audio_chunk_duration_ms",
+                    value=20,
+                    ts=ts,
+                ),
+            ]
+        )
+    run = StoredRun(
+        run_id="timeline-speech-playback",
+        config_hash="config-hash",
+        call_id=None,
+        conversation_id="conversation-alias",
+        provider="provider-alias",
+        engine="engine-alias",
+        status="completed",
+        started_at=t0,
+        ended_at=t0 + timedelta(seconds=1),
+        resolved_config={
+            "spec": {
+                "media": {
+                    "pipeline": [
+                        {"type": "serializer"},
+                    ]
+                }
+            }
+        },
+        recordings=[
+            RecordingArtifact(
+                stage="serializer",
+                uri="recording-ref-serializer",
+                format={"encoding": "pcm16", "rate": 8000, "channels": 1},
+                duration_ms=1000,
+            )
+        ],
+        spans=[],
+        metrics=metrics,
+        verifications=[],
+        timeline_events=[
+            TimelineEventArtifact(
+                event_id="caller-turn-1:start",
+                category="conversation",
+                name="provider_input_speech_started",
+                ts=t0 + timedelta(milliseconds=100),
+                source="audiosocket_bridge",
+                correlation_alias="caller-turn-1",
+                direction="caller_to_assistant",
+            ),
+            TimelineEventArtifact(
+                event_id="caller-turn-1:stop",
+                category="conversation",
+                name="provider_input_speech_stopped",
+                ts=t0 + timedelta(milliseconds=450),
+                source="audiosocket_bridge",
+                correlation_alias="caller-turn-1",
+                direction="caller_to_assistant",
+                attributes={
+                    "completion_observed": True,
+                    "stop_reason": "provider_speech_stopped",
+                },
+            ),
+            TimelineEventArtifact(
+                event_id="assistant-playback-1:start",
+                category="conversation",
+                name="assistant_playback_started",
+                ts=t0 + timedelta(milliseconds=300),
+                source="audiosocket_bridge",
+                correlation_alias="assistant-playback-1",
+                direction="assistant_to_caller",
+                attributes={"frame_duration_ms": 20},
+            ),
+            TimelineEventArtifact(
+                event_id="assistant-playback-1:stop",
+                category="conversation",
+                name="assistant_playback_stopped",
+                ts=t0 + timedelta(milliseconds=650),
+                source="audiosocket_bridge",
+                correlation_alias="assistant-playback-1",
+                direction="assistant_to_caller",
+                attributes={
+                    "written_audio_ms": 340,
+                    "stop_reason": "stream_ended",
+                },
+            ),
+        ],
+    )
+
+    lanes = run.to_timeline().lanes
+    caller_speech = next(
+        interval for interval in lanes.intervals if interval.name == "caller_speech"
+    )
+    assert caller_speech.start_ms == 100
+    assert caller_speech.end_ms == 450
+    assert caller_speech.direction == "caller_to_assistant"
+    assert caller_speech.attributes == {
+        "duration_ms": 350,
+        "completion_observed": True,
+        "stop_reason": "provider_speech_stopped",
+        "observation_boundary": "provider_input_vad",
+    }
+
+    playback = next(
+        interval
+        for interval in lanes.intervals
+        if interval.name == "assistant_playback"
+    )
+    assert playback.start_ms == 300
+    assert playback.end_ms == 650
+    assert playback.direction == "assistant_to_caller"
+    assert playback.attributes == {
+        "duration_ms": 350,
+        "completion_observed": True,
+        "written_audio_ms": 340,
+        "stop_reason": "stream_ended",
+        "observation_boundary": "audiosocket_frame_write",
+        "remote_playout_observed": False,
+    }
+
+    dead_air = next(
+        incident
+        for incident in lanes.incidents
+        if incident.rule_id == "assistant_output_dead_air_v1"
+    )
+    assert dead_air.start_ms == 300
+    assert dead_air.end_ms == 650
+    assert dead_air.summary == (
+        "350 ms digital silence at serializer during observed assistant playback"
+    )
+    assert dead_air.observed["assistant_playback_observed"] is True
+    assert dead_air.observed["assistant_playback_written_audio_ms"] == 340
+    assert dead_air.evidence_refs[-2:] == [
+        "assistant-playback-1:start",
+        "assistant-playback-1:stop",
     ]

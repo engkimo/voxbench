@@ -14,6 +14,7 @@ from voxbench.media import resample_pcm16_mono
 from voxbench.observability import ObservationBatch, ObservationTransport, VoxBenchObserver
 from voxbench.realtime_providers import AudioChunk, PlaybackPosition, ProviderEvent
 from voxbench.telephony import (
+    AudioSocketFrame,
     AudioSocketLoopbackServer,
     AudioSocketRealtimeServer,
     LoopbackCallSession,
@@ -286,17 +287,91 @@ def test_realtime_call_session_drops_buffered_audio_on_barge_in() -> None:
         "provider_interrupt_requested",
         "playback_queue_cleared",
         "barge_in_completed",
+        "provider_input_speech_stopped",
     ]
     correlation_aliases = {event.correlation_alias for event in events}
     assert len(correlation_aliases) == 1
     correlation_alias = next(iter(correlation_aliases))
     assert correlation_alias is not None
     assert correlation_alias.startswith("barge-in-")
-    assert events[-2].attributes == {
+    assert events[-3].attributes == {
         "dropped_frames": 2,
         "discarded_audio_ms": 40,
     }
-    assert events[-1].attributes["interrupt_path"] == "provider-request"
+    assert events[-2].attributes["interrupt_path"] == "provider-request"
+    assert events[-1].attributes == {
+        "completion_observed": False,
+        "stop_reason": "call_closed",
+    }
+
+
+def test_realtime_call_session_observes_speech_and_playback_lifecycles() -> None:
+    async def scenario():
+        transport = CapturingTransport()
+        provider = FakeProviderSession(
+            messages=[
+                ProviderEvent("input_speech_started"),
+                ProviderEvent("input_speech_stopped"),
+            ]
+        )
+        session = RealtimeCallSession(
+            call_id="call-1",
+            observer=VoxBenchObserver("run-1", transport),
+            provider_session=provider,
+            complete_run=lambda: None,
+        )
+        assert [frame async for frame in session.receive_audio()] == []
+        frame = AudioSocketFrame(frame_type=0x10, payload=_pcm(500))
+        session.mark_output_started(frame)
+        session.mark_output_played(frame)
+        session.mark_output_ended()
+        await session.close()
+        return transport
+
+    transport = asyncio.run(scenario())
+    events = [
+        event
+        for batch in transport.batches
+        for event in batch.timeline_events
+    ]
+    caller_events = [
+        event
+        for event in events
+        if event.name
+        in {
+            "provider_input_speech_started",
+            "provider_input_speech_stopped",
+        }
+    ]
+    assert [event.name for event in caller_events] == [
+        "provider_input_speech_started",
+        "provider_input_speech_stopped",
+    ]
+    assert len({event.correlation_alias for event in caller_events}) == 1
+    assert caller_events[-1].attributes == {
+        "completion_observed": True,
+        "stop_reason": "provider_speech_stopped",
+    }
+
+    playback_events = [
+        event
+        for event in events
+        if event.name
+        in {
+            "assistant_playback_started",
+            "assistant_playback_stopped",
+        }
+    ]
+    assert [event.name for event in playback_events] == [
+        "assistant_playback_started",
+        "assistant_playback_stopped",
+    ]
+    assert len({event.correlation_alias for event in playback_events}) == 1
+    assert playback_events[0].attributes == {"frame_duration_ms": 20}
+    assert playback_events[1].attributes == {
+        "written_audio_ms": 20,
+        "stop_reason": "stream_ended",
+    }
 
 
 def test_realtime_call_session_truncates_openai_item_at_played_position() -> None:
@@ -364,9 +439,14 @@ def test_realtime_call_session_truncates_openai_item_at_played_position() -> Non
         "provider_truncate_requested",
         "playback_queue_cleared",
         "barge_in_completed",
+        "provider_input_speech_stopped",
     ]
     assert events[2].attributes["played_audio_end_ms"] == 20
-    assert events[-1].attributes["interrupt_path"] == "provider-auto"
+    assert events[-2].attributes["interrupt_path"] == "provider-auto"
+    assert events[-1].attributes == {
+        "completion_observed": False,
+        "stop_reason": "call_closed",
+    }
 
 
 def test_realtime_server_fails_when_persistent_provider_stream_ends() -> None:
@@ -540,6 +620,19 @@ def test_realtime_audiosocket_path_reaches_control_plane(tmp_path: Path) -> None
     assert {"provider_input_rms", "provider_response_started", "provider_response_done"} <= {
         metric["name"] for metric in timeline["host"]
     }
+    typed_event_names = {event["name"] for event in timeline["events"]}
+    assert {
+        "assistant_playback_started",
+        "assistant_playback_stopped",
+    } <= typed_event_names
+    playback_interval = next(
+        interval
+        for interval in timeline["intervals"]
+        if interval["name"] == "assistant_playback"
+    )
+    assert playback_interval["direction"] == "assistant_to_caller"
+    assert playback_interval["attributes"]["written_audio_ms"] == 20
+    assert playback_interval["attributes"]["remote_playout_observed"] is False
     recording_audio = client.get(f"/runs/{run_id}/recordings/agc/audio")
     assert recording_audio.status_code == 200
     assert recording_audio.content.startswith(b"RIFF")

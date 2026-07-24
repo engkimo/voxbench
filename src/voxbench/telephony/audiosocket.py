@@ -319,6 +319,14 @@ class RealtimeCallSession:
     _current_provider_item: tuple[str, int] | None = None
     _barge_in_sequence: int = 0
     _barge_in_session_alias: str = field(default_factory=lambda: uuid4().hex[:12])
+    _active_caller_speech_alias: str | None = None
+    _playback_sequence: int = 0
+    _playback_session_alias: str = field(default_factory=lambda: uuid4().hex[:12])
+    _active_playback_alias: str | None = None
+    _playback_written_audio_ms: float = 0.0
+    _playback_last_played_at: float | None = None
+    _playback_last_played_ts: datetime | None = None
+    _playback_last_frame_duration_ms: float | None = None
 
     async def send_audio(self, frame_type: int, pcm_s16le: bytes) -> None:
         input_rate = AUDIO_TYPE_SAMPLE_RATES[frame_type]
@@ -364,7 +372,18 @@ class RealtimeCallSession:
             async for message in self.provider_session.receive():
                 if isinstance(message, ProviderEvent):
                     self.observer.observe_metric(f"provider_{message.event_type}", 1.0)
+                    if message.event_type == "input_speech_stopped":
+                        self._end_caller_speech(
+                            completion_observed=True,
+                            stop_reason="provider_speech_stopped",
+                        )
+                        continue
                     if message.event_type in {"input_speech_started", "interrupted"}:
+                        if message.event_type == "input_speech_started":
+                            self._end_caller_speech(
+                                completion_observed=False,
+                                stop_reason="superseded_by_new_start",
+                            )
                         self._barge_in_sequence += 1
                         correlation_alias = (
                             f"barge-in-{self._barge_in_session_alias}-"
@@ -382,6 +401,8 @@ class RealtimeCallSession:
                             ),
                             direction="caller_to_assistant",
                         )
+                        if message.event_type == "input_speech_started":
+                            self._active_caller_speech_alias = correlation_alias
                         step += 1
                         interrupt_path = "provider-interrupted"
                         if message.event_type == "input_speech_started":
@@ -455,6 +476,10 @@ class RealtimeCallSession:
                                 attributes={"played_audio_end_ms": position.audio_end_ms},
                             )
                             step += 1
+                        self._end_assistant_playback(
+                            ts=datetime.now(UTC),
+                            stop_reason="barge_in",
+                        )
                         self._last_playback_position = None
                         self._last_enqueued_playback_position = None
                         self._inflight_playback_position = None
@@ -609,6 +634,13 @@ class RealtimeCallSession:
         return next_position
 
     def mark_output_played(self, frame: AudioSocketFrame) -> None:
+        if self._active_playback_alias is not None:
+            frame_duration_ms = (
+                len(frame.payload) / (2 * self.telephony_rate) * 1000
+            )
+            self._playback_last_played_at = monotonic()
+            self._playback_last_played_ts = datetime.now(UTC)
+            self._playback_last_frame_duration_ms = frame_duration_ms
         position = frame.playback_position
         if position is None or self._current_provider_item is None:
             return
@@ -620,10 +652,118 @@ class RealtimeCallSession:
             self._inflight_started_at = None
 
     def mark_output_started(self, frame: AudioSocketFrame) -> None:
+        now_monotonic = monotonic()
+        now = datetime.now(UTC)
+        if (
+            self._active_playback_alias is not None
+            and self._playback_last_played_at is not None
+            and self._playback_last_frame_duration_ms is not None
+            and (
+                (now_monotonic - self._playback_last_played_at) * 1000
+                > self._playback_last_frame_duration_ms
+            )
+        ):
+            self._end_assistant_playback(
+                ts=self._playback_last_played_ts or now,
+                stop_reason="media_gap",
+            )
+        if self._active_playback_alias is None:
+            self._playback_sequence += 1
+            self._active_playback_alias = (
+                f"assistant-playback-{self._playback_session_alias}-"
+                f"{self._playback_sequence}"
+            )
+            self._playback_written_audio_ms = 0.0
+            self._playback_last_played_at = None
+            self._playback_last_played_ts = None
+            self._playback_last_frame_duration_ms = None
+            self.observer.observe_timeline_event(
+                TimelineEvent(
+                    event_id=f"{self._active_playback_alias}:start",
+                    category="conversation",
+                    name="assistant_playback_started",
+                    source="audiosocket_bridge",
+                    correlation_alias=self._active_playback_alias,
+                    direction="assistant_to_caller",
+                    attributes={
+                        "frame_duration_ms": (
+                            len(frame.payload)
+                            / (2 * self.telephony_rate)
+                            * 1000
+                        )
+                    },
+                    ts=now,
+                )
+            )
+        self._playback_written_audio_ms += (
+            len(frame.payload) / (2 * self.telephony_rate) * 1000
+        )
         if frame.playback_position is None:
             return
         self._inflight_playback_position = frame.playback_position
-        self._inflight_started_at = monotonic()
+        self._inflight_started_at = now_monotonic
+
+    def mark_output_ended(self, *, stop_reason: str = "stream_ended") -> None:
+        self._end_assistant_playback(
+            ts=self._playback_last_played_ts or datetime.now(UTC),
+            stop_reason=stop_reason,
+        )
+
+    def _end_assistant_playback(
+        self,
+        *,
+        ts: datetime,
+        stop_reason: str,
+    ) -> None:
+        correlation_alias = self._active_playback_alias
+        if correlation_alias is None:
+            return
+        self.observer.observe_timeline_event(
+            TimelineEvent(
+                event_id=f"{correlation_alias}:stop",
+                category="conversation",
+                name="assistant_playback_stopped",
+                source="audiosocket_bridge",
+                correlation_alias=correlation_alias,
+                direction="assistant_to_caller",
+                attributes={
+                    "written_audio_ms": self._playback_written_audio_ms,
+                    "stop_reason": stop_reason,
+                },
+                ts=ts,
+            )
+        )
+        self._active_playback_alias = None
+        self._playback_written_audio_ms = 0.0
+        self._playback_last_played_at = None
+        self._playback_last_played_ts = None
+        self._playback_last_frame_duration_ms = None
+
+    def _end_caller_speech(
+        self,
+        *,
+        completion_observed: bool,
+        stop_reason: str,
+    ) -> None:
+        correlation_alias = self._active_caller_speech_alias
+        if correlation_alias is None:
+            return
+        self.observer.observe_timeline_event(
+            TimelineEvent(
+                event_id=f"{correlation_alias}:caller-speech-stopped",
+                category="conversation",
+                name="provider_input_speech_stopped",
+                source="audiosocket_bridge",
+                correlation_alias=correlation_alias,
+                direction="caller_to_assistant",
+                attributes={
+                    "completion_observed": completion_observed,
+                    "stop_reason": stop_reason,
+                },
+                ts=datetime.now(UTC),
+            )
+        )
+        self._active_caller_speech_alias = None
 
     def _effective_playback_position(self) -> PlaybackPosition | None:
         inflight = self._inflight_playback_position
@@ -689,6 +829,11 @@ class RealtimeCallSession:
             await self.provider_session.close()
         except Exception:
             failure_alias = failure_alias or "provider-close-error"
+        self._end_caller_speech(
+            completion_observed=False,
+            stop_reason="call_closed",
+        )
+        self.mark_output_ended(stop_reason="call_closed")
         await asyncio.to_thread(self.observer.flush)
         if failure_alias is not None and self.fail_run is not None:
             await asyncio.to_thread(self.fail_run, failure_alias)
@@ -808,3 +953,4 @@ class AudioSocketRealtimeServer:
             await asyncio.sleep(delay)
         if previous_frame is not None:
             session.mark_output_played(previous_frame)
+        session.mark_output_ended()
