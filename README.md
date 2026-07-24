@@ -404,7 +404,14 @@ where full-scale endpoint samples appear produces a medium-confidence
 incidents. This is not an intersample true-peak or definitive clipping measurement.
 Digital silence below -60 dBFS for at least 98% of samples is joined into evidence
 windows of 200 ms or longer. Silence remains evidence-only until caller/assistant
-speech context can establish that the interval was unexpected.
+speech context can establish that the interval was unexpected. Provider response
+start and completion metrics now form correlated events and a provider interval.
+When that interval overlaps digital silence at the final pipeline Stage for at
+least 200 ms, the inspector reports `Assistant output dead air suspected` and
+links the final recording, silence start, and provider lifecycle on the common
+cursor. Silence at an intermediate Stage or outside the provider interval remains
+evidence-only. Confidence stays medium because remote decode and playout are not
+observed; VoxBench does not claim that the caller definitively heard silence.
 
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;

@@ -151,3 +151,175 @@ def test_timeline_locates_media_contraction_and_stage_level_change() -> None:
         "recording:1",
         "stage-signal:serializer",
     ]
+
+
+def test_timeline_correlates_final_stage_silence_with_provider_response() -> None:
+    t0 = datetime(2026, 7, 24, tzinfo=UTC)
+    metrics = [
+        MetricArtifact(
+            stage=None,
+            name="provider_response_started",
+            value=1,
+            ts=t0,
+        ),
+        MetricArtifact(
+            stage=None,
+            name="provider_response_done",
+            value=1,
+            ts=t0 + timedelta(milliseconds=500),
+        ),
+    ]
+    for window_start_ms in (100, 700):
+        for chunk_index in range(15):
+            ts = t0 + timedelta(
+                milliseconds=window_start_ms + (chunk_index * 20)
+            )
+            metrics.extend(
+                [
+                    MetricArtifact(
+                        stage="serializer",
+                        name="silence_sample_pct",
+                        value=100,
+                        ts=ts,
+                    ),
+                    MetricArtifact(
+                        stage="serializer",
+                        name="audio_chunk_duration_ms",
+                        value=20,
+                        ts=ts,
+                    ),
+                ]
+            )
+    for chunk_index in range(15):
+        ts = t0 + timedelta(milliseconds=100 + (chunk_index * 20))
+        metrics.extend(
+            [
+                MetricArtifact(
+                    stage="resampler",
+                    name="silence_sample_pct",
+                    value=100,
+                    ts=ts,
+                ),
+                MetricArtifact(
+                    stage="resampler",
+                    name="audio_chunk_duration_ms",
+                    value=20,
+                    ts=ts,
+                ),
+            ]
+        )
+    run = StoredRun(
+        run_id="timeline-provider-dead-air",
+        config_hash="config-hash",
+        call_id=None,
+        conversation_id="conversation-alias",
+        provider="provider-alias",
+        engine="engine-alias",
+        status="completed",
+        started_at=t0,
+        ended_at=t0 + timedelta(seconds=1),
+        resolved_config={
+            "spec": {
+                "media": {
+                    "pipeline": [
+                        {"type": "resampler"},
+                        {"type": "serializer"},
+                    ]
+                }
+            }
+        },
+        recordings=[
+            RecordingArtifact(
+                stage="serializer",
+                uri="recording-ref-serializer",
+                format={"encoding": "pcm16", "rate": 8000, "channels": 1},
+                duration_ms=1000,
+            )
+        ],
+        spans=[],
+        metrics=metrics,
+        verifications=[],
+    )
+
+    lanes = run.to_timeline().lanes
+    provider_events = [
+        event
+        for event in lanes.events
+        if event.name in {"provider.response_started", "provider.response_done"}
+    ]
+    assert [event.t_rel_ms for event in provider_events] == [0, 500]
+    assert {
+        event.correlation_alias for event in provider_events
+    } == {"provider-response:0"}
+    assert not any(
+        event.name in {"provider_response_started", "provider_response_done"}
+        for event in lanes.events
+    )
+
+    provider_interval = next(
+        interval
+        for interval in lanes.intervals
+        if interval.name == "provider_response"
+    )
+    assert provider_interval.start_ms == 0
+    assert provider_interval.end_ms == 500
+    assert provider_interval.direction == "assistant_to_caller"
+    assert provider_interval.attributes["completion_observed"] is True
+
+    silence_intervals = [
+        interval
+        for interval in lanes.intervals
+        if interval.name == "digital_silence"
+    ]
+    assert [
+        (interval.stage, interval.start_ms, interval.end_ms)
+        for interval in silence_intervals
+    ] == [
+        ("resampler", 100, 400),
+        ("serializer", 100, 400),
+        ("serializer", 700, 1000),
+    ]
+    assert silence_intervals[0].attributes["incident_status"] == (
+        "evidence_only_without_speech_context"
+    )
+    assert silence_intervals[1].attributes["incident_status"] == (
+        "assistant_output_dead_air_suspected"
+    )
+    assert silence_intervals[2].attributes["incident_status"] == (
+        "evidence_only_without_speech_context"
+    )
+
+    incidents = [
+        incident
+        for incident in lanes.incidents
+        if incident.rule_id == "assistant_output_dead_air_v1"
+    ]
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert incident.title == "Assistant output dead air suspected"
+    assert incident.summary == (
+        "300 ms digital silence at serializer while provider response was active"
+    )
+    assert incident.start_ms == 100
+    assert incident.end_ms == 400
+    assert incident.severity == "warning"
+    assert incident.confidence == "medium"
+    assert incident.stage == "serializer"
+    assert incident.direction == "assistant_to_caller"
+    assert incident.observed == {
+        "digital_silence_while_provider_active_ms": 300,
+        "silence_window_duration_ms": 300,
+        "provider_response_duration_ms": 500,
+        "provider_completion_observed": True,
+        "remote_playout_observed": False,
+    }
+    assert incident.expected == {
+        "digital_silence_while_provider_active_ms_below": 200,
+        "remote_playout": "not observed",
+    }
+    assert incident.evidence_refs == [
+        "recording:0",
+        "stage-silence:serializer:0:start",
+        "provider-response:0:start",
+        "provider-response:0:done",
+    ]

@@ -446,6 +446,13 @@ sample率、chunk durationを測る。extrema sampleはclippingの必要条件�
 peakなしにclippingを確定しない。98%以上digital silenceが200ms以上連続した区間はevidenceとして表示するが、
 発話区間との重なりが分からない段階では異常incidentにしない。sample peakをintersample true peakと呼ばない。
 
+provider response lifecycleのscalar metricは、開始/完了eventと`provider_response` intervalへ同じcorrelation
+aliasで投影する。その区間と最終pipeline Stageのdigital silenceが200ms以上重なる場合だけ、
+`Assistant output dead air suspected`（medium confidence）を生成する。途中Stageの無音は下流で回復し得るため
+対象外、provider区間外の無音は正常pauseと区別できないためevidence-onlyのままとする。最終Stage PCMは
+assistant出力境界の証拠だが、remote endpointのjitter buffer、decode、speaker playoutは観測していない。
+したがって「相手に無音が聞こえた」とは断定せず、incidentのObserved/Expectedにremote playout未観測を明記する。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

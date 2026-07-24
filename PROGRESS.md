@@ -1,5 +1,16 @@
 # 進捗
 
+## Product UX: provider-response dead-air correlation (2026-07-24)
+
+- 既存の`provider_response_started` / `provider_response_done` metricを、同一correlation aliasを持つ
+  `provider.response_started` / `provider.response_done` eventと`provider_response` intervalへ投影。
+- provider応答区間と最終pipeline Stageのdigital-silence windowが200ms以上重なる場合だけ、
+  `Assistant output dead air suspected` warningを生成。途中Stageの無音やprovider区間外のpauseはincidentにしない。
+- incidentは最終Stage録音、silence開始、provider開始/完了をevidence chainに持ち、共通cursorから根拠時刻と
+  音声へ移動できる。provider完了が未観測でもrun終端までの区間として扱い、その状態を明示する。
+- 観測できるのはprovider lifecycleと最終Stage PCMであり、相手側playoutは未観測。可聴無音を断定せず
+  confidence mediumとし、Observed/Expectedにも`remote_playout`境界を返す。製品全体は約83%。
+
 ## Product UX: PCM peak, clipping suspicion, and silence evidence (2026-07-24)
 
 - Stage output PCMから`sample_peak_dbfs`、`full_scale_sample_pct`、`silence_sample_pct`、

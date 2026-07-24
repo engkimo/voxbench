@@ -1117,6 +1117,11 @@ _TYPED_BARGE_IN_METRICS = {
     "provider_truncate_requests",
 }
 
+_PROVIDER_RESPONSE_METRICS = {
+    "provider_response_done",
+    "provider_response_started",
+}
+
 _TIMELINE_UNITS = {
     "active_tasks": "count",
     "audio_chunk_duration_ms": "ms",
@@ -1149,6 +1154,7 @@ STAGE_SILENCE_THRESHOLD_DBFS = -60.0
 STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
 STAGE_SILENCE_MIN_WINDOW_MS = 200.0
 STAGE_SILENCE_MAX_OBSERVATION_GAP_MS = 100.0
+ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS = 200.0
 
 
 @dataclass(frozen=True)
@@ -1230,6 +1236,131 @@ class _StageSilenceWindow:
     @property
     def correlation_alias(self) -> str:
         return f"stage-silence:{self.stage}:{self.window_index}"
+
+
+@dataclass(frozen=True)
+class _ProviderResponseEvidence:
+    response_index: int
+    start_observation_index: int
+    done_observation_index: int | None
+    start_ms: float
+    end_ms: float
+    completed: bool
+
+    @property
+    def correlation_alias(self) -> str:
+        return f"provider-response:{self.response_index}"
+
+    @property
+    def start_event_id(self) -> str:
+        return f"{self.correlation_alias}:start"
+
+    @property
+    def done_event_id(self) -> str | None:
+        if not self.completed:
+            return None
+        return f"{self.correlation_alias}:done"
+
+
+@dataclass(frozen=True)
+class _AssistantOutputDeadAirEvidence:
+    silence: _StageSilenceWindow
+    provider_response: _ProviderResponseEvidence
+    start_ms: float
+    end_ms: float
+
+    @property
+    def overlap_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
+
+def _provider_response_evidence(run: StoredRun) -> list[_ProviderResponseEvidence]:
+    observations = sorted(
+        (
+            (metric.ts, metric_index, metric.name)
+            for metric_index, metric in enumerate(run.metrics)
+            if metric.name in _PROVIDER_RESPONSE_METRICS and metric.value > 0
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    responses: list[_ProviderResponseEvidence] = []
+    active: tuple[int, int, float] | None = None
+    next_response_index = 0
+    for ts, observation_index, name in observations:
+        t_rel_ms = max(0.0, _relative_seconds(ts, run.started_at) * 1000)
+        if name == "provider_response_started":
+            if active is not None:
+                response_index, start_observation_index, start_ms = active
+                responses.append(
+                    _ProviderResponseEvidence(
+                        response_index=response_index,
+                        start_observation_index=start_observation_index,
+                        done_observation_index=None,
+                        start_ms=start_ms,
+                        end_ms=max(start_ms, t_rel_ms),
+                        completed=False,
+                    )
+                )
+            active = (next_response_index, observation_index, t_rel_ms)
+            next_response_index += 1
+            continue
+        if active is None:
+            continue
+        response_index, start_observation_index, start_ms = active
+        responses.append(
+            _ProviderResponseEvidence(
+                response_index=response_index,
+                start_observation_index=start_observation_index,
+                done_observation_index=observation_index,
+                start_ms=start_ms,
+                end_ms=max(start_ms, t_rel_ms),
+                completed=True,
+            )
+        )
+        active = None
+    if active is not None:
+        response_index, start_observation_index, start_ms = active
+        responses.append(
+            _ProviderResponseEvidence(
+                response_index=response_index,
+                start_observation_index=start_observation_index,
+                done_observation_index=None,
+                start_ms=start_ms,
+                end_ms=max(start_ms, _run_timeline_duration_ms(run)),
+                completed=False,
+            )
+        )
+    return sorted(responses, key=lambda item: (item.start_ms, item.response_index))
+
+
+def _assistant_output_dead_air_evidence(
+    run: StoredRun,
+) -> list[_AssistantOutputDeadAirEvidence]:
+    stage_names = _pipeline_stage_names(run)
+    if not stage_names:
+        return []
+    final_stage = stage_names[-1]
+    silence_windows = [
+        window
+        for window in _stage_silence_windows(run)
+        if window.stage == final_stage
+    ]
+    evidence: list[_AssistantOutputDeadAirEvidence] = []
+    for silence in silence_windows:
+        for response in _provider_response_evidence(run):
+            start_ms = max(silence.start_ms, response.start_ms)
+            end_ms = min(silence.end_ms, response.end_ms)
+            if end_ms - start_ms < ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS:
+                continue
+            evidence.append(
+                _AssistantOutputDeadAirEvidence(
+                    silence=silence,
+                    provider_response=response,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                )
+            )
+    return evidence
 
 
 def _stage_signal_evidence(run: StoredRun) -> list[_StageSignalEvidence]:
@@ -1537,12 +1668,22 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
         for event in run.timeline_events
     )
 
+    provider_response_observation_indices = {
+        observation_index
+        for response in _provider_response_evidence(run)
+        for observation_index in (
+            response.start_observation_index,
+            response.done_observation_index,
+        )
+        if observation_index is not None
+    }
     metric_index = 0
-    for metric in run.metrics:
+    for observation_index, metric in enumerate(run.metrics):
         category = _TIMELINE_EVENT_METRICS.get(metric.name)
         if (
             category is None
             or metric.value <= 0
+            or observation_index in provider_response_observation_indices
             or metric.name in persisted_names
             or (run.timeline_events and metric.name in _TYPED_BARGE_IN_METRICS)
         ):
@@ -1560,6 +1701,38 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
             )
         )
         metric_index += 1
+
+    for item in _provider_response_evidence(run):
+        events.append(
+            TimelineTypedEvent(
+                event_id=item.start_event_id,
+                category="provider",
+                name="provider.response_started",
+                t_rel_ms=item.start_ms,
+                clock_domain="control_plane_wall",
+                direction="assistant_to_caller",
+                source="provider_lifecycle_metrics",
+                correlation_alias=item.correlation_alias,
+                attributes={"completion_observed": item.completed},
+            )
+        )
+        if item.done_event_id is not None:
+            events.append(
+                TimelineTypedEvent(
+                    event_id=item.done_event_id,
+                    category="provider",
+                    name="provider.response_done",
+                    t_rel_ms=item.end_ms,
+                    clock_domain="control_plane_wall",
+                    direction="assistant_to_caller",
+                    source="provider_lifecycle_metrics",
+                    correlation_alias=item.correlation_alias,
+                    attributes={
+                        "completion_observed": True,
+                        "duration_ms": item.end_ms - item.start_ms,
+                    },
+                )
+            )
 
     for item in _stage_signal_evidence(run):
         events.append(
@@ -1726,6 +1899,28 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 attributes={"duration_ms": end_ms - start_ms},
             )
         )
+    for item in _provider_response_evidence(run):
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=item.correlation_alias,
+                category="provider",
+                name="provider_response",
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                clock_domain="control_plane_wall",
+                direction="assistant_to_caller",
+                source="provider_lifecycle_metrics",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": item.end_ms - item.start_ms,
+                    "completion_observed": item.completed,
+                },
+            )
+        )
+    dead_air_silence_aliases = {
+        item.silence.correlation_alias
+        for item in _assistant_output_dead_air_evidence(run)
+    }
     for item in _stage_silence_windows(run):
         intervals.append(
             TimelineTypedInterval(
@@ -1742,7 +1937,11 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                     "duration_ms": item.end_ms - item.start_ms,
                     "observation_count": item.observation_count,
                     "peak_silence_sample_pct": item.peak_silence_sample_pct,
-                    "incident_status": "evidence_only_without_speech_context",
+                    "incident_status": (
+                        "assistant_output_dead_air_suspected"
+                        if item.correlation_alias in dead_air_silence_aliases
+                        else "evidence_only_without_speech_context"
+                    ),
                 },
             )
         )
@@ -2013,6 +2212,59 @@ def _typed_timeline_incidents(
                     "clipping_confirmation": (
                         "waveform plateau or oversampled true-peak evidence required"
                     ),
+                },
+                evidence_refs=evidence_refs,
+            )
+        )
+    for item in _assistant_output_dead_air_evidence(run):
+        response = item.provider_response
+        evidence_refs = []
+        artifact_id = artifact_by_stage.get(item.silence.stage)
+        if artifact_id is not None:
+            evidence_refs.append(artifact_id)
+        evidence_refs.extend(
+            [
+                f"{item.silence.correlation_alias}:start",
+                response.start_event_id,
+            ]
+        )
+        if response.done_event_id is not None:
+            evidence_refs.append(response.done_event_id)
+        incidents.append(
+            TimelineIncident(
+                incident_id=(
+                    f"assistant-output-dead-air:{item.silence.stage}:"
+                    f"{item.silence.window_index}:{response.response_index}"
+                ),
+                rule_id="assistant_output_dead_air_v1",
+                category="conversation",
+                severity="warning",
+                title="Assistant output dead air suspected",
+                summary=(
+                    f"{item.overlap_ms:g} ms digital silence at "
+                    f"{item.silence.stage} while provider response was active"
+                ),
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                confidence="medium",
+                stage=item.silence.stage,
+                direction="assistant_to_caller",
+                observed={
+                    "digital_silence_while_provider_active_ms": item.overlap_ms,
+                    "silence_window_duration_ms": (
+                        item.silence.end_ms - item.silence.start_ms
+                    ),
+                    "provider_response_duration_ms": (
+                        response.end_ms - response.start_ms
+                    ),
+                    "provider_completion_observed": response.completed,
+                    "remote_playout_observed": False,
+                },
+                expected={
+                    "digital_silence_while_provider_active_ms_below": (
+                        ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS
+                    ),
+                    "remote_playout": "not observed",
                 },
                 evidence_refs=evidence_refs,
             )
