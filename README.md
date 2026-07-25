@@ -428,6 +428,21 @@ observed assistant playback. This avoids classifying a response-generation wait
 where the bridge has not started writing audio as playback dead air. Older runs
 without playback events retain the provider-response fallback.
 
+The timeline also exposes `assistant_output_start_wait` from provider response
+start to the first correlated AudioSocket frame write. It reports measured wait
+and whether playback was observed, but does not label latency good or bad until a
+scenario-specific threshold exists. If two playback bursts are separated because
+the bridge observed a media gap, the intervening time becomes an
+`assistant_playback_gap` buffer interval.
+
+A media gap overlapping an active provider response for at least 200 ms produces
+a medium-confidence `Assistant playback underrun suspected` warning. Its evidence
+chain links the previous playback stop, next playback start, and provider
+lifecycle. The 200 ms threshold is provisional and appears in Expected evidence.
+An active provider response does not prove a continuous-audio promise, and absent
+AudioSocket frames do not prove a remote audible outage, so both claim boundaries
+remain explicit.
+
 If `web/vite.config.ts` changes while the development server is already running,
 restart `npm run dev`. The `/api` proxy carries both REST and WebSocket traffic;
 the UI falls back to REST polling if the socket is unavailable.

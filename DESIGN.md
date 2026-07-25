@@ -465,6 +465,17 @@ barge-in、stream end、call closeをstopとしてburst単位で記録する。�
 3区間intersectionへ狭め、bridgeが音声を書いていない生成待ちをdead airと誤認しない。旧runはprovider lifecycle
 だけを使うfallbackを維持する。
 
+provider response開始から、そのresponseに対応する最初のplayback burst開始までを
+`assistant_output_start_wait` intervalとして返す。response完了後にbridge bufferからwriteが始まる場合もあるため、
+次response開始までは同じresponseへ時系列で関連付ける。playbackが観測されなければresponse終端までを未完了wait
+として表示する。scenario/manifestのlatency SLOがない段階では、長さだけで遅延failureを作らない。
+
+`media_gap`で分割された隣接playback burst間は`assistant_playback_gap` intervalとする。gapとprovider responseの
+重なりが200ms以上の場合のみ`Assistant playback underrun suspected`（medium confidence）へ昇格する。200msは
+provisional warning thresholdとしてExpected contractへ返し、将来scenario policyへ移す。provider response activeは
+連続音声契約の証明ではなく、AudioSocket frame不在もremote playout断の証明ではないため、
+`continuous_audio_contract`と`remote_playout`の未観測境界をincidentへ明記する。
+
 別ビュー `GET /runs/cross-session-trends`：通話横断で単調増加するリソースを表示（リーク検出）。
 
 ---

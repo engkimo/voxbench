@@ -1,5 +1,19 @@
 # 進捗
 
+## Product UX: output-start wait and playback underrun evidence (2026-07-25)
+
+- provider response開始から最初のAudioSocket frame writeまでを`assistant_output_start_wait` intervalとして投影。
+  実測durationとplayback開始有無を返すが、scenario別latency threshold未設定のため遅延incidentにはしない。
+- playback burstが`media_gap`で終了し次burstが始まるまでを`assistant_playback_gap` intervalとしてbuffer laneへ表示。
+  前後playback aliasとframe未送信時間を共通cursor上で追跡できる。
+- gapとprovider responseが200ms以上重なる場合だけ`Assistant playback underrun suspected` warningを生成。
+  前burst stop、次burst start、provider開始/完了をevidence chainに持つ。
+- providerが連続音声を約束していたかは未観測で、AudioSocket frame欠落はremote playout障害の確定証拠でもない。
+  confidence medium、`continuous_audio_contract: not observed`、`remote_playout: not observed`を維持する。
+- 200msはprovisional warning thresholdとしてExpectedへ明示し、将来scenario/manifest policyへ移す。製品全体は約87%。
+- 2026-07-25公開のPostCSS path traversal advisoryを検出し、lockfile内PostCSSを8.5.23へ更新。Web build再成功、
+  npm audit high以上0件を確認した。
+
 ## Product UX: typed caller speech and assistant playback (2026-07-24)
 
 - provider VADの`input_speech_started` / `stopped`を同一safe correlation aliasで永続化し、

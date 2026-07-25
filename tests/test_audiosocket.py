@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+import voxbench.telephony.audiosocket as audiosocket_module
 from voxbench.control_plane.app import create_app
 from voxbench.live_demo.observed_run import build_audiosocket_observed_run_payload
 from voxbench.media import resample_pcm16_mono
@@ -372,6 +373,63 @@ def test_realtime_call_session_observes_speech_and_playback_lifecycles() -> None
         "written_audio_ms": 20,
         "stop_reason": "stream_ended",
     }
+
+
+def test_realtime_call_session_splits_playback_bursts_on_media_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monotonic_values = iter([0.0, 0.02, 0.10, 0.12])
+    monkeypatch.setattr(
+        audiosocket_module,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    async def scenario():
+        transport = CapturingTransport()
+        session = RealtimeCallSession(
+            call_id="call-1",
+            observer=VoxBenchObserver("run-1", transport),
+            provider_session=FakeProviderSession(),
+            complete_run=lambda: None,
+        )
+        frame = AudioSocketFrame(frame_type=0x10, payload=_pcm(500))
+        session.mark_output_started(frame)
+        session.mark_output_played(frame)
+        session.mark_output_started(frame)
+        session.mark_output_played(frame)
+        session.mark_output_ended()
+        await session.close()
+        return transport
+
+    transport = asyncio.run(scenario())
+    playback_events = [
+        event
+        for batch in transport.batches
+        for event in batch.timeline_events
+        if event.name
+        in {
+            "assistant_playback_started",
+            "assistant_playback_stopped",
+        }
+    ]
+    assert [event.name for event in playback_events] == [
+        "assistant_playback_started",
+        "assistant_playback_stopped",
+        "assistant_playback_started",
+        "assistant_playback_stopped",
+    ]
+    assert playback_events[1].attributes == {
+        "written_audio_ms": 20,
+        "stop_reason": "media_gap",
+    }
+    assert playback_events[3].attributes == {
+        "written_audio_ms": 20,
+        "stop_reason": "stream_ended",
+    }
+    assert playback_events[0].correlation_alias != (
+        playback_events[2].correlation_alias
+    )
 
 
 def test_realtime_call_session_truncates_openai_item_at_played_position() -> None:

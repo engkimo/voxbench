@@ -438,6 +438,29 @@ def test_timeline_projects_speech_playback_and_narrows_dead_air() -> None:
                 direction="assistant_to_caller",
                 attributes={
                     "written_audio_ms": 340,
+                    "stop_reason": "media_gap",
+                },
+            ),
+            TimelineEventArtifact(
+                event_id="assistant-playback-2:start",
+                category="conversation",
+                name="assistant_playback_started",
+                ts=t0 + timedelta(milliseconds=900),
+                source="audiosocket_bridge",
+                correlation_alias="assistant-playback-2",
+                direction="assistant_to_caller",
+                attributes={"frame_duration_ms": 20},
+            ),
+            TimelineEventArtifact(
+                event_id="assistant-playback-2:stop",
+                category="conversation",
+                name="assistant_playback_stopped",
+                ts=t0 + timedelta(milliseconds=1000),
+                source="audiosocket_bridge",
+                correlation_alias="assistant-playback-2",
+                direction="assistant_to_caller",
+                attributes={
+                    "written_audio_ms": 100,
                     "stop_reason": "stream_ended",
                 },
             ),
@@ -470,8 +493,41 @@ def test_timeline_projects_speech_playback_and_narrows_dead_air() -> None:
         "duration_ms": 350,
         "completion_observed": True,
         "written_audio_ms": 340,
-        "stop_reason": "stream_ended",
+        "stop_reason": "media_gap",
         "observation_boundary": "audiosocket_frame_write",
+        "remote_playout_observed": False,
+    }
+
+    output_start_wait = next(
+        interval
+        for interval in lanes.intervals
+        if interval.name == "assistant_output_start_wait"
+    )
+    assert output_start_wait.start_ms == 0
+    assert output_start_wait.end_ms == 300
+    assert output_start_wait.attributes == {
+        "duration_ms": 300,
+        "playback_started": True,
+        "playback_correlation_alias": "assistant-playback-1",
+        "provider_completion_observed": True,
+        "observation_boundary": (
+            "provider_response_start_to_audiosocket_first_frame_write"
+        ),
+        "latency_threshold_status": "not_configured",
+    }
+
+    playback_gap = next(
+        interval
+        for interval in lanes.intervals
+        if interval.name == "assistant_playback_gap"
+    )
+    assert playback_gap.start_ms == 650
+    assert playback_gap.end_ms == 900
+    assert playback_gap.attributes == {
+        "duration_ms": 250,
+        "previous_playback_alias": "assistant-playback-1",
+        "next_playback_alias": "assistant-playback-2",
+        "incident_status": "assistant_playback_underrun_suspected",
         "remote_playout_observed": False,
     }
 
@@ -490,4 +546,37 @@ def test_timeline_projects_speech_playback_and_narrows_dead_air() -> None:
     assert dead_air.evidence_refs[-2:] == [
         "assistant-playback-1:start",
         "assistant-playback-1:stop",
+    ]
+
+    underrun = next(
+        incident
+        for incident in lanes.incidents
+        if incident.rule_id == "assistant_playback_underrun_v1"
+    )
+    assert underrun.start_ms == 650
+    assert underrun.end_ms == 900
+    assert underrun.title == "Assistant playback underrun suspected"
+    assert underrun.summary == (
+        "250 ms without AudioSocket frames between playback bursts while "
+        "provider response was active"
+    )
+    assert underrun.confidence == "medium"
+    assert underrun.observed == {
+        "playback_gap_ms": 250,
+        "playback_gap_while_provider_active_ms": 250,
+        "previous_written_audio_ms": 340,
+        "previous_stop_reason": "media_gap",
+        "provider_completion_observed": True,
+        "remote_playout_observed": False,
+    }
+    assert underrun.expected == {
+        "playback_gap_while_provider_active_ms_below": 200,
+        "continuous_audio_contract": "not observed",
+        "remote_playout": "not observed",
+    }
+    assert underrun.evidence_refs == [
+        "assistant-playback-1:stop",
+        "assistant-playback-2:start",
+        "provider-response:0:start",
+        "provider-response:0:done",
     ]

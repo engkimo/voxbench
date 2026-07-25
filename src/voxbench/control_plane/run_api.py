@@ -1155,6 +1155,7 @@ STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
 STAGE_SILENCE_MIN_WINDOW_MS = 200.0
 STAGE_SILENCE_MAX_OBSERVATION_GAP_MS = 100.0
 ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS = 200.0
+ASSISTANT_PLAYBACK_UNDERRUN_MIN_GAP_MS = 200.0
 
 
 @dataclass(frozen=True)
@@ -1297,6 +1298,55 @@ class _AssistantOutputDeadAirEvidence:
         return self.end_ms - self.start_ms
 
 
+@dataclass(frozen=True)
+class _AssistantOutputStartWaitEvidence:
+    provider_response: _ProviderResponseEvidence
+    assistant_playback: _CorrelatedActivityEvidence | None
+    start_ms: float
+    end_ms: float
+
+    @property
+    def wait_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
+
+@dataclass(frozen=True)
+class _AssistantPlaybackGapEvidence:
+    gap_index: int
+    previous_playback: _CorrelatedActivityEvidence
+    next_playback: _CorrelatedActivityEvidence
+    start_ms: float
+    end_ms: float
+
+    @property
+    def gap_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
+    @property
+    def correlation_alias(self) -> str:
+        return f"assistant-playback-gap:{self.gap_index}"
+
+    @property
+    def evidence_refs(self) -> list[str]:
+        refs = []
+        if self.previous_playback.stop_event is not None:
+            refs.append(self.previous_playback.stop_event.event_id)
+        refs.append(self.next_playback.start_event.event_id)
+        return refs
+
+
+@dataclass(frozen=True)
+class _AssistantPlaybackUnderrunEvidence:
+    gap: _AssistantPlaybackGapEvidence
+    provider_response: _ProviderResponseEvidence
+    start_ms: float
+    end_ms: float
+
+    @property
+    def overlap_ms(self) -> float:
+        return self.end_ms - self.start_ms
+
+
 def _provider_response_evidence(run: StoredRun) -> list[_ProviderResponseEvidence]:
     observations = sorted(
         (
@@ -1431,6 +1481,93 @@ def _assistant_playback_evidence(
         start_name="assistant_playback_started",
         stop_name="assistant_playback_stopped",
     )
+
+
+def _assistant_output_start_wait_evidence(
+    run: StoredRun,
+) -> list[_AssistantOutputStartWaitEvidence]:
+    responses = _provider_response_evidence(run)
+    playbacks = _assistant_playback_evidence(run)
+    claimed_playback_aliases: set[str] = set()
+    evidence: list[_AssistantOutputStartWaitEvidence] = []
+    timeline_end_ms = _run_timeline_duration_ms(run)
+    for response_index, response in enumerate(responses):
+        association_end_ms = (
+            responses[response_index + 1].start_ms
+            if response_index + 1 < len(responses)
+            else timeline_end_ms
+        )
+        playback = next(
+            (
+                item
+                for item in playbacks
+                if item.correlation_alias not in claimed_playback_aliases
+                and item.start_ms >= response.start_ms
+                and item.start_ms <= association_end_ms
+            ),
+            None,
+        )
+        if playback is not None:
+            claimed_playback_aliases.add(playback.correlation_alias)
+        end_ms = (
+            playback.start_ms
+            if playback is not None
+            else min(response.end_ms, association_end_ms)
+        )
+        evidence.append(
+            _AssistantOutputStartWaitEvidence(
+                provider_response=response,
+                assistant_playback=playback,
+                start_ms=response.start_ms,
+                end_ms=max(response.start_ms, end_ms),
+            )
+        )
+    return evidence
+
+
+def _assistant_playback_gap_evidence(
+    run: StoredRun,
+) -> list[_AssistantPlaybackGapEvidence]:
+    gaps: list[_AssistantPlaybackGapEvidence] = []
+    for previous, current in pairwise(_assistant_playback_evidence(run)):
+        stop_reason = (
+            previous.stop_event.attributes.get("stop_reason")
+            if previous.stop_event is not None
+            else None
+        )
+        if stop_reason != "media_gap" or current.start_ms <= previous.end_ms:
+            continue
+        gaps.append(
+            _AssistantPlaybackGapEvidence(
+                gap_index=len(gaps),
+                previous_playback=previous,
+                next_playback=current,
+                start_ms=previous.end_ms,
+                end_ms=current.start_ms,
+            )
+        )
+    return gaps
+
+
+def _assistant_playback_underrun_evidence(
+    run: StoredRun,
+) -> list[_AssistantPlaybackUnderrunEvidence]:
+    evidence: list[_AssistantPlaybackUnderrunEvidence] = []
+    for gap in _assistant_playback_gap_evidence(run):
+        for response in _provider_response_evidence(run):
+            start_ms = max(gap.start_ms, response.start_ms)
+            end_ms = min(gap.end_ms, response.end_ms)
+            if end_ms - start_ms < ASSISTANT_PLAYBACK_UNDERRUN_MIN_GAP_MS:
+                continue
+            evidence.append(
+                _AssistantPlaybackUnderrunEvidence(
+                    gap=gap,
+                    provider_response=response,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                )
+            )
+    return evidence
 
 
 def _assistant_output_dead_air_evidence(
@@ -2082,6 +2219,71 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 },
             )
         )
+    for item in _assistant_output_start_wait_evidence(run):
+        playback = item.assistant_playback
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=(
+                    f"assistant-output-start-wait:"
+                    f"{item.provider_response.response_index}"
+                ),
+                category="provider",
+                name="assistant_output_start_wait",
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                clock_domain="control_plane_wall",
+                direction="assistant_to_caller",
+                source="provider_playback_correlation",
+                correlation_alias=item.provider_response.correlation_alias,
+                attributes={
+                    "duration_ms": item.wait_ms,
+                    "playback_started": playback is not None,
+                    "playback_correlation_alias": (
+                        playback.correlation_alias
+                        if playback is not None
+                        else None
+                    ),
+                    "provider_completion_observed": (
+                        item.provider_response.completed
+                    ),
+                    "observation_boundary": (
+                        "provider_response_start_to_audiosocket_first_frame_write"
+                    ),
+                    "latency_threshold_status": "not_configured",
+                },
+            )
+        )
+    underrun_gap_aliases = {
+        item.gap.correlation_alias
+        for item in _assistant_playback_underrun_evidence(run)
+    }
+    for item in _assistant_playback_gap_evidence(run):
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=item.correlation_alias,
+                category="buffer",
+                name="assistant_playback_gap",
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                clock_domain="control_plane_wall",
+                direction="assistant_to_caller",
+                source="audiosocket_bridge",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": item.gap_ms,
+                    "previous_playback_alias": (
+                        item.previous_playback.correlation_alias
+                    ),
+                    "next_playback_alias": item.next_playback.correlation_alias,
+                    "incident_status": (
+                        "assistant_playback_underrun_suspected"
+                        if item.correlation_alias in underrun_gap_aliases
+                        else "evidence_only_without_provider_response_context"
+                    ),
+                    "remote_playout_observed": False,
+                },
+            )
+        )
     dead_air_silence_aliases = {
         item.silence.correlation_alias
         for item in _assistant_output_dead_air_evidence(run)
@@ -2448,6 +2650,58 @@ def _typed_timeline_incidents(
                     "digital_silence_while_provider_active_ms_below": (
                         ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS
                     ),
+                    "remote_playout": "not observed",
+                },
+                evidence_refs=evidence_refs,
+            )
+        )
+    for item in _assistant_playback_underrun_evidence(run):
+        gap = item.gap
+        response = item.provider_response
+        evidence_refs = list(gap.evidence_refs)
+        evidence_refs.append(response.start_event_id)
+        if response.done_event_id is not None:
+            evidence_refs.append(response.done_event_id)
+        previous_stop_attributes = (
+            gap.previous_playback.stop_event.attributes
+            if gap.previous_playback.stop_event is not None
+            else {}
+        )
+        incidents.append(
+            TimelineIncident(
+                incident_id=(
+                    f"assistant-playback-underrun:{gap.gap_index}:"
+                    f"{response.response_index}"
+                ),
+                rule_id="assistant_playback_underrun_v1",
+                category="buffer",
+                severity="warning",
+                title="Assistant playback underrun suspected",
+                summary=(
+                    f"{item.overlap_ms:g} ms without AudioSocket frames between "
+                    "playback bursts while provider response was active"
+                ),
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                confidence="medium",
+                direction="assistant_to_caller",
+                observed={
+                    "playback_gap_ms": gap.gap_ms,
+                    "playback_gap_while_provider_active_ms": item.overlap_ms,
+                    "previous_written_audio_ms": (
+                        previous_stop_attributes.get("written_audio_ms")
+                    ),
+                    "previous_stop_reason": (
+                        previous_stop_attributes.get("stop_reason")
+                    ),
+                    "provider_completion_observed": response.completed,
+                    "remote_playout_observed": False,
+                },
+                expected={
+                    "playback_gap_while_provider_active_ms_below": (
+                        ASSISTANT_PLAYBACK_UNDERRUN_MIN_GAP_MS
+                    ),
+                    "continuous_audio_contract": "not observed",
                     "remote_playout": "not observed",
                 },
                 evidence_refs=evidence_refs,
