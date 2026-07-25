@@ -87,6 +87,10 @@ Start the API:
 uvicorn voxbench.control_plane.app:app --reload
 ```
 
+For the complete Postgres/API/Web walkthrough, run `./scripts/dev-demo` from the
+repository root instead. It creates an `rtp-gap` run and opens the selected run
+automatically.
+
 Create a Gemini Live-shaped simulated run:
 
 ```bash
@@ -94,6 +98,7 @@ curl -X POST http://127.0.0.1:8000/runs/live-demo/simulated \
   -H 'content-type: application/json' \
   -d '{
     "provider": "gemini-live",
+    "scenario": "rtp-gap",
     "call_id": "local-softphone-simulated",
     "input_rms": 1000,
     "target_rms": 4000,
@@ -121,6 +126,8 @@ The response contains a `run_id`. Open the Web UI, select the run, and inspect:
 
 - SIP ladder lane
 - RTP quality lane
+- the high-confidence observation-point sequence gap Incident
+- the medium-confidence arrival-stall Incident
 - stage recordings and waveform
 - `input_rms`, `output_rms`, `delta_db`, and `gain_applied`
 - AGC params in the payload/config

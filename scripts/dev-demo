@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PG_CONTAINER="${VOXBENCH_DEV_POSTGRES_CONTAINER:-voxbench-postgres-dev}"
+PG_VOLUME="${VOXBENCH_DEV_POSTGRES_VOLUME:-voxbench-postgres-dev-data}"
+PG_PORT="${VOXBENCH_DEV_POSTGRES_PORT:-55432}"
+PG_PASSWORD="${VOXBENCH_DEV_POSTGRES_PASSWORD:-voxbench-local-only}"
+API_PORT="${VOXBENCH_DEV_API_PORT:-8001}"
+WEB_PORT="${VOXBENCH_DEV_WEB_PORT:-5173}"
+OPEN_BROWSER="${VOXBENCH_OPEN_BROWSER:-1}"
+RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/voxbench-dev-demo.XXXXXX")"
+API_PID=""
+WEB_PID=""
+DOCKER=""
+
+cleanup() {
+  if [[ -n "$WEB_PID" ]]; then
+    kill "$WEB_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$API_PID" ]]; then
+    kill "$API_PID" 2>/dev/null || true
+  fi
+  wait "$WEB_PID" "$API_PID" 2>/dev/null || true
+}
+
+fail_with_log() {
+  local message="$1"
+  local log_path="$2"
+  echo "$message" >&2
+  if [[ -f "$log_path" ]]; then
+    tail -n 80 "$log_path" >&2
+  fi
+  exit 1
+}
+
+wait_for_url() {
+  local url="$1"
+  local pid="$2"
+  local log_path="$3"
+  local label="$4"
+  local attempts=0
+
+  until curl --fail --silent --show-error "$url" >/dev/null 2>&1; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      fail_with_log "$label stopped before becoming ready." "$log_path"
+    fi
+    attempts=$((attempts + 1))
+    if [[ "$attempts" -ge 60 ]]; then
+      fail_with_log "$label did not become ready within 30 seconds." "$log_path"
+    fi
+    sleep 0.5
+  done
+}
+
+next_available_port() {
+  local port="$1"
+  while ! python - "$port" <<'PY'
+import socket
+import sys
+
+with socket.socket() as probe:
+    try:
+        probe.bind(("127.0.0.1", int(sys.argv[1])))
+    except OSError:
+        raise SystemExit(1)
+PY
+  do
+    port=$((port + 1))
+  done
+  printf '%s' "$port"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+cd "$ROOT"
+
+if command -v docker >/dev/null; then
+  DOCKER="$(command -v docker)"
+elif [[ -x /Applications/Docker.app/Contents/Resources/bin/docker ]]; then
+  DOCKER="/Applications/Docker.app/Contents/Resources/bin/docker"
+else
+  echo "Docker is required. Install/start Docker Desktop, then rerun ./scripts/dev-demo." >&2
+  exit 1
+fi
+command -v curl >/dev/null || {
+  echo "curl is required to run the local demo." >&2
+  exit 1
+}
+command -v npm >/dev/null || {
+  echo "npm is required to run the Web UI." >&2
+  exit 1
+}
+python -c "import alembic, psycopg, uvicorn" 2>/dev/null || {
+  echo 'Activate .venv and run: python -m pip install -e ".[dev,postgres]"' >&2
+  exit 1
+}
+"$DOCKER" info >/dev/null 2>&1 || {
+  echo "Docker is installed but the daemon is not running." >&2
+  exit 1
+}
+
+API_PORT="$(next_available_port "$API_PORT")"
+WEB_PORT="$(next_available_port "$WEB_PORT")"
+
+if "$DOCKER" container inspect "$PG_CONTAINER" >/dev/null 2>&1; then
+  if ! "$DOCKER" port "$PG_CONTAINER" 5432/tcp | grep -Eq ":${PG_PORT}$"; then
+    echo "$PG_CONTAINER exists but does not expose PostgreSQL on port $PG_PORT." >&2
+    echo "Remove or rename that development container, or set VOXBENCH_DEV_POSTGRES_CONTAINER." >&2
+    exit 1
+  fi
+  "$DOCKER" start "$PG_CONTAINER" >/dev/null
+else
+  "$DOCKER" volume create "$PG_VOLUME" >/dev/null
+  "$DOCKER" run --detach \
+    --name "$PG_CONTAINER" \
+    --env POSTGRES_DB=voxbench \
+    --env POSTGRES_USER=voxbench \
+    --env "POSTGRES_PASSWORD=$PG_PASSWORD" \
+    --health-cmd "pg_isready -U voxbench -d voxbench" \
+    --health-interval 1s \
+    --health-timeout 3s \
+    --health-retries 30 \
+    --publish "127.0.0.1:${PG_PORT}:5432" \
+    --volume "${PG_VOLUME}:/var/lib/postgresql/data" \
+    postgres:16-alpine >/dev/null
+fi
+
+for _ in $(seq 1 60); do
+  if "$DOCKER" exec "$PG_CONTAINER" pg_isready -U voxbench -d voxbench >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+"$DOCKER" exec "$PG_CONTAINER" pg_isready -U voxbench -d voxbench >/dev/null 2>&1 || {
+  echo "Postgres did not become ready. Inspect it with: docker logs $PG_CONTAINER" >&2
+  exit 1
+}
+
+export VOXBENCH_RUN_REPOSITORY=postgres
+export VOXBENCH_DATABASE_URL="postgresql+psycopg://voxbench:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/voxbench"
+export VOXBENCH_POSTGRES_PROBE=true
+export VOXBENCH_POSTGRES_PROBE_TIMEOUT_MS=2000
+export VOXBENCH_POSTGRES_STATEMENT_TIMEOUT_MS=1500
+
+alembic upgrade head >"$RUNTIME_DIR/migration.log" 2>&1 || {
+  fail_with_log "Database migration failed." "$RUNTIME_DIR/migration.log"
+}
+
+if [[ ! -d web/node_modules ]]; then
+  npm --prefix web install >"$RUNTIME_DIR/npm-install.log" 2>&1 || {
+    fail_with_log "Web dependency installation failed." "$RUNTIME_DIR/npm-install.log"
+  }
+fi
+
+uvicorn voxbench.control_plane.app:app \
+  --host 127.0.0.1 \
+  --port "$API_PORT" >"$RUNTIME_DIR/api.log" 2>&1 &
+API_PID="$!"
+wait_for_url \
+  "http://127.0.0.1:${API_PORT}/repository/readiness" \
+  "$API_PID" \
+  "$RUNTIME_DIR/api.log" \
+  "VoxBench API"
+
+VOXBENCH_API_TARGET="http://127.0.0.1:${API_PORT}" \
+  npm --prefix web run dev -- --port "$WEB_PORT" >"$RUNTIME_DIR/web.log" 2>&1 &
+WEB_PID="$!"
+wait_for_url \
+  "http://127.0.0.1:${WEB_PORT}/" \
+  "$WEB_PID" \
+  "$RUNTIME_DIR/web.log" \
+  "VoxBench Web"
+
+DEMO_RESPONSE="$(
+  curl --fail --silent --show-error \
+    --request POST \
+    "http://127.0.0.1:${API_PORT}/runs/live-demo/simulated" \
+    --header "content-type: application/json" \
+    --data '{"provider":"gemini-live","scenario":"rtp-gap","dry_run":true,"duration_ms":3000,"input_rms":1200,"target_rms":1600,"max_gain":4,"noise_floor":150}'
+)"
+RUN_ID="$(
+  printf '%s' "$DEMO_RESPONSE" \
+    | python -c 'import json, sys; print(json.load(sys.stdin)["run_id"])'
+)"
+DEMO_URL="http://127.0.0.1:${WEB_PORT}/?run_id=${RUN_ID}"
+
+echo
+echo "VoxBench diagnostic demo is ready."
+echo "Open: $DEMO_URL"
+echo "Postgres: $PG_CONTAINER on 127.0.0.1:$PG_PORT"
+echo "Runtime logs: $RUNTIME_DIR"
+echo
+echo "The selected run contains audible stage recordings plus an intentional"
+echo "RTP sequence gap and arrival stall. Select an Incident to move the common cursor."
+echo "Press Ctrl+C to stop API/Web; the reusable Postgres container stays running."
+
+if [[ "$OPEN_BROWSER" == "1" ]] && command -v open >/dev/null; then
+  open "$DEMO_URL"
+fi
+
+wait "$API_PID" "$WEB_PID"

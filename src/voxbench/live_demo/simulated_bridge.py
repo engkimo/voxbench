@@ -14,10 +14,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact
+from voxbench.engine_harness.models import (
+    MetricArtifact,
+    RecordingArtifact,
+    TimelineEventArtifact,
+)
 from voxbench.engine_harness.plan import build_stage_plan
 
 SipDirection = Literal["in", "out"]
+LiveDemoScenario = Literal["clean", "rtp-gap"]
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,7 @@ class LiveDemoBridgeResult:
     metrics: list[MetricArtifact]
     sip_events: list[SimulatedSipEvent]
     rtp_stats: list[SimulatedRtpStat]
+    timeline_events: list[TimelineEventArtifact]
 
 
 def run_simulated_live_bridge(
@@ -57,6 +63,7 @@ def run_simulated_live_bridge(
     started_at: datetime,
     input_rms: float = 2600.0,
     duration_ms: int = 1200,
+    scenario: LiveDemoScenario = "clean",
 ) -> LiveDemoBridgeResult:
     recordings: list[RecordingArtifact] = []
     metrics: list[MetricArtifact] = []
@@ -98,6 +105,7 @@ def run_simulated_live_bridge(
         metrics=metrics,
         sip_events=_sip_events(call_id=call_id, started_at=started_at),
         rtp_stats=_rtp_stats(started_at=started_at),
+        timeline_events=_rtp_packet_events(started_at=started_at, scenario=scenario),
     )
 
 
@@ -295,6 +303,50 @@ def _rtp_stats(*, started_at: datetime) -> list[SimulatedRtpStat]:
             loss_pct=0.1,
             mos=4.2,
         ),
+    ]
+
+
+def _rtp_packet_events(
+    *,
+    started_at: datetime,
+    scenario: LiveDemoScenario,
+) -> list[TimelineEventArtifact]:
+    if scenario == "clean":
+        packet_points = (
+            (1000, 0, 300),
+            (1001, 160, 320),
+            (1002, 320, 340),
+            (1003, 480, 360),
+        )
+    else:
+        packet_points = (
+            (1000, 0, 300),
+            (1001, 160, 320),
+            (1003, 320, 340),
+            (1004, 480, 500),
+        )
+
+    return [
+        TimelineEventArtifact(
+            event_id=f"rtp-packet:{ordinal}",
+            category="transport",
+            name="rtp.packet_arrived",
+            source="simulated_rtp_packet_observer",
+            correlation_alias="simulated-caller-audio",
+            direction="received",
+            stream_alias="simulated-caller-audio",
+            attributes={
+                "sequence_number": sequence_number,
+                "rtp_timestamp": rtp_timestamp,
+                "payload_type": 0,
+                "clock_rate_hz": 8000,
+                "marker": ordinal == 0,
+            },
+            ts=started_at + timedelta(milliseconds=arrival_ms),
+        )
+        for ordinal, (sequence_number, rtp_timestamp, arrival_ms) in enumerate(
+            packet_points
+        )
     ]
 
 

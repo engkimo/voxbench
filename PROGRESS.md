@@ -1,5 +1,19 @@
 # 進捗
 
+## Product UX: one-command diagnostic walkthrough (2026-07-25)
+
+- `./scripts/dev-demo`でlocal Postgres 16の作成/再利用、Alembic migration、API/Web起動、
+  3秒の診断run生成、deep link表示までを一本化した。既定portが使用中なら次のloopback portを選ぶ。
+- Web先頭のquick demoを`Clean RTP cadence`と`RTP gap + arrival stall`から選べる診断入口へ更新。
+  異常シナリオは4つのsafe packet-header観測から欠落1 packetと140 ms arrival excessを生成し、
+  共通時間軸へ2つのtyped event、interval、Incidentを投影する。
+- Docker Postgresへpacket観測4件とWAV 4本を保存し、API再起動後にsequence gap / arrival stall
+  Incidentと3秒WAVが復元・配信されることを実動作で確認した。
+- 合成シナリオは製品導線の確認用であり、実network品質のbenchmarkではない。実環境のloss確定には
+  deployment packet tapとcapture drop accountingが引き続き必要。
+- 全体進捗目安は約91%。ローカル製品体験は一括で動作確認可能。残りは実電話基盤adapter、
+  capture/clock信頼度、scenario policy、実通話usability/release hardening。
+
 ## Product UX: RTP sequence gap and arrival cadence evidence (2026-07-25)
 
 - 公開observer APIに`RtpPacket`と`rtp_packet_from_datagram(...)`を追加。RTP v2 fixed headerからsequence、
@@ -11,7 +25,7 @@
 - sequence連番かつ同一clock rateで、arrival gapがRTP media advanceを100ms以上超えた場合は
   `rtp_arrival_stall` intervalとmedium-confidence warningを生成。100msはprovisional Expected threshold。
 - 通常packet markerはCall inspectorへ大量表示せず、gap/stallだけを共通時間軸へ出す。sequence欠番は観測点でhigh
-  confidenceだが、capture drop未除外のためnetwork loss確定とは呼ばない。製品全体は約89%。
+  confidenceだが、capture drop未除外のためnetwork loss確定とは呼ばない。このslice完了時点の製品全体は約89%。
 
 ## Product UX: output-start wait and playback underrun evidence (2026-07-25)
 

@@ -117,6 +117,57 @@ def test_simulated_live_demo_run_writes_timeline_audio_and_gain_metrics(tmp_path
     assert agc_incident["severity"] == "error"
     assert agc_incident["confidence"] == "certain"
     assert "stage-signal:agc" in agc_incident["evidence_refs"]
+    assert not {
+        "rtp_sequence_gap_v1",
+        "rtp_arrival_stall_v1",
+    } & {incident["rule_id"] for incident in timeline["lanes"]["incidents"]}
+
+
+def test_simulated_live_demo_exposes_rtp_gap_and_stall_on_common_timeline(
+    tmp_path: Path,
+) -> None:
+    app = create_app(artifact_root=tmp_path / "recordings")
+    client = TestClient(app)
+
+    response = client.post(
+        "/runs/live-demo/simulated",
+        json={
+            "provider": "gemini-live",
+            "scenario": "rtp-gap",
+            "duration_ms": 3000,
+        },
+    )
+
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+    timeline = client.get(f"/runs/{run_id}/timeline").json()
+
+    event_names = {event["name"] for event in timeline["lanes"]["events"]}
+    assert "rtp.packet_arrived" not in event_names
+    assert {
+        "rtp.sequence_gap_observed",
+        "rtp.arrival_stall_observed",
+    } <= event_names
+
+    intervals = {
+        interval["name"]: interval
+        for interval in timeline["lanes"]["intervals"]
+    }
+    assert intervals["rtp_sequence_gap"]["stream_alias"] == "simulated-caller-audio"
+    assert intervals["rtp_arrival_stall"]["direction"] == "received"
+
+    incidents = {
+        incident["rule_id"]: incident
+        for incident in timeline["lanes"]["incidents"]
+    }
+    assert incidents["rtp_sequence_gap_v1"]["observed"]["missing_packet_count"] == 1
+    assert (
+        incidents["rtp_sequence_gap_v1"]["expected"][
+            "capture_point_continuity"
+        ]
+        == "not independently verified"
+    )
+    assert incidents["rtp_arrival_stall_v1"]["observed"]["excess_arrival_delay_ms"] == 140
 
 
 def test_simulated_live_demo_rejects_non_dry_run_when_provider_not_ready(

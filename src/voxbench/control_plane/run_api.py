@@ -102,6 +102,7 @@ ReadinessStatus = Literal["pass", "fail", "unknown"]
 SipDirection = Literal["in", "out"]
 RtpDirection = Literal["received", "sent"]
 LiveDemoProvider = Literal["gemini-live", "openai-realtime"]
+LiveDemoScenario = Literal["clean", "rtp-gap"]
 ProviderConnectionState = Literal[
     "not_applicable",
     "pending",
@@ -210,6 +211,7 @@ class LiveDemoRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: LiveDemoProvider = "gemini-live"
+    scenario: LiveDemoScenario = "clean"
     call_id: str | None = "local-softphone-simulated"
     dry_run: bool = True
     duration_ms: int = Field(default=1200, ge=100, le=30_000)
@@ -4274,6 +4276,7 @@ def create_runs_router() -> APIRouter:
                 started_at=stored.started_at,
                 input_rms=request.input_rms,
                 duration_ms=request.duration_ms,
+                scenario=request.scenario,
             )
         except Exception:
             stored.status = "failed"
@@ -4285,6 +4288,7 @@ def create_runs_router() -> APIRouter:
         stored.conversation_id = f"simulated-{stored.run_id}"
         stored.recordings = bridge_result.recordings
         stored.metrics = bridge_result.metrics
+        stored.timeline_events = bridge_result.timeline_events
         stored.sip_events = [
             SipEventResponse(**event.__dict__) for event in bridge_result.sip_events
         ]

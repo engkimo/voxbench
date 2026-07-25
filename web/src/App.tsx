@@ -86,6 +86,7 @@ const DEFAULT_ASYNC_RUN_PAYLOAD = JSON.stringify(
 
 type DetailTab = 'metrics' | 'checks' | 'audio'
 type LiveSocketState = 'connecting' | 'connected' | 'disconnected' | 'error'
+type QuickDemoScenario = 'clean' | 'rtp-gap'
 type AgcGainParams = {
   target_rms?: number
   max_gain?: number
@@ -192,6 +193,7 @@ async function createAsyncRun(apiBase: string, payload: unknown): Promise<LiveRu
 async function createQuickDemo(
   apiBase: string,
   targetRms: number,
+  scenario: QuickDemoScenario,
 ): Promise<QuickDemoResponse> {
   const base = apiBase.replace(/\/$/, '')
   const response = await fetch(`${base}/runs/live-demo/simulated`, {
@@ -199,6 +201,7 @@ async function createQuickDemo(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       provider: 'gemini-live',
+      scenario,
       dry_run: true,
       duration_ms: 3000,
       input_rms: 1200,
@@ -457,6 +460,7 @@ export function App() {
   const [quickDemoPending, setQuickDemoPending] = useState(false)
   const [quickDemoError, setQuickDemoError] = useState<string | null>(null)
   const [quickDemoTargetRms, setQuickDemoTargetRms] = useState(1600)
+  const [quickDemoScenario, setQuickDemoScenario] = useState<QuickDemoScenario>('rtp-gap')
   const stageDetailRef = useRef<HTMLDivElement>(null)
 
   const timelineQuery = useQuery({
@@ -590,7 +594,11 @@ export function App() {
     setQuickDemoPending(true)
     setQuickDemoError(null)
     try {
-      const completed = await createQuickDemo(apiBase, quickDemoTargetRms)
+      const completed = await createQuickDemo(
+        apiBase,
+        quickDemoTargetRms,
+        quickDemoScenario,
+      )
       setDraftRunId(completed.run_id)
       setRunId(completed.run_id)
       setSelectedStageName(null)
@@ -764,8 +772,10 @@ export function App() {
       <QuickDemoPanel
         error={quickDemoError}
         onRun={runQuickDemo}
+        onScenarioChange={setQuickDemoScenario}
         onTargetRmsChange={setQuickDemoTargetRms}
         pending={quickDemoPending}
+        scenario={quickDemoScenario}
         targetRms={quickDemoTargetRms}
       />
 
@@ -1279,26 +1289,41 @@ function LinkedCallInspector({
 function QuickDemoPanel({
   error,
   onRun,
+  onScenarioChange,
   onTargetRmsChange,
   pending,
+  scenario,
   targetRms,
 }: {
   error: string | null
   onRun: () => void
+  onScenarioChange: (value: QuickDemoScenario) => void
   onTargetRmsChange: (value: number) => void
   pending: boolean
+  scenario: QuickDemoScenario
   targetRms: number
 }) {
   return (
     <section className="quickDemoPanel">
       <div className="quickDemoCopy">
-        <strong>Hear the pipeline in 3 seconds</strong>
+        <strong>Diagnose a call in 3 seconds</strong>
         <span>
-          Run an audible local demo, then listen to every stage and compare the AGC gain.
+          Generate a safe local call, hear every stage, and inspect correlated evidence.
         </span>
       </div>
       <div className="quickDemoActions">
-        <span>3-second synthetic tone · no provider key required</span>
+        <span>3-second synthetic call · no provider key or Asterisk required</span>
+        <label>
+          Call condition
+          <select
+            disabled={pending}
+            onChange={(event) => onScenarioChange(event.target.value as QuickDemoScenario)}
+            value={scenario}
+          >
+            <option value="rtp-gap">RTP gap + arrival stall</option>
+            <option value="clean">Clean RTP cadence</option>
+          </select>
+        </label>
         <label>
           Target loudness
           <select
@@ -1313,7 +1338,7 @@ function QuickDemoPanel({
         </label>
         <button disabled={pending} onClick={onRun} type="button">
           <Play size={16} />
-          {pending ? 'Running demo' : 'Run audible demo'}
+          {pending ? 'Running demo' : 'Run diagnostic demo'}
         </button>
       </div>
       {error ? <div className="quickDemoError">{error}</div> : null}

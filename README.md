@@ -41,8 +41,28 @@ scale profile.
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev,postgres]"
 ```
+
+## One-command diagnostic demo
+
+With Docker Desktop running and the virtual environment active:
+
+```bash
+./scripts/dev-demo
+```
+
+The command creates or reuses the local-only `voxbench-postgres-dev` Postgres 16
+container, applies Alembic migrations, starts the API and Web UI, creates a
+three-second diagnostic run, and opens its deep link. The run contains four
+audible stage recordings plus an intentional RTP sequence gap and arrival stall,
+so the common-time-axis Incident workflow is immediately testable.
+
+If `8001` or `5173` is already occupied, the launcher chooses the next available
+loopback port and prints the exact URL. Press Ctrl+C to stop the API and Web UI.
+The reusable Postgres container stays running; stop it separately with
+`docker stop voxbench-postgres-dev` when desired. The fixed
+`voxbench-local-only` password is only for this loopback development container.
 
 ## Resolve and validate a config
 
@@ -342,21 +362,24 @@ Open `http://127.0.0.1:5173/`. The Web UI can inspect a run timeline, compare tw
 runs, play stage recordings, watch live run status, and start an async run from an
 example payload.
 
-For the shortest product walkthrough, use **Hear the pipeline in 3 seconds** at
+For the shortest product walkthrough, use **Diagnose a call in 3 seconds** at
 the top of the page:
 
-1. Choose the target loudness. **Balanced +2.5 dB** is the safe default.
-2. Select **Run audible demo**. No provider API key or Asterisk setup is needed.
-3. The completed run is selected automatically. Use **Listen to every stage** to
+1. Choose **RTP gap + arrival stall** or **Clean RTP cadence**.
+2. Choose the target loudness. **Balanced +2.5 dB** is the safe default.
+3. Select **Run diagnostic demo**. No provider API key or Asterisk setup is needed.
+4. The completed run is selected automatically. Use **Listen to every stage** to
    play the three-second recording before and after AGC/limiting.
-4. Run another target loudness, then select a previous result under **Recent
+5. Select an Incident to move the shared cursor to its correlated evidence.
+6. Run another condition, then select a previous result under **Recent
    runs** or enter its ID in **Compare** to inspect the two results.
 
 The quick demo uses a local synthetic tone so gain changes are immediately
-audible and deterministic; it is not a speech-quality benchmark. Real speech,
-provider, SIP, and RTP validation still require the corresponding integration
-inputs. Custom payload controls and operational diagnostics are collapsed by
-default so they do not interrupt the first-use path.
+audible and deterministic. The RTP issue is also synthetic and tests the product
+workflow rather than a real network; it is not a speech-quality or network
+benchmark. Real speech, provider, SIP, and RTP validation still require the
+corresponding integration inputs. Custom payload controls and operational
+diagnostics are collapsed by default so they do not interrupt the first-use path.
 
 After a run is selected, **Call inspector** projects existing observations onto
 one shared ruler. It distinguishes typed point events, span intervals, numeric
