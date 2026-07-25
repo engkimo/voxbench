@@ -389,6 +389,20 @@ not as a confirmed media gap: aggregate statistics do not contain the RTP sequen
 or packet-arrival evidence required to prove a missing-packet interval. The active
 thresholds are always included in the incident's Expected contract.
 
+Packet-level integrations can now call `rtp_packet_from_datagram(...)` and
+`observe_rtp_packet(...)`. VoxBench decodes only the RTP v2 fixed header and
+persists a safe stream alias, direction, sequence number, RTP timestamp, payload
+type, marker, clock rate, and arrival time. Media payload and SSRC are not retained.
+Normal packet markers stay out of the inspector to avoid timeline noise.
+
+Sequence deltas account for 16-bit wrap. A forward delta greater than one and
+less than 32768 produces a high-confidence `RTP sequence gap observed` incident
+at the observation point. It is not labeled confirmed network loss until capture
+drop can be excluded. Consecutive packets whose arrival gap exceeds their RTP
+media-time advance by at least 100 ms produce a medium-confidence
+`RTP arrival stall suspected` incident. The 100 ms threshold is provisional and
+included in Expected evidence.
+
 Failed Stage duration checks are localized on recording media time. The inspector
 marks the output duration where contraction begins, shades the missing interval up
 to the previous Stage duration, and links both adjacent recordings as evidence.

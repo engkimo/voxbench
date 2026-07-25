@@ -19,7 +19,7 @@ from voxbench.control_plane.job_queue import (
     _claim_statement,
 )
 from voxbench.control_plane.run_api import PostgresRunRepository, StoredRun
-from voxbench.engine_harness.models import SpanArtifact
+from voxbench.engine_harness.models import SpanArtifact, TimelineEventArtifact
 
 TEST_POSTGRES_URL_ENV = "VOXBENCH_TEST_POSTGRES_URL"
 
@@ -127,6 +127,65 @@ def test_postgres_round_trips_epoch_nanosecond_spans(
     assert [(span.start_ns, span.end_ns) for span in restored.spans] == [
         (start_ns, end_ns)
     ]
+
+
+def test_postgres_round_trips_rtp_packet_gap_evidence(
+    postgres_runtime: PostgresRuntime,
+) -> None:
+    run = _run()
+    run.resolved_config = {"spec": {"media": {"pipeline": []}}}
+    run.timeline_events = [
+        TimelineEventArtifact(
+            event_id="rtp-packet:0",
+            category="transport",
+            name="rtp.packet_arrived",
+            ts=run.started_at,
+            direction="received",
+            stream_alias="caller-audio",
+            source="rtp_packet_header_observer",
+            correlation_alias="caller-audio",
+            attributes={
+                "sequence_number": 100,
+                "rtp_timestamp": 1600,
+                "payload_type": 0,
+                "clock_rate_hz": 8000,
+                "marker": False,
+            },
+        ),
+        TimelineEventArtifact(
+            event_id="rtp-packet:1",
+            category="transport",
+            name="rtp.packet_arrived",
+            ts=run.started_at + timedelta(milliseconds=40),
+            direction="received",
+            stream_alias="caller-audio",
+            source="rtp_packet_header_observer",
+            correlation_alias="caller-audio",
+            attributes={
+                "sequence_number": 102,
+                "rtp_timestamp": 1920,
+                "payload_type": 0,
+                "clock_rate_hz": 8000,
+                "marker": False,
+            },
+        ),
+    ]
+
+    postgres_runtime.repository.save(run)
+
+    restored = postgres_runtime.repository.get(run.run_id)
+    assert restored is not None
+    assert [event.event_id for event in restored.timeline_events] == [
+        "rtp-packet:0",
+        "rtp-packet:1",
+    ]
+    incident = next(
+        item
+        for item in restored.to_timeline().lanes.incidents
+        if item.rule_id == "rtp_sequence_gap_v1"
+    )
+    assert incident.observed["missing_packet_count"] == 1
+    assert incident.direction == "received"
 
 
 def test_postgres_skip_locked_claims_next_job_without_waiting(

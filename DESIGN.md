@@ -434,6 +434,18 @@ contractとしてevent化する。5秒以内の連続観測だけを1 degradatio
 cadenceなしにpacket gapや音切れを確定しない。閾値はincidentのExpected contractへ必ず返し、将来はscenario/
 manifest ruleへ移す。
 
+RTP packet tapは`rtp_packet_from_datagram`でv2 fixed headerだけをdecodeし、raw media payloadとSSRCを即座に
+破棄する。永続化するのはsafe stream alias、direction、sequence、RTP timestamp、payload type、marker、clock
+rate、arrival wall timeだけとし、通常packet eventはUI projectionから除外する。16-bit wrapを考慮したsequence
+deltaが2〜32767なら観測点での欠番として`RTP sequence gap observed`（high confidence）を生成する。ただしcollector/
+capture自身のdropを独立検証していないためnetwork loss確定とはしない。delta 0はduplicate、32768以上はreorder/
+reset候補としてgap判定から除外する。collectorはSSRCが変わるたびsafe stream aliasを更新する責務を持つ。
+
+sequenceが連番でclock rateも同一の場合、arrival gapからRTP timestamp由来のmedia advanceを引いた値が100ms以上なら
+`RTP arrival stall suspected`（medium confidence）とする。100msはprovisional thresholdとしてExpectedへ返し、
+将来scenario/codec packetization policyへ移す。wall clock capture点のstallであり、remote jitter bufferや可聴断を
+証明するものではない。
+
 Stage間診断は既存verificationを再判定せず、確定した`duration_preserving` failureをmedia-time evidenceへ変換する。
 短縮後のoutput durationから直前Stageのinput durationまでを`media_time_missing` intervalとし、隣接する2つの
 recording artifactとcontraction eventを同じincidentへ結ぶ。level変化は同一timestampのinput/output RMS、

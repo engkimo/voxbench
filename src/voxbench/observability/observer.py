@@ -118,6 +118,61 @@ class RtpStats:
 
 
 @dataclass(frozen=True)
+class RtpPacket:
+    stream_alias: str
+    direction: RtpDirection
+    sequence_number: int
+    rtp_timestamp: int
+    payload_type: int
+    clock_rate_hz: int
+    marker: bool = False
+    ts: datetime = field(default_factory=_utc_now)
+
+    def __post_init__(self) -> None:
+        if (
+            not self.stream_alias
+            or len(self.stream_alias) > 128
+            or any(ord(character) < 32 for character in self.stream_alias)
+        ):
+            raise ValueError("stream_alias must contain 1 to 128 safe characters")
+        if not 0 <= self.sequence_number <= 0xFFFF:
+            raise ValueError("sequence_number must fit in 16 bits")
+        if not 0 <= self.rtp_timestamp <= 0xFFFFFFFF:
+            raise ValueError("rtp_timestamp must fit in 32 bits")
+        if not 0 <= self.payload_type <= 127:
+            raise ValueError("payload_type must fit in 7 bits")
+        if not 0 < self.clock_rate_hz <= 384_000:
+            raise ValueError("clock_rate_hz must be between 1 and 384000")
+
+
+def rtp_packet_from_datagram(
+    datagram: bytes,
+    *,
+    stream_alias: str,
+    direction: RtpDirection,
+    clock_rate_hz: int,
+    ts: datetime | None = None,
+) -> RtpPacket:
+    """Decode only the fixed RTP header fields required for cadence evidence."""
+
+    if len(datagram) < 12:
+        raise ValueError("RTP datagram must contain the 12-byte fixed header")
+    version = datagram[0] >> 6
+    if version != 2:
+        raise ValueError("RTP datagram version must be 2")
+    return RtpPacket(
+        stream_alias=stream_alias,
+        direction=direction,
+        sequence_number=int.from_bytes(datagram[2:4], byteorder="big"),
+        rtp_timestamp=int.from_bytes(datagram[4:8], byteorder="big"),
+        payload_type=datagram[1] & 0x7F,
+        clock_rate_hz=clock_rate_hz,
+        marker=bool(datagram[1] & 0x80),
+        ts=ts or _utc_now(),
+    )
+
+
+@dataclass(frozen=True)
 class TimelineEvent:
     event_id: str
     category: TimelineCategory
@@ -241,6 +296,7 @@ class VoxBenchObserver:
         self._sip_events: list[SipEvent] = []
         self._rtp_stats: list[RtpStats] = []
         self._timeline_events: list[TimelineEvent] = []
+        self._rtp_packet_ordinal = 0
         self._lock = Lock()
 
     def observe_stage_audio(
@@ -348,6 +404,32 @@ class VoxBenchObserver:
     def observe_rtp_stats(self, stats: RtpStats) -> None:
         with self._lock:
             self._rtp_stats.append(stats)
+
+    def observe_rtp_packet(self, packet: RtpPacket) -> None:
+        """Record only safe RTP header/cadence evidence, never packet payload."""
+
+        with self._lock:
+            packet_ordinal = self._rtp_packet_ordinal
+            self._rtp_packet_ordinal += 1
+            self._timeline_events.append(
+                TimelineEvent(
+                    event_id=f"rtp-packet:{packet_ordinal}",
+                    category="transport",
+                    name="rtp.packet_arrived",
+                    source="rtp_packet_header_observer",
+                    correlation_alias=packet.stream_alias,
+                    direction=packet.direction,
+                    stream_alias=packet.stream_alias,
+                    attributes={
+                        "sequence_number": packet.sequence_number,
+                        "rtp_timestamp": packet.rtp_timestamp,
+                        "payload_type": packet.payload_type,
+                        "clock_rate_hz": packet.clock_rate_hz,
+                        "marker": packet.marker,
+                    },
+                    ts=packet.ts,
+                )
+            )
 
     def observe_timeline_event(self, event: TimelineEvent) -> None:
         with self._lock:

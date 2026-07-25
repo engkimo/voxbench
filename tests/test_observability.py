@@ -12,9 +12,11 @@ from voxbench.control_plane.app import create_app
 from voxbench.observability import (
     ObservationBatch,
     ObservationTransport,
+    RtpPacket,
     RtpStats,
     SipEvent,
     VoxBenchObserver,
+    rtp_packet_from_datagram,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -313,6 +315,170 @@ def test_rtp_degradation_projects_directional_evidence_windows(tmp_path: Path) -
     ]
     assert sent_incident["title"] == "RTP jitter elevated"
     assert sent_incident["observed"]["loss_burst_suspected"] is False
+
+
+def test_rtp_packet_headers_project_sequence_gap_and_arrival_stall(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    run_id = client.post("/runs/observed", json=_observed_run_payload()).json()["run_id"]
+    t0 = datetime.fromisoformat(client.get(f"/runs/{run_id}/timeline").json()["t0"])
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+    for sequence_number, rtp_timestamp, offset_ms in (
+        (65_534, 1_000, 100),
+        (65_535, 1_160, 120),
+        (1, 1_480, 160),
+        (2, 1_640, 300),
+    ):
+        observer.observe_rtp_packet(
+            RtpPacket(
+                stream_alias="caller-audio",
+                direction="received",
+                sequence_number=sequence_number,
+                rtp_timestamp=rtp_timestamp,
+                payload_type=0,
+                clock_rate_hz=8_000,
+                ts=t0 + timedelta(milliseconds=offset_ms),
+            )
+        )
+
+    assert observer.flush() == 4
+    lanes = client.get(f"/runs/{run_id}/timeline").json()["lanes"]
+    packet_events = [
+        event
+        for event in lanes["events"]
+        if event["source"] == "rtp_packet_cadence_rule_v1"
+    ]
+    assert [event["name"] for event in packet_events] == [
+        "rtp.sequence_gap_observed",
+        "rtp.arrival_stall_observed",
+    ]
+    assert not any(
+        event["name"] == "rtp.packet_arrived" for event in lanes["events"]
+    )
+    sequence_event = packet_events[0]
+    assert sequence_event["direction"] == "received"
+    assert sequence_event["stream_alias"] == "caller-audio"
+    assert sequence_event["attributes"] == {
+        "previous_sequence_number": 65_535,
+        "current_sequence_number": 1,
+        "sequence_delta": 2,
+        "missing_packet_count": 1,
+        "arrival_gap_ms": 40,
+        "media_advance_ms": 40,
+        "excess_arrival_delay_ms": 0,
+        "payload_type": 0,
+        "clock_rate_hz": 8_000,
+        "capture_point_continuity": "not independently verified",
+    }
+
+    packet_intervals = [
+        interval
+        for interval in lanes["intervals"]
+        if interval["source"] == "rtp_packet_cadence_rule_v1"
+    ]
+    assert [interval["name"] for interval in packet_intervals] == [
+        "rtp_sequence_gap",
+        "rtp_arrival_stall",
+    ]
+    assert packet_intervals[0]["start_ms"] == pytest.approx(120)
+    assert packet_intervals[0]["end_ms"] == pytest.approx(160)
+    assert packet_intervals[1]["start_ms"] == pytest.approx(160)
+    assert packet_intervals[1]["end_ms"] == pytest.approx(300)
+
+    packet_incidents = [
+        incident
+        for incident in lanes["incidents"]
+        if incident["rule_id"]
+        in {"rtp_sequence_gap_v1", "rtp_arrival_stall_v1"}
+    ]
+    assert [incident["title"] for incident in packet_incidents] == [
+        "RTP sequence gap observed",
+        "RTP arrival stall suspected",
+    ]
+    sequence_gap, arrival_stall = packet_incidents
+    assert sequence_gap["confidence"] == "high"
+    assert sequence_gap["summary"] == (
+        "1 RTP packet absent between observed sequence numbers"
+    )
+    assert sequence_gap["observed"]["missing_packet_count"] == 1
+    assert sequence_gap["expected"]["capture_point_continuity"] == (
+        "not independently verified"
+    )
+    assert sequence_gap["evidence_refs"] == [sequence_event["event_id"]]
+    assert arrival_stall["confidence"] == "medium"
+    assert arrival_stall["observed"]["sequence_delta"] == 1
+    assert arrival_stall["observed"]["arrival_gap_ms"] == pytest.approx(140)
+    assert arrival_stall["observed"]["media_advance_ms"] == pytest.approx(20)
+    assert arrival_stall["observed"]["excess_arrival_delay_ms"] == pytest.approx(
+        120
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("sequence_number", 65_536, "16 bits"),
+        ("rtp_timestamp", -1, "32 bits"),
+        ("payload_type", 128, "7 bits"),
+        ("clock_rate_hz", 0, "between 1 and 384000"),
+    ],
+)
+def test_rtp_packet_rejects_invalid_header_values(
+    field: str,
+    value: int,
+    message: str,
+) -> None:
+    values = {
+        "stream_alias": "caller-audio",
+        "direction": "received",
+        "sequence_number": 1,
+        "rtp_timestamp": 160,
+        "payload_type": 0,
+        "clock_rate_hz": 8_000,
+    }
+    values[field] = value
+    with pytest.raises(ValueError, match=message):
+        RtpPacket(**values)
+
+
+def test_rtp_datagram_decoder_discards_payload_and_ssrc() -> None:
+    datagram = (
+        bytes((0x80, 0x80))
+        + (321).to_bytes(2, byteorder="big")
+        + (654_321).to_bytes(4, byteorder="big")
+        + b"\xde\xad\xbe\xef"
+        + b"raw-media-must-not-be-stored"
+    )
+
+    packet = rtp_packet_from_datagram(
+        datagram,
+        stream_alias="caller-audio",
+        direction="received",
+        clock_rate_hz=8_000,
+    )
+
+    assert packet.sequence_number == 321
+    assert packet.rtp_timestamp == 654_321
+    assert packet.payload_type == 0
+    assert packet.marker is True
+    assert "raw-media" not in repr(packet)
+    assert "deadbeef" not in repr(packet).lower()
+
+    with pytest.raises(ValueError, match="12-byte fixed header"):
+        rtp_packet_from_datagram(
+            b"\x80\x00",
+            stream_alias="caller-audio",
+            direction="received",
+            clock_rate_hz=8_000,
+        )
+    with pytest.raises(ValueError, match="version must be 2"):
+        rtp_packet_from_datagram(
+            b"\x40" + (b"\x00" * 11),
+            stream_alias="caller-audio",
+            direction="received",
+            clock_rate_hz=8_000,
+        )
 
 
 def test_observation_batch_rejects_unknown_stage_and_raw_sip_fields(tmp_path: Path) -> None:

@@ -1,5 +1,18 @@
 # 進捗
 
+## Product UX: RTP sequence gap and arrival cadence evidence (2026-07-25)
+
+- 公開observer APIに`RtpPacket`と`rtp_packet_from_datagram(...)`を追加。RTP v2 fixed headerからsequence、
+  RTP timestamp、payload type、markerだけをdecodeし、raw media payloadとSSRCを保持・送信・保存しない。
+- safe stream alias、direction、clock rate、arrival wall timeを既存`timeline_events`経路へ保存。新table/migrationなしで
+  memory/Postgres repository再構築後も診断を再現できる。
+- 16-bit sequence wrapを考慮し、前後packetのdeltaが2〜32767なら欠番数を`rtp_sequence_gap` intervalと
+  `RTP sequence gap observed` warningへ投影。前後sequenceと集約eventをevidenceに持つ。
+- sequence連番かつ同一clock rateで、arrival gapがRTP media advanceを100ms以上超えた場合は
+  `rtp_arrival_stall` intervalとmedium-confidence warningを生成。100msはprovisional Expected threshold。
+- 通常packet markerはCall inspectorへ大量表示せず、gap/stallだけを共通時間軸へ出す。sequence欠番は観測点でhigh
+  confidenceだが、capture drop未除外のためnetwork loss確定とは呼ばない。製品全体は約89%。
+
 ## Product UX: output-start wait and playback underrun evidence (2026-07-25)
 
 - provider response開始から最初のAudioSocket frame writeまでを`assistant_output_start_wait` intervalとして投影。

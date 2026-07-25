@@ -249,6 +249,38 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
                         "played_audio_end_ms": 60,
                     },
                 },
+                {
+                    "event_id": "rtp-packet-test:0",
+                    "category": "transport",
+                    "name": "rtp.packet_arrived",
+                    "source": "rtp_packet_header_observer",
+                    "correlation_alias": "test-rtp-stream",
+                    "stream_alias": "test-rtp-stream",
+                    "direction": "received",
+                    "attributes": {
+                        "sequence_number": 10,
+                        "rtp_timestamp": 1600,
+                        "payload_type": 0,
+                        "clock_rate_hz": 8000,
+                        "marker": False,
+                    },
+                },
+                {
+                    "event_id": "rtp-packet-test:1",
+                    "category": "transport",
+                    "name": "rtp.packet_arrived",
+                    "source": "rtp_packet_header_observer",
+                    "correlation_alias": "test-rtp-stream",
+                    "stream_alias": "test-rtp-stream",
+                    "direction": "received",
+                    "attributes": {
+                        "sequence_number": 12,
+                        "rtp_timestamp": 1920,
+                        "payload_type": 0,
+                        "clock_rate_hz": 8000,
+                        "marker": False,
+                    },
+                },
             ],
         },
     )
@@ -277,7 +309,7 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
     assert [
         event["event_id"]
         for event in timeline["lanes"]["events"]
-        if event["correlation_alias"]
+        if (event["correlation_alias"] or "").startswith("barge-in")
     ] == [
         "barge-in-1:1",
         "barge-in-1:2",
@@ -294,6 +326,13 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
         "barge-in-1:2",
         "barge-in-1:3",
     ]
+    sequence_gap = next(
+        incident
+        for incident in timeline["lanes"]["incidents"]
+        if incident["rule_id"] == "rtp_sequence_gap_v1"
+    )
+    assert sequence_gap["observed"]["missing_packet_count"] == 1
+    assert sequence_gap["direction"] == "received"
 
 
 def test_postgres_repository_commits_result_and_job_completion_atomically(

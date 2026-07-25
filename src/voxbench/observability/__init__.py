@@ -7,11 +7,13 @@ from voxbench.observability.observer import (
     ObservationBatch,
     ObservationTransport,
     RtpDirection,
+    RtpPacket,
     RtpStats,
     SipEvent,
     TimelineCategory,
     TimelineEvent,
     VoxBenchObserver,
+    rtp_packet_from_datagram,
 )
 
 __all__ = [
@@ -21,9 +23,11 @@ __all__ = [
     "ObservationBatch",
     "ObservationTransport",
     "RtpDirection",
+    "RtpPacket",
     "RtpStats",
     "SipEvent",
     "TimelineCategory",
     "TimelineEvent",
     "VoxBenchObserver",
+    "rtp_packet_from_datagram",
 ]

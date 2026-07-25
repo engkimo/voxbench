@@ -1149,6 +1149,7 @@ RTP_LOSS_WARNING_PCT = 1.0
 RTP_JITTER_WARNING_MS = 30.0
 RTP_MOS_WARNING_SCORE = 3.5
 RTP_DEGRADATION_WINDOW_GAP_MS = 5_000.0
+RTP_ARRIVAL_STALL_EXCESS_MS = 100.0
 STAGE_LEVEL_EVENT_THRESHOLD_DB = 1.0
 STAGE_SILENCE_THRESHOLD_DBFS = -60.0
 STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
@@ -1172,6 +1173,41 @@ class _RtpQualityEvidence:
     @property
     def evidence_refs(self) -> list[str]:
         return [f"rtp:{self.stat_index}:{trigger}" for trigger in self.triggers]
+
+
+@dataclass(frozen=True)
+class _RtpPacketObservationEvidence:
+    event: TimelineEventArtifact
+    event_ordinal: int
+    direction: RtpDirection
+    stream_alias: str
+    t_rel_ms: float
+    sequence_number: int
+    rtp_timestamp: int
+    payload_type: int
+    clock_rate_hz: int
+    marker: bool
+
+
+@dataclass(frozen=True)
+class _RtpPacketDiscontinuityEvidence:
+    evidence_index: int
+    kind: Literal["sequence_gap", "arrival_stall"]
+    previous: _RtpPacketObservationEvidence
+    current: _RtpPacketObservationEvidence
+    sequence_delta: int
+    missing_packet_count: int
+    arrival_gap_ms: float
+    media_advance_ms: float
+    excess_arrival_delay_ms: float
+
+    @property
+    def correlation_alias(self) -> str:
+        return f"rtp-packet-discontinuity:{self.evidence_index}"
+
+    @property
+    def event_id(self) -> str:
+        return f"{self.correlation_alias}:observed"
 
 
 @dataclass(frozen=True)
@@ -1855,6 +1891,141 @@ def _rtp_quality_evidence(run: StoredRun) -> list[_RtpQualityEvidence]:
     )
 
 
+def _rtp_packet_observations(
+    run: StoredRun,
+) -> list[_RtpPacketObservationEvidence]:
+    observations: list[_RtpPacketObservationEvidence] = []
+    for event_ordinal, event in enumerate(run.timeline_events):
+        if (
+            event.name != "rtp.packet_arrived"
+            or event.stream_alias is None
+            or event.direction not in {"received", "sent"}
+        ):
+            continue
+        sequence_number = _bounded_int_attribute(
+            event.attributes,
+            "sequence_number",
+            minimum=0,
+            maximum=0xFFFF,
+        )
+        rtp_timestamp = _bounded_int_attribute(
+            event.attributes,
+            "rtp_timestamp",
+            minimum=0,
+            maximum=0xFFFFFFFF,
+        )
+        payload_type = _bounded_int_attribute(
+            event.attributes,
+            "payload_type",
+            minimum=0,
+            maximum=127,
+        )
+        clock_rate_hz = _bounded_int_attribute(
+            event.attributes,
+            "clock_rate_hz",
+            minimum=1,
+            maximum=384_000,
+        )
+        marker = event.attributes.get("marker")
+        if (
+            sequence_number is None
+            or rtp_timestamp is None
+            or payload_type is None
+            or clock_rate_hz is None
+            or not isinstance(marker, bool)
+        ):
+            continue
+        observations.append(
+            _RtpPacketObservationEvidence(
+                event=event,
+                event_ordinal=event_ordinal,
+                direction=event.direction,
+                stream_alias=event.stream_alias,
+                t_rel_ms=max(
+                    0.0,
+                    _relative_seconds(event.ts, run.started_at) * 1000,
+                ),
+                sequence_number=sequence_number,
+                rtp_timestamp=rtp_timestamp,
+                payload_type=payload_type,
+                clock_rate_hz=clock_rate_hz,
+                marker=marker,
+            )
+        )
+    return sorted(
+        observations,
+        key=lambda item: (
+            item.stream_alias,
+            item.direction,
+            item.t_rel_ms,
+            item.event_ordinal,
+        ),
+    )
+
+
+def _rtp_packet_discontinuity_evidence(
+    run: StoredRun,
+) -> list[_RtpPacketDiscontinuityEvidence]:
+    grouped: dict[
+        tuple[str, RtpDirection],
+        list[_RtpPacketObservationEvidence],
+    ] = {}
+    for item in _rtp_packet_observations(run):
+        grouped.setdefault((item.stream_alias, item.direction), []).append(item)
+    evidence: list[_RtpPacketDiscontinuityEvidence] = []
+    for packets in grouped.values():
+        for previous, current in pairwise(packets):
+            sequence_delta = (
+                current.sequence_number - previous.sequence_number
+            ) % 65_536
+            arrival_gap_ms = max(0.0, current.t_rel_ms - previous.t_rel_ms)
+            timestamp_delta = (
+                current.rtp_timestamp - previous.rtp_timestamp
+            ) % 4_294_967_296
+            media_advance_ms = (
+                timestamp_delta / current.clock_rate_hz * 1000
+                if current.clock_rate_hz == previous.clock_rate_hz
+                else 0.0
+            )
+            excess_arrival_delay_ms = max(
+                0.0,
+                arrival_gap_ms - media_advance_ms,
+            )
+            if 1 < sequence_delta < 32_768:
+                kind: Literal["sequence_gap", "arrival_stall"] = "sequence_gap"
+                missing_packet_count = sequence_delta - 1
+            elif (
+                sequence_delta == 1
+                and current.clock_rate_hz == previous.clock_rate_hz
+                and excess_arrival_delay_ms >= RTP_ARRIVAL_STALL_EXCESS_MS
+            ):
+                kind = "arrival_stall"
+                missing_packet_count = 0
+            else:
+                continue
+            evidence.append(
+                _RtpPacketDiscontinuityEvidence(
+                    evidence_index=len(evidence),
+                    kind=kind,
+                    previous=previous,
+                    current=current,
+                    sequence_delta=sequence_delta,
+                    missing_packet_count=missing_packet_count,
+                    arrival_gap_ms=arrival_gap_ms,
+                    media_advance_ms=media_advance_ms,
+                    excess_arrival_delay_ms=excess_arrival_delay_ms,
+                )
+            )
+    return sorted(
+        evidence,
+        key=lambda item: (
+            item.current.t_rel_ms,
+            item.current.stream_alias,
+            item.evidence_index,
+        ),
+    )
+
+
 def _rtp_quality_windows(run: StoredRun) -> list[list[_RtpQualityEvidence]]:
     by_direction: dict[RtpDirection | None, list[_RtpQualityEvidence]] = {}
     for item in _rtp_quality_evidence(run):
@@ -1920,6 +2091,7 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
             attributes=event.attributes,
         )
         for event in run.timeline_events
+        if event.name != "rtp.packet_arrived"
     )
 
     provider_response_observation_indices = {
@@ -1987,6 +2159,38 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
                     },
                 )
             )
+
+    for item in _rtp_packet_discontinuity_evidence(run):
+        is_sequence_gap = item.kind == "sequence_gap"
+        events.append(
+            TimelineTypedEvent(
+                event_id=item.event_id,
+                category="transport",
+                name=(
+                    "rtp.sequence_gap_observed"
+                    if is_sequence_gap
+                    else "rtp.arrival_stall_observed"
+                ),
+                t_rel_ms=item.current.t_rel_ms,
+                clock_domain="control_plane_wall",
+                direction=item.current.direction,
+                stream_alias=item.current.stream_alias,
+                source="rtp_packet_cadence_rule_v1",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "previous_sequence_number": item.previous.sequence_number,
+                    "current_sequence_number": item.current.sequence_number,
+                    "sequence_delta": item.sequence_delta,
+                    "missing_packet_count": item.missing_packet_count,
+                    "arrival_gap_ms": item.arrival_gap_ms,
+                    "media_advance_ms": item.media_advance_ms,
+                    "excess_arrival_delay_ms": item.excess_arrival_delay_ms,
+                    "payload_type": item.current.payload_type,
+                    "clock_rate_hz": item.current.clock_rate_hz,
+                    "capture_point_continuity": "not independently verified",
+                },
+            )
+        )
 
     for item in _stage_signal_evidence(run):
         events.append(
@@ -2151,6 +2355,35 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 stage=stage,
                 source="otel_span",
                 attributes={"duration_ms": end_ms - start_ms},
+            )
+        )
+    for item in _rtp_packet_discontinuity_evidence(run):
+        intervals.append(
+            TimelineTypedInterval(
+                interval_id=item.correlation_alias,
+                category="transport",
+                name=(
+                    "rtp_sequence_gap"
+                    if item.kind == "sequence_gap"
+                    else "rtp_arrival_stall"
+                ),
+                start_ms=item.previous.t_rel_ms,
+                end_ms=item.current.t_rel_ms,
+                clock_domain="control_plane_wall",
+                direction=item.current.direction,
+                stream_alias=item.current.stream_alias,
+                source="rtp_packet_cadence_rule_v1",
+                correlation_alias=item.correlation_alias,
+                attributes={
+                    "duration_ms": (
+                        item.current.t_rel_ms - item.previous.t_rel_ms
+                    ),
+                    "sequence_delta": item.sequence_delta,
+                    "missing_packet_count": item.missing_packet_count,
+                    "arrival_gap_ms": item.arrival_gap_ms,
+                    "media_advance_ms": item.media_advance_ms,
+                    "excess_arrival_delay_ms": item.excess_arrival_delay_ms,
+                },
             )
         )
     for item in _provider_response_evidence(run):
@@ -2707,6 +2940,62 @@ def _typed_timeline_incidents(
                 evidence_refs=evidence_refs,
             )
         )
+    for item in _rtp_packet_discontinuity_evidence(run):
+        is_sequence_gap = item.kind == "sequence_gap"
+        incidents.append(
+            TimelineIncident(
+                incident_id=item.correlation_alias,
+                rule_id=(
+                    "rtp_sequence_gap_v1"
+                    if is_sequence_gap
+                    else "rtp_arrival_stall_v1"
+                ),
+                category="transport",
+                severity="warning",
+                title=(
+                    "RTP sequence gap observed"
+                    if is_sequence_gap
+                    else "RTP arrival stall suspected"
+                ),
+                summary=(
+                    (
+                        f"{item.missing_packet_count} RTP packet"
+                        f"{'s' if item.missing_packet_count != 1 else ''} "
+                        "absent between observed sequence numbers"
+                    )
+                    if is_sequence_gap
+                    else (
+                        f"{item.excess_arrival_delay_ms:g} ms excess arrival "
+                        "delay between consecutive RTP packets"
+                    )
+                ),
+                start_ms=item.previous.t_rel_ms,
+                end_ms=item.current.t_rel_ms,
+                confidence="high" if is_sequence_gap else "medium",
+                direction=item.current.direction,
+                observed={
+                    "stream_alias": item.current.stream_alias,
+                    "previous_sequence_number": item.previous.sequence_number,
+                    "current_sequence_number": item.current.sequence_number,
+                    "sequence_delta": item.sequence_delta,
+                    "missing_packet_count": item.missing_packet_count,
+                    "arrival_gap_ms": item.arrival_gap_ms,
+                    "media_advance_ms": item.media_advance_ms,
+                    "excess_arrival_delay_ms": item.excess_arrival_delay_ms,
+                    "payload_type": item.current.payload_type,
+                    "clock_rate_hz": item.current.clock_rate_hz,
+                },
+                expected={
+                    "sequence_delta": 1,
+                    "arrival_excess_ms_below": RTP_ARRIVAL_STALL_EXCESS_MS,
+                    "capture_point_continuity": "not independently verified",
+                    "network_loss_confirmation": (
+                        "capture loss must be excluded at the observation point"
+                    ),
+                },
+                evidence_refs=[item.event_id],
+            )
+        )
     if run.failure_alias is not None:
         incidents.append(
             TimelineIncident(
@@ -2872,6 +3161,23 @@ def _numeric_attribute(attributes: Mapping[str, Any], name: str) -> float | None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
+
+
+def _bounded_int_attribute(
+    attributes: Mapping[str, Any],
+    name: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int | None:
+    value = attributes.get(name)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        return None
+    return value
 
 
 def _metric_timeline_category(metric: MetricArtifact) -> TimelineCategory:
