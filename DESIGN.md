@@ -438,8 +438,18 @@ RTP packet tapは`rtp_packet_from_datagram`でv2 fixed headerだけをdecodeし�
 破棄する。永続化するのはsafe stream alias、direction、sequence、RTP timestamp、payload type、marker、clock
 rate、arrival wall timeだけとし、通常packet eventはUI projectionから除外する。16-bit wrapを考慮したsequence
 deltaが2〜32767なら観測点での欠番として`RTP sequence gap observed`（high confidence）を生成する。ただしcollector/
-capture自身のdropを独立検証していないためnetwork loss確定とはしない。delta 0はduplicate、32768以上はreorder/
+capture自身のdropを独立検証していない場合はnetwork loss確定とはしない。delta 0はduplicate、32768以上はreorder/
 reset候補としてgap判定から除外する。collectorはSSRCが変わるたびsafe stream aliasを更新する責務を持つ。
+
+library integrationは`RtpPacketTapAdapter`へ一時的なdatagramを渡し、owner側queue/socket/libpcapが検出したdrop deltaを
+`record_capture_drop`へ明示入力する。adapter自身はkernel dropを推測しない。250〜1000msごとのhealth windowに
+observed packet数、capture drop数、decode error数、counter対応有無、clock domain、alignment uncertaintyだけを
+保存する。counter対応済みでdrop/decode errorが0ならそのwindowのcapture continuityを`verified`、いずれかが
+非0なら`compromised`、counter未対応なら`not independently verified`とする。compromised window内のsequence gap/
+arrival stallはcapture起因を除外できないためlow confidenceへ降格し、health eventをevidence chainへ追加する。
+verifiedは観測点までのcapture continuityを支持するだけで、tap placement不明のnetwork segment attributionまでは
+許可しない。packet pairは同一safe stream alias、direction、clock domainの中だけで比較し、clock alignment
+uncertaintyをderived evidenceへ伝播する。
 
 sequenceが連番でclock rateも同一の場合、arrival gapからRTP timestamp由来のmedia advanceを引いた値が100ms以上なら
 `RTP arrival stall suspected`（medium confidence）とする。100msはprovisional thresholdとしてExpectedへ返し、

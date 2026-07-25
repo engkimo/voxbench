@@ -165,7 +165,11 @@ def test_simulated_live_demo_exposes_rtp_gap_and_stall_on_common_timeline(
         incidents["rtp_sequence_gap_v1"]["expected"][
             "capture_point_continuity"
         ]
-        == "not independently verified"
+        == "verified"
+    )
+    assert incidents["rtp_sequence_gap_v1"]["observed"]["alignment_uncertainty_ms"] == 0.5
+    assert incidents["rtp_sequence_gap_v1"]["evidence_refs"][-1] == (
+        "rtp-capture-health:0"
     )
     assert incidents["rtp_arrival_stall_v1"]["observed"]["excess_arrival_delay_ms"] == 140
 

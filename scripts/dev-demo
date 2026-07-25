@@ -190,6 +190,7 @@ DEMO_URL="http://127.0.0.1:${WEB_PORT}/?run_id=${RUN_ID}"
 echo
 echo "VoxBench diagnostic demo is ready."
 echo "Open: $DEMO_URL"
+echo "API: http://127.0.0.1:$API_PORT"
 echo "Postgres: $PG_CONTAINER on 127.0.0.1:$PG_PORT"
 echo "Runtime logs: $RUNTIME_DIR"
 echo

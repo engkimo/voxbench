@@ -326,13 +326,14 @@ def _rtp_packet_events(
             (1004, 480, 500),
         )
 
-    return [
+    packet_events = [
         TimelineEventArtifact(
             event_id=f"rtp-packet:{ordinal}",
             category="transport",
             name="rtp.packet_arrived",
             source="simulated_rtp_packet_observer",
             correlation_alias="simulated-caller-audio",
+            alignment_uncertainty_ms=0.5,
             direction="received",
             stream_alias="simulated-caller-audio",
             attributes={
@@ -347,6 +348,28 @@ def _rtp_packet_events(
         for ordinal, (sequence_number, rtp_timestamp, arrival_ms) in enumerate(
             packet_points
         )
+    ]
+    return [
+        *packet_events,
+        TimelineEventArtifact(
+            event_id="rtp-capture-health:0",
+            category="transport",
+            name="rtp.capture_health_reported",
+            source="simulated_rtp_packet_observer",
+            correlation_alias="simulated-caller-audio",
+            alignment_uncertainty_ms=0.5,
+            direction="received",
+            stream_alias="simulated-caller-audio",
+            attributes={
+                "observed_packet_count": len(packet_events),
+                "capture_drop_count": 0,
+                "decode_error_count": 0,
+                "capture_drop_counter_supported": True,
+                "capture_point_continuity": "verified",
+                "window_duration_ms": 220,
+            },
+            ts=started_at + timedelta(milliseconds=520),
+        ),
     ]
 
 

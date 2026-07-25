@@ -31,6 +31,7 @@ TimelineCategory = Literal[
     "runtime",
     "session",
 ]
+_SENSITIVE_REFERENCE_MARKERS = ("http://", "https://", "<@", "slack://")
 
 
 def _utc_now() -> datetime:
@@ -41,6 +42,24 @@ def _timestamp(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.isoformat()
+
+
+def _validate_safe_reference(
+    value: str,
+    *,
+    field_name: str,
+    max_length: int,
+) -> None:
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > max_length
+        or any(ord(character) < 32 for character in value)
+        or any(marker in value.lower() for marker in _SENSITIVE_REFERENCE_MARKERS)
+    ):
+        raise ValueError(
+            f"{field_name} must contain 1 to {max_length} safe alias characters"
+        )
 
 
 @dataclass(frozen=True)
@@ -126,23 +145,61 @@ class RtpPacket:
     payload_type: int
     clock_rate_hz: int
     marker: bool = False
+    clock_domain: str = "control_plane_wall"
+    alignment_uncertainty_ms: float | None = None
     ts: datetime = field(default_factory=_utc_now)
 
     def __post_init__(self) -> None:
+        _validate_safe_reference(
+            self.stream_alias,
+            field_name="stream_alias",
+            max_length=128,
+        )
+        if self.direction not in {"received", "sent"}:
+            raise ValueError("direction must be received or sent")
         if (
-            not self.stream_alias
-            or len(self.stream_alias) > 128
-            or any(ord(character) < 32 for character in self.stream_alias)
+            isinstance(self.sequence_number, bool)
+            or not isinstance(self.sequence_number, int)
+            or not 0 <= self.sequence_number <= 0xFFFF
         ):
-            raise ValueError("stream_alias must contain 1 to 128 safe characters")
-        if not 0 <= self.sequence_number <= 0xFFFF:
             raise ValueError("sequence_number must fit in 16 bits")
-        if not 0 <= self.rtp_timestamp <= 0xFFFFFFFF:
+        if (
+            isinstance(self.rtp_timestamp, bool)
+            or not isinstance(self.rtp_timestamp, int)
+            or not 0 <= self.rtp_timestamp <= 0xFFFFFFFF
+        ):
             raise ValueError("rtp_timestamp must fit in 32 bits")
-        if not 0 <= self.payload_type <= 127:
+        if (
+            isinstance(self.payload_type, bool)
+            or not isinstance(self.payload_type, int)
+            or not 0 <= self.payload_type <= 127
+        ):
             raise ValueError("payload_type must fit in 7 bits")
-        if not 0 < self.clock_rate_hz <= 384_000:
+        if (
+            isinstance(self.clock_rate_hz, bool)
+            or not isinstance(self.clock_rate_hz, int)
+            or not 0 < self.clock_rate_hz <= 384_000
+        ):
             raise ValueError("clock_rate_hz must be between 1 and 384000")
+        _validate_safe_reference(
+            self.clock_domain,
+            field_name="clock_domain",
+            max_length=64,
+        )
+        if (
+            self.alignment_uncertainty_ms is not None
+            and (
+                isinstance(self.alignment_uncertainty_ms, bool)
+                or not isinstance(self.alignment_uncertainty_ms, int | float)
+                or not math.isfinite(self.alignment_uncertainty_ms)
+                or self.alignment_uncertainty_ms < 0
+            )
+        ):
+            raise ValueError(
+                "alignment_uncertainty_ms must be finite and non-negative"
+            )
+        if not isinstance(self.ts, datetime):
+            raise ValueError("ts must be a datetime")
 
 
 def rtp_packet_from_datagram(
@@ -151,6 +208,8 @@ def rtp_packet_from_datagram(
     stream_alias: str,
     direction: RtpDirection,
     clock_rate_hz: int,
+    clock_domain: str = "control_plane_wall",
+    alignment_uncertainty_ms: float | None = None,
     ts: datetime | None = None,
 ) -> RtpPacket:
     """Decode only the fixed RTP header fields required for cadence evidence."""
@@ -168,8 +227,84 @@ def rtp_packet_from_datagram(
         payload_type=datagram[1] & 0x7F,
         clock_rate_hz=clock_rate_hz,
         marker=bool(datagram[1] & 0x80),
+        clock_domain=clock_domain,
+        alignment_uncertainty_ms=alignment_uncertainty_ms,
         ts=ts or _utc_now(),
     )
+
+
+@dataclass(frozen=True)
+class RtpCaptureHealthSnapshot:
+    stream_alias: str
+    direction: RtpDirection
+    observed_packet_count: int
+    capture_drop_count: int
+    decode_error_count: int
+    capture_drop_counter_supported: bool
+    continuity: Literal["verified", "compromised", "not independently verified"]
+    window_duration_ms: float
+    clock_domain: str
+    alignment_uncertainty_ms: float | None
+    ts: datetime
+
+    def __post_init__(self) -> None:
+        _validate_safe_reference(
+            self.stream_alias,
+            field_name="stream_alias",
+            max_length=128,
+        )
+        _validate_safe_reference(
+            self.clock_domain,
+            field_name="clock_domain",
+            max_length=64,
+        )
+        if self.direction not in {"received", "sent"}:
+            raise ValueError("direction must be received or sent")
+        for field_name, value in (
+            ("observed_packet_count", self.observed_packet_count),
+            ("capture_drop_count", self.capture_drop_count),
+            ("decode_error_count", self.decode_error_count),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if not isinstance(self.capture_drop_counter_supported, bool):
+            raise ValueError("capture_drop_counter_supported must be boolean")
+        if self.continuity not in {
+            "verified",
+            "compromised",
+            "not independently verified",
+        }:
+            raise ValueError("continuity must be a supported safe state")
+        expected_continuity = (
+            "compromised"
+            if self.capture_drop_count or self.decode_error_count
+            else "verified"
+            if self.capture_drop_counter_supported
+            else "not independently verified"
+        )
+        if self.continuity != expected_continuity:
+            raise ValueError("continuity must match capture health counters")
+        if (
+            isinstance(self.window_duration_ms, bool)
+            or not isinstance(self.window_duration_ms, int | float)
+            or not math.isfinite(self.window_duration_ms)
+            or self.window_duration_ms < 0
+        ):
+            raise ValueError("window_duration_ms must be finite and non-negative")
+        if (
+            self.alignment_uncertainty_ms is not None
+            and (
+                isinstance(self.alignment_uncertainty_ms, bool)
+                or not isinstance(self.alignment_uncertainty_ms, int | float)
+                or not math.isfinite(self.alignment_uncertainty_ms)
+                or self.alignment_uncertainty_ms < 0
+            )
+        ):
+            raise ValueError(
+                "alignment_uncertainty_ms must be finite and non-negative"
+            )
+        if not isinstance(self.ts, datetime):
+            raise ValueError("ts must be a datetime")
 
 
 @dataclass(frozen=True)
@@ -297,6 +432,7 @@ class VoxBenchObserver:
         self._rtp_stats: list[RtpStats] = []
         self._timeline_events: list[TimelineEvent] = []
         self._rtp_packet_ordinal = 0
+        self._rtp_capture_health_ordinal = 0
         self._lock = Lock()
 
     def observe_stage_audio(
@@ -418,6 +554,8 @@ class VoxBenchObserver:
                     name="rtp.packet_arrived",
                     source="rtp_packet_header_observer",
                     correlation_alias=packet.stream_alias,
+                    clock_domain=packet.clock_domain,
+                    alignment_uncertainty_ms=packet.alignment_uncertainty_ms,
                     direction=packet.direction,
                     stream_alias=packet.stream_alias,
                     attributes={
@@ -428,6 +566,40 @@ class VoxBenchObserver:
                         "marker": packet.marker,
                     },
                     ts=packet.ts,
+                )
+            )
+
+    def observe_rtp_capture_health(
+        self,
+        snapshot: RtpCaptureHealthSnapshot,
+    ) -> None:
+        """Record one safe capture-health window with an observer-unique event ID."""
+
+        with self._lock:
+            event_ordinal = self._rtp_capture_health_ordinal
+            self._rtp_capture_health_ordinal += 1
+            self._timeline_events.append(
+                TimelineEvent(
+                    event_id=f"rtp-capture-health:{event_ordinal}",
+                    category="transport",
+                    name="rtp.capture_health_reported",
+                    source="rtp_packet_tap_adapter",
+                    correlation_alias=snapshot.stream_alias,
+                    clock_domain=snapshot.clock_domain,
+                    alignment_uncertainty_ms=snapshot.alignment_uncertainty_ms,
+                    direction=snapshot.direction,
+                    stream_alias=snapshot.stream_alias,
+                    attributes={
+                        "observed_packet_count": snapshot.observed_packet_count,
+                        "capture_drop_count": snapshot.capture_drop_count,
+                        "decode_error_count": snapshot.decode_error_count,
+                        "capture_drop_counter_supported": (
+                            snapshot.capture_drop_counter_supported
+                        ),
+                        "capture_point_continuity": snapshot.continuity,
+                        "window_duration_ms": snapshot.window_duration_ms,
+                    },
+                    ts=snapshot.ts,
                 )
             )
 
@@ -478,6 +650,136 @@ class VoxBenchObserver:
             )
 
 
+class RtpPacketTapAdapter:
+    """Project transient RTP datagrams and explicit capture health into an observer."""
+
+    def __init__(
+        self,
+        observer: VoxBenchObserver,
+        *,
+        stream_alias: str,
+        direction: RtpDirection,
+        clock_rate_hz: int,
+        clock_domain: str = "control_plane_wall",
+        alignment_uncertainty_ms: float | None = None,
+        capture_drop_counter_supported: bool = False,
+        started_at: datetime | None = None,
+    ) -> None:
+        validation_packet = RtpPacket(
+            stream_alias=stream_alias,
+            direction=direction,
+            sequence_number=0,
+            rtp_timestamp=0,
+            payload_type=0,
+            clock_rate_hz=clock_rate_hz,
+            clock_domain=clock_domain,
+            alignment_uncertainty_ms=alignment_uncertainty_ms,
+        )
+        self.observer = observer
+        self.stream_alias = validation_packet.stream_alias
+        self.direction = validation_packet.direction
+        self.clock_rate_hz = validation_packet.clock_rate_hz
+        self.clock_domain = validation_packet.clock_domain
+        self.alignment_uncertainty_ms = validation_packet.alignment_uncertainty_ms
+        if not isinstance(capture_drop_counter_supported, bool):
+            raise ValueError("capture_drop_counter_supported must be boolean")
+        if started_at is not None and not isinstance(started_at, datetime):
+            raise ValueError("started_at must be a datetime")
+        self._capture_drop_counter_supported = capture_drop_counter_supported
+        self._window_started_at = started_at or _utc_now()
+        self._observed_packet_count = 0
+        self._capture_drop_count = 0
+        self._decode_error_count = 0
+        self._lock = Lock()
+
+    def observe_datagram(
+        self,
+        datagram: bytes,
+        *,
+        ts: datetime | None = None,
+    ) -> RtpPacket:
+        """Decode transient header fields and queue one safe packet observation."""
+
+        try:
+            packet = rtp_packet_from_datagram(
+                datagram,
+                stream_alias=self.stream_alias,
+                direction=self.direction,
+                clock_rate_hz=self.clock_rate_hz,
+                clock_domain=self.clock_domain,
+                alignment_uncertainty_ms=self.alignment_uncertainty_ms,
+                ts=ts,
+            )
+        except ValueError:
+            with self._lock:
+                self._decode_error_count += 1
+            raise
+        self.observer.observe_rtp_packet(packet)
+        with self._lock:
+            self._observed_packet_count += 1
+        return packet
+
+    def record_capture_drop(self, count: int = 1) -> None:
+        """Record drops reported by the owning queue, socket, or capture library."""
+
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError("capture drop count must be a positive integer")
+        with self._lock:
+            self._capture_drop_counter_supported = True
+            self._capture_drop_count += count
+
+    def report_health(self, *, ts: datetime | None = None) -> RtpCaptureHealthSnapshot:
+        """Emit and reset one bounded capture-health reporting window."""
+
+        reported_at = ts or _utc_now()
+        with self._lock:
+            snapshot = self._snapshot(reported_at)
+            self._window_started_at = reported_at
+            self._observed_packet_count = 0
+            self._capture_drop_count = 0
+            self._decode_error_count = 0
+        self.observer.observe_rtp_capture_health(snapshot)
+        return snapshot
+
+    def snapshot(self, *, ts: datetime | None = None) -> RtpCaptureHealthSnapshot:
+        """Return safe in-process counters without emitting or resetting them."""
+
+        reported_at = ts or _utc_now()
+        with self._lock:
+            return self._snapshot(reported_at)
+
+    def _snapshot(self, reported_at: datetime) -> RtpCaptureHealthSnapshot:
+        if self._capture_drop_count or self._decode_error_count:
+            continuity: Literal[
+                "verified",
+                "compromised",
+                "not independently verified",
+            ] = "compromised"
+        elif self._capture_drop_counter_supported:
+            continuity = "verified"
+        else:
+            continuity = "not independently verified"
+        return RtpCaptureHealthSnapshot(
+            stream_alias=self.stream_alias,
+            direction=self.direction,
+            observed_packet_count=self._observed_packet_count,
+            capture_drop_count=self._capture_drop_count,
+            decode_error_count=self._decode_error_count,
+            capture_drop_counter_supported=self._capture_drop_counter_supported,
+            continuity=continuity,
+            window_duration_ms=max(
+                0.0,
+                (_normalized_datetime(reported_at) - _normalized_datetime(
+                    self._window_started_at
+                )).total_seconds()
+                * 1000,
+            ),
+            clock_domain=self.clock_domain,
+            alignment_uncertainty_ms=self.alignment_uncertainty_ms,
+            ts=reported_at,
+        )
+
+
 def pcm_s16le_rms(pcm: bytes) -> float:
     """Return RMS for signed little-endian 16-bit PCM without optional audio deps."""
 
@@ -489,6 +791,12 @@ def pcm_s16le_rms(pcm: bytes) -> float:
     samples = struct.iter_unpack("<h", pcm)
     square_sum = sum(sample[0] * sample[0] for sample in samples)
     return math.sqrt(square_sum / sample_count)
+
+
+def _normalized_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def pcm_s16le_quality(pcm: bytes) -> tuple[float, float, float]:

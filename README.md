@@ -595,13 +595,22 @@ config. API key values are never stored; provider configs use env var aliases
 such as `env:OPENAI_API_KEY` and `env:GOOGLE_API_KEY`.
 
 Existing applications can start an observed run and batch PCM stage taps,
-gain metrics, SIP events, and RTP statistics through the public Python API. See
+gain metrics, SIP events, RTP statistics, safe RTP fixed-header observations,
+capture-drop health, and clock-alignment uncertainty through the public Python API. See
 [docs/library-integration.md](docs/library-integration.md) for direct-provider and
 Pipecat integration patterns, or run the local example:
 
 ```bash
-python examples/integrations/observe_direct_pipeline.py --provider openai-realtime
+python examples/integrations/observe_direct_pipeline.py \
+  --base-url http://127.0.0.1:8002 \
+  --provider openai-realtime \
+  --rtp-scenario verified-gap
 ```
+
+Use the API URL printed by `./scripts/dev-demo`; `8002` is only the common value
+when an older API still occupies `8001`. The example also supports `clean` and
+`capture-drop`, allowing a local check that observer-side loss downgrades the
+network-loss claim instead of being misreported as a confirmed network problem.
 
 For a real macOS softphone audio loopback through Asterisk, install the local-only
 config snippets under `examples/asterisk/`, then run:

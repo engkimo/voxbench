@@ -1192,6 +1192,32 @@ class _RtpPacketObservationEvidence:
 
 
 @dataclass(frozen=True)
+class _RtpCaptureHealthEvidence:
+    event: TimelineEventArtifact
+    event_ordinal: int
+    direction: RtpDirection
+    stream_alias: str
+    start_ms: float
+    end_ms: float
+    observed_packet_count: int
+    capture_drop_count: int
+    decode_error_count: int
+    capture_drop_counter_supported: bool
+
+    @property
+    def continuity(self) -> Literal[
+        "verified",
+        "compromised",
+        "not independently verified",
+    ]:
+        if self.capture_drop_count or self.decode_error_count:
+            return "compromised"
+        if self.capture_drop_counter_supported:
+            return "verified"
+        return "not independently verified"
+
+
+@dataclass(frozen=True)
 class _RtpPacketDiscontinuityEvidence:
     evidence_index: int
     kind: Literal["sequence_gap", "arrival_stall"]
@@ -1202,6 +1228,7 @@ class _RtpPacketDiscontinuityEvidence:
     arrival_gap_ms: float
     media_advance_ms: float
     excess_arrival_delay_ms: float
+    capture_health: _RtpCaptureHealthEvidence | None = None
 
     @property
     def correlation_alias(self) -> str:
@@ -1965,15 +1992,113 @@ def _rtp_packet_observations(
     )
 
 
+def _rtp_capture_health_reports(
+    run: StoredRun,
+) -> list[_RtpCaptureHealthEvidence]:
+    reports: list[_RtpCaptureHealthEvidence] = []
+    for event_ordinal, event in enumerate(run.timeline_events):
+        if (
+            event.name != "rtp.capture_health_reported"
+            or event.stream_alias is None
+            or event.direction not in {"received", "sent"}
+        ):
+            continue
+        observed_packet_count = _bounded_int_attribute(
+            event.attributes,
+            "observed_packet_count",
+            minimum=0,
+            maximum=1_000_000_000,
+        )
+        capture_drop_count = _bounded_int_attribute(
+            event.attributes,
+            "capture_drop_count",
+            minimum=0,
+            maximum=1_000_000_000,
+        )
+        decode_error_count = _bounded_int_attribute(
+            event.attributes,
+            "decode_error_count",
+            minimum=0,
+            maximum=1_000_000_000,
+        )
+        capture_drop_counter_supported = event.attributes.get(
+            "capture_drop_counter_supported"
+        )
+        window_duration_ms = _numeric_attribute(
+            event.attributes,
+            "window_duration_ms",
+        )
+        if (
+            observed_packet_count is None
+            or capture_drop_count is None
+            or decode_error_count is None
+            or not isinstance(capture_drop_counter_supported, bool)
+            or window_duration_ms is None
+            or window_duration_ms < 0
+        ):
+            continue
+        end_ms = max(
+            0.0,
+            _relative_seconds(event.ts, run.started_at) * 1000,
+        )
+        reports.append(
+            _RtpCaptureHealthEvidence(
+                event=event,
+                event_ordinal=event_ordinal,
+                direction=event.direction,
+                stream_alias=event.stream_alias,
+                start_ms=max(0.0, end_ms - window_duration_ms),
+                end_ms=end_ms,
+                observed_packet_count=observed_packet_count,
+                capture_drop_count=capture_drop_count,
+                decode_error_count=decode_error_count,
+                capture_drop_counter_supported=capture_drop_counter_supported,
+            )
+        )
+    return sorted(
+        reports,
+        key=lambda item: (
+            item.stream_alias,
+            item.direction,
+            item.end_ms,
+            item.event_ordinal,
+        ),
+    )
+
+
+def _rtp_capture_health_for_packet_pair(
+    reports: list[_RtpCaptureHealthEvidence],
+    *,
+    previous: _RtpPacketObservationEvidence,
+    current: _RtpPacketObservationEvidence,
+) -> _RtpCaptureHealthEvidence | None:
+    return next(
+        (
+            report
+            for report in reports
+            if report.stream_alias == current.stream_alias
+            and report.direction == current.direction
+            and report.event.clock_domain == current.event.clock_domain
+            and report.start_ms <= previous.t_rel_ms
+            and current.t_rel_ms <= report.end_ms
+        ),
+        None,
+    )
+
+
 def _rtp_packet_discontinuity_evidence(
     run: StoredRun,
 ) -> list[_RtpPacketDiscontinuityEvidence]:
     grouped: dict[
-        tuple[str, RtpDirection],
+        tuple[str, RtpDirection, str],
         list[_RtpPacketObservationEvidence],
     ] = {}
     for item in _rtp_packet_observations(run):
-        grouped.setdefault((item.stream_alias, item.direction), []).append(item)
+        grouped.setdefault(
+            (item.stream_alias, item.direction, item.event.clock_domain),
+            [],
+        ).append(item)
+    capture_health_reports = _rtp_capture_health_reports(run)
     evidence: list[_RtpPacketDiscontinuityEvidence] = []
     for packets in grouped.values():
         for previous, current in pairwise(packets):
@@ -2016,6 +2141,11 @@ def _rtp_packet_discontinuity_evidence(
                     arrival_gap_ms=arrival_gap_ms,
                     media_advance_ms=media_advance_ms,
                     excess_arrival_delay_ms=excess_arrival_delay_ms,
+                    capture_health=_rtp_capture_health_for_packet_pair(
+                        capture_health_reports,
+                        previous=previous,
+                        current=current,
+                    ),
                 )
             )
     return sorted(
@@ -2026,6 +2156,51 @@ def _rtp_packet_discontinuity_evidence(
             item.evidence_index,
         ),
     )
+
+
+def _rtp_capture_attributes(
+    item: _RtpPacketDiscontinuityEvidence,
+) -> dict[str, Any]:
+    health = item.capture_health
+    if health is None:
+        return {"capture_point_continuity": "not independently verified"}
+    return {
+        "capture_point_continuity": health.continuity,
+        "capture_drop_counter_supported": health.capture_drop_counter_supported,
+        "capture_drop_count": health.capture_drop_count,
+        "capture_decode_error_count": health.decode_error_count,
+        "capture_observed_packet_count": health.observed_packet_count,
+    }
+
+
+def _rtp_pair_alignment_uncertainty_ms(
+    item: _RtpPacketDiscontinuityEvidence,
+) -> float | None:
+    values = [
+        value
+        for value in (
+            item.previous.event.alignment_uncertainty_ms,
+            item.current.event.alignment_uncertainty_ms,
+            (
+                item.capture_health.event.alignment_uncertainty_ms
+                if item.capture_health is not None
+                else None
+            ),
+        )
+        if value is not None
+    ]
+    return max(values) if values else None
+
+
+def _rtp_network_loss_confirmation(
+    item: _RtpPacketDiscontinuityEvidence,
+) -> str:
+    health = item.capture_health
+    if health is None or health.continuity == "not independently verified":
+        return "capture loss must be excluded at the observation point"
+    if health.continuity == "compromised":
+        return "restore capture continuity before attributing the gap to the network"
+    return "capture continuity verified for this window; path attribution depends on tap placement"
 
 
 def _rtp_quality_windows(run: StoredRun) -> list[list[_RtpQualityEvidence]]:
@@ -2174,7 +2349,8 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
                     else "rtp.arrival_stall_observed"
                 ),
                 t_rel_ms=item.current.t_rel_ms,
-                clock_domain="control_plane_wall",
+                clock_domain=item.current.event.clock_domain,
+                alignment_uncertainty_ms=_rtp_pair_alignment_uncertainty_ms(item),
                 direction=item.current.direction,
                 stream_alias=item.current.stream_alias,
                 source="rtp_packet_cadence_rule_v1",
@@ -2189,7 +2365,7 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
                     "excess_arrival_delay_ms": item.excess_arrival_delay_ms,
                     "payload_type": item.current.payload_type,
                     "clock_rate_hz": item.current.clock_rate_hz,
-                    "capture_point_continuity": "not independently verified",
+                    **_rtp_capture_attributes(item),
                 },
             )
         )
@@ -2371,7 +2547,8 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 ),
                 start_ms=item.previous.t_rel_ms,
                 end_ms=item.current.t_rel_ms,
-                clock_domain="control_plane_wall",
+                clock_domain=item.current.event.clock_domain,
+                alignment_uncertainty_ms=_rtp_pair_alignment_uncertainty_ms(item),
                 direction=item.current.direction,
                 stream_alias=item.current.stream_alias,
                 source="rtp_packet_cadence_rule_v1",
@@ -2385,6 +2562,7 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                     "arrival_gap_ms": item.arrival_gap_ms,
                     "media_advance_ms": item.media_advance_ms,
                     "excess_arrival_delay_ms": item.excess_arrival_delay_ms,
+                    **_rtp_capture_attributes(item),
                 },
             )
         )
@@ -2944,18 +3122,30 @@ def _typed_timeline_incidents(
         )
     for item in _rtp_packet_discontinuity_evidence(run):
         is_sequence_gap = item.kind == "sequence_gap"
+        capture_compromised = (
+            item.capture_health is not None
+            and item.capture_health.continuity == "compromised"
+        )
         incidents.append(
             TimelineIncident(
                 incident_id=item.correlation_alias,
                 rule_id=(
-                    "rtp_sequence_gap_v1"
+                    "rtp_sequence_gap_capture_ambiguous_v1"
+                    if is_sequence_gap and capture_compromised
+                    else "rtp_arrival_stall_capture_ambiguous_v1"
+                    if capture_compromised
+                    else "rtp_sequence_gap_v1"
                     if is_sequence_gap
                     else "rtp_arrival_stall_v1"
                 ),
                 category="transport",
                 severity="warning",
                 title=(
-                    "RTP sequence gap observed"
+                    "RTP sequence gap may be capture loss"
+                    if is_sequence_gap and capture_compromised
+                    else "RTP arrival stall may be capture delay"
+                    if capture_compromised
+                    else "RTP sequence gap observed"
                     if is_sequence_gap
                     else "RTP arrival stall suspected"
                 ),
@@ -2973,7 +3163,13 @@ def _typed_timeline_incidents(
                 ),
                 start_ms=item.previous.t_rel_ms,
                 end_ms=item.current.t_rel_ms,
-                confidence="high" if is_sequence_gap else "medium",
+                confidence=(
+                    "low"
+                    if capture_compromised
+                    else "high"
+                    if is_sequence_gap
+                    else "medium"
+                ),
                 direction=item.current.direction,
                 observed={
                     "stream_alias": item.current.stream_alias,
@@ -2986,16 +3182,30 @@ def _typed_timeline_incidents(
                     "excess_arrival_delay_ms": item.excess_arrival_delay_ms,
                     "payload_type": item.current.payload_type,
                     "clock_rate_hz": item.current.clock_rate_hz,
+                    "clock_domain": item.current.event.clock_domain,
+                    "alignment_uncertainty_ms": (
+                        _rtp_pair_alignment_uncertainty_ms(item)
+                    ),
+                    **_rtp_capture_attributes(item),
                 },
                 expected={
                     "sequence_delta": 1,
                     "arrival_excess_ms_below": RTP_ARRIVAL_STALL_EXCESS_MS,
-                    "capture_point_continuity": "not independently verified",
+                    "capture_point_continuity": _rtp_capture_attributes(item)[
+                        "capture_point_continuity"
+                    ],
                     "network_loss_confirmation": (
-                        "capture loss must be excluded at the observation point"
+                        _rtp_network_loss_confirmation(item)
                     ),
                 },
-                evidence_refs=[item.event_id],
+                evidence_refs=[
+                    item.event_id,
+                    *(
+                        [item.capture_health.event.event_id]
+                        if item.capture_health is not None
+                        else []
+                    ),
+                ],
             )
         )
     if run.failure_alias is not None:

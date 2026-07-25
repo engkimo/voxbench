@@ -169,6 +169,26 @@ def test_postgres_round_trips_rtp_packet_gap_evidence(
                 "marker": False,
             },
         ),
+        TimelineEventArtifact(
+            event_id="rtp-capture-health:0",
+            category="transport",
+            name="rtp.capture_health_reported",
+            ts=run.started_at + timedelta(milliseconds=50),
+            clock_domain="control_plane_wall",
+            alignment_uncertainty_ms=1.5,
+            direction="received",
+            stream_alias="caller-audio",
+            source="rtp_packet_tap_adapter",
+            correlation_alias="caller-audio",
+            attributes={
+                "observed_packet_count": 2,
+                "capture_drop_count": 0,
+                "decode_error_count": 0,
+                "capture_drop_counter_supported": True,
+                "capture_point_continuity": "verified",
+                "window_duration_ms": 50,
+            },
+        ),
     ]
 
     postgres_runtime.repository.save(run)
@@ -178,6 +198,7 @@ def test_postgres_round_trips_rtp_packet_gap_evidence(
     assert [event.event_id for event in restored.timeline_events] == [
         "rtp-packet:0",
         "rtp-packet:1",
+        "rtp-capture-health:0",
     ]
     incident = next(
         item
@@ -185,6 +206,16 @@ def test_postgres_round_trips_rtp_packet_gap_evidence(
         if item.rule_id == "rtp_sequence_gap_v1"
     )
     assert incident.observed["missing_packet_count"] == 1
+    assert incident.observed["capture_point_continuity"] == "verified"
+    assert incident.observed["alignment_uncertainty_ms"] == 1.5
+    assert incident.expected["network_loss_confirmation"] == (
+        "capture continuity verified for this window; "
+        "path attribution depends on tap placement"
+    )
+    assert incident.evidence_refs == [
+        "rtp-packet-discontinuity:0:observed",
+        "rtp-capture-health:0",
+    ]
     assert incident.direction == "received"
 
 

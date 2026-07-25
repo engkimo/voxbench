@@ -1,5 +1,20 @@
 # 進捗
 
+## Library UX: RTP packet tap health and clock contract (2026-07-25)
+
+- public `RtpPacketTapAdapter`と`RtpCaptureHealthSnapshot`を追加。既存appのRTP receive境界からtransient
+  datagramを渡せるが、raw media payload/SSRCは保持せずsafe fixed-header観測だけをqueueする。
+- owner側queue/socket/capture libraryが報告するdrop delta、decode error、counter対応有無をbounded health
+  windowとして永続化。adapter自身がkernel dropを推測することはしない。
+- capture continuityを`verified` / `compromised` / `not independently verified`に分類。compromised window内の
+  sequence gap/arrival stallはlow confidenceへ降格し、capture healthをevidence chainへ追加する。
+- packetにclock domainとalignment uncertaintyを追加し、同じstream/direction/clock domain内だけでcadenceを比較。
+  uncertaintyはderived event/interval/Incidentへ伝播する。
+- direct-pipeline exampleに`clean` / `verified-gap` / `capture-drop`を追加し、library利用者が3条件を手元で比較可能。
+  実Postgres再読込でverified capture health、gap Incident、clock uncertainty、evidence refsの保持を検証する。
+- 全体進捗目安は約93%。残りは実電話基盤固有のdrop counter wiring、scenario policy設定化、実通話clock校正、
+  usability/release hardening。
+
 ## Product UX: one-command diagnostic walkthrough (2026-07-25)
 
 - `./scripts/dev-demo`でlocal Postgres 16の作成/再利用、Alembic migration、API/Web起動、
@@ -11,7 +26,7 @@
   Incidentと3秒WAVが復元・配信されることを実動作で確認した。
 - 合成シナリオは製品導線の確認用であり、実network品質のbenchmarkではない。実環境のloss確定には
   deployment packet tapとcapture drop accountingが引き続き必要。
-- 全体進捗目安は約91%。ローカル製品体験は一括で動作確認可能。残りは実電話基盤adapter、
+- このslice完了時点の全体進捗目安は約91%。ローカル製品体験は一括で動作確認可能。残りは実電話基盤adapter、
   capture/clock信頼度、scenario policy、実通話usability/release hardening。
 
 ## Product UX: RTP sequence gap and arrival cadence evidence (2026-07-25)
