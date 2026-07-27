@@ -1,5 +1,12 @@
 # VoxBench
 
+[![Code License: Apache-2.0](https://img.shields.io/badge/Code%20License-Apache--2.0-blue.svg)](LICENSE)
+[![Documentation License: MIT](https://img.shields.io/badge/Documentation%20License-MIT-green.svg)](#license)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![GitHub Stars](https://img.shields.io/github/stars/engkimo/voxbench?style=flat&logo=github)](https://github.com/engkimo/voxbench/stargazers)
+[![GitHub last commit](https://img.shields.io/github/last-commit/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/commits/main)
+[![GitHub contributors](https://img.shields.io/github/contributors/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/graphs/contributors)
+
 VoxBench is an early OSS implementation of the schema and registry foundation
 described in `DESIGN.md`.
 
@@ -63,6 +70,193 @@ loopback port and prints the exact URL. Press Ctrl+C to stop the API and Web UI.
 The reusable Postgres container stays running; stop it separately with
 `docker stop voxbench-postgres-dev` when desired. The fixed
 `voxbench-local-only` password is only for this loopback development container.
+
+## Local Gemini softphone walkthrough
+
+The three-second diagnostic demo above is synthetic. Use this walkthrough to
+place a real SIP call from the macOS Telephone app, talk to Gemini Live, retain
+each pipeline stage, and inspect the call on one common time axis.
+
+### 1. Install all local demo dependencies
+
+Requirements are Python 3.12+, Docker Desktop, Node.js/npm, and a local SIP
+softphone such as Telephone. From the repository root:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[dev,postgres,live]"
+```
+
+The Gemini bridge accepts `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Keep the value in
+the shell environment; do not add it to a config or run payload.
+
+### 2. Start Postgres, the API, and the Web UI
+
+In terminal 1:
+
+```bash
+./scripts/dev-demo
+```
+
+Keep this process running. It prints the actual API and Web URLs. The preferred
+ports are API `8001`, Web `5173`, and Postgres `55432`, but occupied API/Web
+ports are incremented automatically. The run opened by this command is an
+intentional three-second synthetic run, not a real phone call.
+
+Confirm Postgres and its current migration when needed:
+
+```bash
+docker ps --filter name=voxbench-postgres-dev
+docker exec voxbench-postgres-dev \
+  psql -U voxbench -d voxbench \
+  -c "SELECT version_num FROM alembic_version;"
+```
+
+### 3. Start the local Asterisk container
+
+In terminal 2:
+
+```bash
+./scripts/asterisk-local up
+./scripts/asterisk-local settings
+```
+
+Configure Telephone with the values printed by `settings`. The defaults are:
+
+| Telephone field | Value |
+| --- | --- |
+| Domain / SIP server | `127.0.0.1` |
+| Port | `5060` |
+| User name | `6001` |
+| Authorization user | `6001` |
+| Password | `voxbench-6001-local-only` |
+| Transport | UDP |
+| Outbound proxy | blank |
+| STUN | off |
+| Preferred codec | PCMU / G.711 mu-law |
+
+The SIP, RTP, and AMI ports are bound to macOS loopback. These development
+credentials and the container configuration are not suitable for production.
+
+### 4. Start the Gemini Live AudioSocket bridge
+
+In terminal 3, use the API URL printed by `./scripts/dev-demo`. For fish:
+
+```fish
+set -gx GOOGLE_API_KEY 'your-key'
+set -gx VOXBENCH_CONTROL_PLANE_URL 'http://127.0.0.1:8001'
+./scripts/asterisk-local gemini
+```
+
+For zsh/bash:
+
+```bash
+export GOOGLE_API_KEY='your-key'
+export VOXBENCH_CONTROL_PLANE_URL='http://127.0.0.1:8001'
+./scripts/asterisk-local gemini
+```
+
+The launcher checks Asterisk health, the Control Plane, the Gemini SDK, the API
+key, and access to the pinned Live model before listening on
+`127.0.0.1:9019`. It does not print or persist the key.
+
+### 5. Call extension 7000
+
+Call `7000` from Telephone. The bridge prints a line containing the correlated
+run ID:
+
+```text
+AudioSocket call <call-id> -> gemini-live/<model> -> run <run-id>
+```
+
+Copy `<run-id>`. Open the Web URL printed by `./scripts/dev-demo`, adding the
+real run as a query parameter:
+
+```text
+http://127.0.0.1:5173/?run_id=<run-id>
+```
+
+If the Web port was incremented, use the printed port instead of `5173`.
+Alternatively, find the ID under **Recent runs** and press its **Primary**
+button.
+
+The **Diagnose a call in 3 seconds** panel is always visible. Its text describes
+the synthetic-demo action, not the duration of the selected run. Pressing
+**Run diagnostic demo** creates a new synthetic run and replaces the current
+Primary selection. Return to the real call by selecting its run ID again.
+
+### 6. Diagnose the audible problem
+
+Use **Call inspector** to select an incident and move the shared cursor across
+signaling, transport, provider, pipeline, and buffer evidence. Then use
+**Listen at cursor** or **Listen to every stage** in this order:
+
+1. `resampler`
+2. `agc`
+3. `limiter`
+4. `serializer`
+
+Interpret the first stage where the problem becomes audible:
+
+| Observation | First area to investigate |
+| --- | --- |
+| The click is already in `resampler` | Provider chunks or resampling |
+| It first appears in `agc` | Gain movement or clipping |
+| It first appears in `limiter`/`serializer` | Limiting, framing, or serialization |
+| All four WAVs are clean but Telephone clicks | AudioSocket pacing, Asterisk RTP, softphone, or acoustic path |
+| It occurs exactly at a barge-in incident | Interruption detection and hard playback-queue clearing |
+
+For barge-in testing, use a headset and make two matched calls: one where the
+caller remains silent until Gemini finishes, and one with a deliberate
+interruption at a repeatable time. This separates genuine interruption from
+speaker-to-microphone echo. The bridge records local queue disposal and provider
+chunk correlation, but `remote_playout_observed: false` means it cannot claim
+exactly what the caller heard without a caller-side recording.
+
+### 7. Collect RTCP during the next call
+
+An empty **RTP quality** panel does not prove the network was clean. It means no
+normalized RTP/RTCP evidence reached that run. Start the collector in terminal 4
+while the real call is active, using the new run ID:
+
+```fish
+set -gx VOXBENCH_AMI_USERNAME voxbench-rtcp
+set -gx VOXBENCH_AMI_SECRET voxbench-ami-local-only
+
+voxbench asterisk-ami-rtcp \
+  --run-id '<run-id>' \
+  --control-plane-url http://127.0.0.1:8001 \
+  --host 127.0.0.1 \
+  --port 5038 \
+  --clock-rate-hz 8000
+```
+
+Keep the call active for 20–30 seconds so Asterisk has time to emit RTCP
+reports. Aggregate RTCP can show loss, jitter, and RTT; it cannot identify an
+exact missing RTP sequence number. Use the library packet-observation adapter
+when packet-level proof is required.
+
+## Local demo troubleshooting
+
+| Symptom | Cause and recovery |
+| --- | --- |
+| `mktemp ... XXXXXX` looks like an unfinished value | `XXXXXX` is a template that `mktemp` replaces with random characters. It is not a password. Prefer `./scripts/dev-demo`, which owns and cleans up its temporary runtime directory. |
+| Native `pg_ctl` fails, then `createdb` asks for a password | The native server never started and port `55432` may already belong to the Docker Postgres container. Read the `pg_ctl` log and run `docker ps --filter name=voxbench-postgres-dev`; do not run `createdb` against an unknown server. |
+| SQLAlchemy reports `invalid literal for int() with base 10: ''` | The interpolated port variable is empty in the current shell. In fish, set it again or use the complete local URL: `set -gx VOXBENCH_DATABASE_URL 'postgresql+psycopg://voxbench:voxbench-local-only@127.0.0.1:55432/voxbench'`. |
+| API `8001` or Web `5173` does not respond | `./scripts/dev-demo` may have selected the next available port. Use the exact URLs it printed and set `VOXBENCH_CONTROL_PLANE_URL` before starting the Gemini bridge. |
+| Telephone says the call is not acceptable | Verify PCMU, user/auth user `6001`, UDP port `5060`, and blank outbound proxy. Run `./scripts/asterisk-local status`; after rebuilding Asterisk, disable and re-enable the Telephone account to force registration. |
+| Calling 7000 only returns the caller's own voice | `voxbench audiosocket-loopback` is intentionally an echo/processing control. Stop it and run `./scripts/asterisk-local gemini` for a provider-backed conversation. |
+| Gemini says nothing or connection retries are exhausted | Export the key in the same terminal that launches the bridge. The launcher preflight distinguishes invalid key, permission, quota, unavailable model, and temporary provider failures without retaining the raw provider error. |
+| The Web UI shows a three-second call after opening a real run | Check the full ID in **Primary**. A synthetic demo was selected if the environment is `demo / local-softphone-demo` and recordings are `3000 ms`. Select the real ID from **Recent runs** or paste it into Primary and press **Fetch**. |
+| **Fetch** or the circular refresh button appears to do nothing | Refreshing the same completed run does not create new evidence or change immutable recordings. Select a different run, keep an active call running, or create a new call. |
+| **Readiness** shows unchecked/incomplete items | Readiness is an evidence checklist, not an automatic failure count. A live bridge can complete while deployment-specific checklist fields remain unknown. |
+| Audio is choppy or clicks | Compare all four stage WAVs, click the barge-in incidents, repeat once with a headset and no overlap, then repeat with RTCP collection. Do not attribute the symptom to packet loss until transport evidence exists. |
+| **RTP quality** is empty | Start `asterisk-ami-rtcp` during the active call and keep the call long enough for RTCP. No points means unobserved transport quality, not confirmed zero loss. |
+
+Detailed operator and library integration references are available in
+[`docs/demo-live-softphone.md`](docs/demo-live-softphone.md) and
+[`docs/library-integration.md`](docs/library-integration.md).
 
 ## Resolve and validate a config
 
@@ -807,3 +1001,13 @@ voxbench synthetic-visqol-treatment \
 ruff check .
 pytest
 ```
+
+## License
+
+VoxBench source code is licensed under the
+[Apache License 2.0](LICENSE).
+
+Unless otherwise noted, the project documentation in `README.md`, `DESIGN.md`,
+and `docs/` is licensed under the
+[MIT License](https://opensource.org/license/mit/).
+Copyright (c) 2026 VoxBench contributors.
