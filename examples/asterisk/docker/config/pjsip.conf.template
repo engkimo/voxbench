@@ -1,0 +1,37 @@
+[global]
+type=global
+user_agent=VoxBench local demo
+
+[transport-udp]
+type=transport
+protocol=udp
+bind=0.0.0.0:5060
+external_signaling_address=127.0.0.1
+external_signaling_port=5060
+external_media_address=127.0.0.1
+
+[6001]
+type=endpoint
+transport=transport-udp
+context=voxbench-demo
+disallow=all
+allow=ulaw
+direct_media=no
+force_rport=yes
+rewrite_contact=yes
+rtp_symmetric=yes
+auth=6001-auth
+aors=6001
+callerid=VoxBench 6001 <6001>
+
+[6001-auth]
+type=auth
+auth_type=userpass
+username=6001
+password=REPLACE_WITH_LOCAL_SECRET
+
+[6001]
+type=aor
+max_contacts=3
+remove_existing=yes
+qualify_frequency=30

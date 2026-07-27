@@ -376,6 +376,16 @@ a {
   font-weight: 800;
 }
 
+.bargeInCompare {
+  border-top: 1px solid #d7e1e8;
+}
+
+.bargeInCompare p {
+  margin: 7px 0 0;
+  color: #71808b;
+  font-size: 9px;
+}
+
 .environmentCompareRow {
   display: grid;
   grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(90px, 0.5fr);
@@ -980,6 +990,62 @@ a {
 .incidentEvidence small {
   color: #7b8794;
   font-size: 10px;
+}
+
+.bargeInPacketProof {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  border: 1px solid #b9d9dd;
+  border-radius: 7px;
+  padding: 8px;
+  background: #f2fafb;
+}
+
+.bargeInPacketProof.unobserved {
+  border-color: #d8dee4;
+  background: #f7f8f9;
+}
+
+.bargeInPacketProof strong {
+  margin: 0;
+  color: #1d6570;
+  font-size: 11px;
+}
+
+.bargeInPacketProof > span {
+  color: #667580;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.bargeInPacketProof dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.bargeInPacketProof dl > div {
+  min-width: 0;
+  border-radius: 5px;
+  padding: 5px 6px;
+  background: #ffffff;
+}
+
+.bargeInPacketProof dt {
+  color: #71808b;
+  font-size: 8px;
+}
+
+.bargeInPacketProof dd {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: #25323d;
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .incidentEvidenceChain {

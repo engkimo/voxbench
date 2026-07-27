@@ -1,0 +1,30 @@
+name: voxbench-asterisk
+
+services:
+  asterisk:
+    build:
+      context: .
+    container_name: voxbench-asterisk-dev
+    environment:
+      VOXBENCH_AMI_PASSWORD: "${VOXBENCH_AMI_PASSWORD:-voxbench-ami-local-only}"
+      VOXBENCH_AUDIOSOCKET_HOST: "${VOXBENCH_AUDIOSOCKET_HOST:-host.docker.internal}"
+      VOXBENCH_AUDIOSOCKET_PORT: "${VOXBENCH_AUDIOSOCKET_PORT:-9019}"
+      VOXBENCH_SIP_PASSWORD: "${VOXBENCH_SIP_PASSWORD:-voxbench-6001-local-only}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    init: true
+    ports:
+      - "127.0.0.1:${VOXBENCH_SIP_PORT:-5060}:5060/udp"
+      - "127.0.0.1:${VOXBENCH_AMI_PORT:-5038}:5038/tcp"
+      - "127.0.0.1:10000-10099:10000-10099/udp"
+    restart: "no"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "asterisk -rx 'pjsip show endpoint 6001' | grep -q 'Endpoint:  6001' && asterisk -rx 'module show like app_audiosocket' | grep -q 'Running' && asterisk -rx 'module show like res_rtp_asterisk' | grep -q 'Running'",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 3s

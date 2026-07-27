@@ -14,6 +14,7 @@ from voxbench.realtime_providers.providers import (
     ProviderReadiness,
     RealtimeProvider,
     RealtimeProviderSession,
+    classify_provider_error,
     connect_with_retry,
 )
 
@@ -31,5 +32,6 @@ __all__ = [
     "ProviderReadiness",
     "RealtimeProvider",
     "RealtimeProviderSession",
+    "classify_provider_error",
     "connect_with_retry",
 ]

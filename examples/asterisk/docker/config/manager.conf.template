@@ -1,0 +1,13 @@
+[general]
+enabled=yes
+webenabled=no
+port=5038
+bindaddr=0.0.0.0
+
+[voxbench-rtcp]
+secret=REPLACE_WITH_AMI_SECRET
+read=reporting
+write=none
+
+eventfilter(name(RTCPReceived)) =
+eventfilter(name(RTCPSent)) =

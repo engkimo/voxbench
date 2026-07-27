@@ -19,6 +19,7 @@ def test_provider_readiness_is_dry_run_friendly_without_keys(monkeypatch) -> Non
 
     assert openai.ready
     assert gemini.ready
+    assert gemini.model == "gemini-3.1-flash-live-preview"
     assert openai.has_api_key is False
     assert gemini.has_api_key is False
 

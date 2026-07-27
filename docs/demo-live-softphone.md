@@ -38,7 +38,7 @@ provider or Pipecat pipeline. See [library-integration.md](library-integration.m
 - Gemini Live: the Google Gen AI Python SDK exposes
   `client.aio.live.connect(...)`, `session.send_realtime_input(...)`, and
   `session.receive()`. The docs show realtime PCM input with
-  `audio/pcm;rate=16000` and the `gemini-live-2.5-flash-preview` model for the
+  `audio/pcm;rate=16000` and the `gemini-3.1-flash-live-preview` model for the
   Gemini Developer API.
 
 ## Prerequisites
@@ -175,21 +175,32 @@ references are:
 - `https://docs.asterisk.org/Configuration/Channel-Drivers/AudioSocket/`
 - `https://docs.asterisk.org/Latest_API/API_Documentation/Dialplan_Applications/AudioSocket/`
 
-Install the example configuration snippets into the local Asterisk configuration,
-then replace `REPLACE_WITH_LOCAL_SECRET` only in the local copy:
+The fastest supported local setup is the repository's Asterisk 20 container:
 
-- `examples/asterisk/pjsip.conf.example`
-- `examples/asterisk/extensions.conf.example`
-- `examples/asterisk/manager.conf.example`
+```bash
+./scripts/asterisk-local up
+```
 
-The example binds SIP to loopback only. Configure the macOS softphone as:
+It waits until the PJSIP endpoint and AudioSocket module are ready, then prints
+all Telephone and optional AMI values. SIP, RTP, and AMI are published on macOS
+loopback only. Configure the macOS Telephone app as:
 
-- SIP server: `127.0.0.1`
+- account/description: `VoxBench`
+- full name/display: `VoxBench 6001`
+- domain/SIP server: `127.0.0.1`
 - transport: UDP
 - port: `5060`
-- username/auth ID: `6001`
-- password: the local value used in `pjsip.conf`
-- dial: `7000`
+- username and authorization user: `6001`
+- password: `voxbench-6001-local-only`
+- outbound proxy: blank
+- STUN: off
+- preferred codec: PCMU / G.711 mu-law
+
+The password is a development default protected only by the loopback port
+binding. Override it before startup with `VOXBENCH_SIP_PASSWORD` if required.
+The original native-install snippets remain available under
+`examples/asterisk/`; do not copy the Docker dialplan unchanged because its
+AudioSocket target is `host.docker.internal`.
 
 Start the Control Plane:
 
@@ -201,16 +212,33 @@ Start the observed AudioSocket bridge in another terminal:
 
 ```bash
 voxbench audiosocket-loopback \
+  --control-plane-url http://127.0.0.1:8001 \
   --provider openai-realtime \
   --target-rms 3000 \
   --max-gain 8 \
   --noise-floor 200
 ```
 
-This command listens on `127.0.0.1:9019`. For Asterisk in a container, expose
-the bridge appropriately and set `VOXBENCH_AUDIOSOCKET` in the dialplan to
-`host.docker.internal:9019`. Keep SIP and AudioSocket listeners local during the
-demo; neither listener includes production authentication or TLS hardening.
+This is deliberately an echo/processing loopback. The provider name is stored
+for comparison metadata, but `audiosocket-loopback` never opens a provider
+network session. For a real Gemini conversation:
+
+```fish
+set -gx GOOGLE_API_KEY 'your-key'
+./scripts/asterisk-local gemini
+```
+
+The helper runs `audiosocket-realtime --provider gemini-live`, verifies the
+local prerequisites, performs a no-audio credential/model preflight, and keeps
+the API key in the process environment only. The default model is
+`gemini-3.1-flash-live-preview`; override it with `--model` only when validating
+a deliberately pinned alternative.
+
+Use the actual Control Plane URL printed by `./scripts/dev-demo` if it is not
+port `8001`. The bridge listens on `127.0.0.1:9019`; the supplied container
+already targets it as `host.docker.internal:9019`. Keep SIP and AudioSocket
+listeners local during the demo; neither listener includes production TLS
+hardening.
 
 Call `7000`. The caller should hear the processed version of their own voice.
 While the call is active, the run remains visible in the Web UI with these stage
@@ -227,6 +255,17 @@ by the bridge.
 
 To compare AGC settings, end the call, restart the bridge with different gain
 arguments, place another call, and select both runs in the Web UI compare view.
+
+Use these diagnostics if Telephone does not show the account as available:
+
+```bash
+./scripts/asterisk-local status
+./scripts/asterisk-local logs
+```
+
+`status` must show container health `healthy`, endpoint `6001`, the AudioSocket
+modules as `Running`, and extension `7000`. In Telephone, disable and re-enable
+the account after an Asterisk rebuild to force immediate registration.
 
 ## Collect Asterisk RTCP Quality
 
@@ -316,6 +355,22 @@ For Gemini Live, use:
 voxbench audiosocket-realtime --provider gemini-live
 ```
 
+Pin the exact provider model when comparing model generations. The selected model
+is stored in the resolved run config and included in the environment target alias,
+so the Primary and Compare runs remain identifiable:
+
+```bash
+voxbench audiosocket-realtime \
+  --provider gemini-live \
+  --model gemini-3.1-flash-live-preview
+
+# Run this separately after stopping the first bridge.
+# Replace the value with the exact model ID used by the target AI phone.
+voxbench audiosocket-realtime \
+  --provider gemini-live \
+  --model '<exact-3.1-model-id>'
+```
+
 The bridge performs these format transitions:
 
 ```text
@@ -339,6 +394,55 @@ tracks the assistant item and paced AudioSocket playback position, and sends
 caller. It records `provider_auto_interrupts` and `provider_truncate_requests`.
 Provider and bridge failures end the observed run with a non-secret
 `failure_alias`, which appears in Live preview.
+
+### Validate Provider Audio Before Barge-in
+
+The realtime bridge keeps a bounded, metadata-only flight recorder for provider
+audio near each normalized `input_speech_started` or `interrupted` event. It does
+not persist provider packet bodies or raw provider item IDs. When queued audio is
+cleared, the run records:
+
+- provider audio chunk count during the preceding 30 ms and 100 ms;
+- provider chunk ordinal, duration, RMS, silence percentage, and arrival lead;
+- each discarded 20 ms AudioSocket frame, its source chunk range, queue depth,
+  RMS, silence percentage, and whether it exceeded the configured noise floor;
+- complete and partial queued audio duration;
+- signal-bearing discarded duration;
+- audio already written to AudioSocket before the control event; and
+- an explicit `remote_playout_observed: false` boundary.
+
+In the Web UI, select the **Barge-in packet evidence** incident in **Call
+inspector**. The **Local packet proof** card summarizes the provider burst,
+discarded signal, first-arrival lead, and audio written before the control event.
+Put a second run ID in **Compare** to show the same measurements side-by-side. The
+environment target row includes the exact provider model.
+
+For an initial live check, make at least five matched calls per model. For a claim
+intended to distinguish provider behavior, use at least 30 calls per model because
+the meeting hypothesis concerns nondeterministic differences of only tens of
+milliseconds. Keep the prompt, route, codec, ptime, bridge settings, caller
+utterance, and interruption timing fixed. In each call:
+
+1. let the assistant begin a scripted reply;
+2. interrupt it at the same word or elapsed time;
+3. end the call and copy the run ID printed by the bridge;
+4. inspect the Barge-in incident; and
+5. retain a caller-side recording if the conclusion must say what the caller
+   actually heard.
+
+The same evidence can be inspected without the Web UI:
+
+```bash
+RUN_ID='<run-id-printed-by-the-bridge>'
+curl -s "http://127.0.0.1:8000/runs/$RUN_ID/timeline" |
+  jq '.lanes.incidents[]
+      | select(.rule_id == "barge_in_sequence")
+      | {title, severity, summary, observed, expected, evidence_refs}'
+```
+
+Here “provider chunk” means an application-level audio chunk yielded by the
+provider adapter. It is not an RTP datagram. RTP sequence, arrival cadence, and
+capture-health evidence use the separate RTP observation path.
 
 Before a provider session is established, the bridge retries initial connection
 failures with bounded exponential backoff. The observed run is created first, so

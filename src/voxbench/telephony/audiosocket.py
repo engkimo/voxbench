@@ -19,12 +19,13 @@ from voxbench.observability import (
     TimelineEvent,
     VoxBenchObserver,
 )
-from voxbench.observability.observer import pcm_s16le_rms
+from voxbench.observability.observer import pcm_s16le_quality, pcm_s16le_rms
 from voxbench.realtime_providers import AudioChunk as ProviderAudioChunk
 from voxbench.realtime_providers import (
     PlaybackPosition,
     ProviderEvent,
     RealtimeProviderSession,
+    classify_provider_error,
 )
 
 TYPE_TERMINATE = 0x00
@@ -44,12 +45,60 @@ AUDIO_TYPE_SAMPLE_RATES: dict[int, int] = {
     0x18: 192_000,
 }
 
+BARGE_IN_CHUNK_LOOKBACK_MS = 250.0
+BARGE_IN_CHUNK_EVIDENCE_LIMIT = 16
+BARGE_IN_FRAME_EVIDENCE_LIMIT = 32
+
+
+@dataclass(frozen=True)
+class _ProviderAudioChunkObservation:
+    ordinal: int
+    received_at: datetime
+    received_monotonic: float
+    duration_ms: float
+    rms: float
+    silence_sample_pct: float
+    signal_bearing: bool
+
+
+@dataclass
+class _BufferedProviderAudioSource:
+    chunk_ordinal: int
+    received_at: datetime
+    received_monotonic: float
+    remaining_bytes: int
+
+
+@dataclass(frozen=True)
+class _ProviderAudioSourceWindow:
+    chunk_ordinals: tuple[int, ...]
+    first_received_at: datetime
+    first_received_monotonic: float
+    last_received_monotonic: float
+
+
+@dataclass
+class _PlaybackFrameObservation:
+    frame_ordinal: int
+    source_window: _ProviderAudioSourceWindow
+    enqueued_at: datetime
+    enqueued_monotonic: float
+    output_rms: float
+    silence_sample_pct: float
+    signal_bearing: bool
+    queue_depth_after_enqueue: int = 0
+
 
 @dataclass(frozen=True)
 class AudioSocketFrame:
     frame_type: int
     payload: bytes
     playback_position: PlaybackPosition | None = None
+    _playback_observation: _PlaybackFrameObservation | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
 
 class ProviderStreamEndedError(RuntimeError):
@@ -58,6 +107,16 @@ class ProviderStreamEndedError(RuntimeError):
 
 class ProviderSessionError(RuntimeError):
     """A provider receive stream failed without exposing its raw error."""
+
+    def __init__(
+        self,
+        *,
+        reason_alias: str = "provider-session-error",
+        error_type: str = "Exception",
+    ) -> None:
+        self.reason_alias = reason_alias
+        self.error_type = error_type
+        super().__init__(f"{reason_alias} ({error_type})")
 
 
 async def read_frame(reader: asyncio.StreamReader) -> AudioSocketFrame | None:
@@ -274,6 +333,8 @@ class PlaybackBuffer:
                 self._frames.popleft()
                 dropped = 1
             self._frames.append(frame)
+            if frame._playback_observation is not None:
+                frame._playback_observation.queue_depth_after_enqueue = len(self._frames)
             self._condition.notify()
             return dropped
 
@@ -288,6 +349,14 @@ class PlaybackBuffer:
     async def clear(self) -> int:
         async with self._condition:
             dropped = len(self._frames)
+            self._frames.clear()
+            return dropped
+
+    async def drain(self) -> tuple[AudioSocketFrame, ...]:
+        """Remove and return queued frames so callers can preserve discard evidence."""
+
+        async with self._condition:
+            dropped = tuple(self._frames)
             self._frames.clear()
             return dropped
 
@@ -309,6 +378,7 @@ class RealtimeCallSession:
     noise_floor: float = 200.0
     limiter_ceiling: float = 0.7
     telephony_rate: int = 8_000
+    flush_interval_seconds: float = 0.1
     _closed: bool = False
     _input_resampler: Pcm16MonoStreamResampler | None = None
     _output_resampler: Pcm16MonoStreamResampler | None = None
@@ -327,6 +397,16 @@ class RealtimeCallSession:
     _playback_last_played_at: float | None = None
     _playback_last_played_ts: datetime | None = None
     _playback_last_frame_duration_ms: float | None = None
+    _provider_output_chunk_ordinal: int = 0
+    _provider_output_frame_ordinal: int = 0
+    _provider_output_stream_alias: str = field(
+        default_factory=lambda: f"provider-output-{uuid4().hex[:12]}"
+    )
+    _recent_provider_audio_chunks: deque[_ProviderAudioChunkObservation] = field(
+        default_factory=lambda: deque(maxlen=256)
+    )
+    _next_flush_at: float = field(default_factory=monotonic)
+    _flush_task: asyncio.Task[int] | None = None
 
     async def send_audio(self, frame_type: int, pcm_s16le: bytes) -> None:
         input_rate = AUDIO_TYPE_SAMPLE_RATES[frame_type]
@@ -342,12 +422,21 @@ class RealtimeCallSession:
             "provider_input_rms",
             pcm_s16le_rms(provider_pcm),
         )
-        await self.provider_session.send_pcm(
-            ProviderAudioChunk(
-                pcm=provider_pcm,
-                sample_rate=self.provider_session.input_rate,
+        try:
+            await self.provider_session.send_pcm(
+                ProviderAudioChunk(
+                    pcm=provider_pcm,
+                    sample_rate=self.provider_session.input_rate,
+                )
             )
-        )
+        except Exception as exc:
+            reason_alias, error_type = classify_provider_error(exc)
+            if reason_alias == "provider-connect-error":
+                reason_alias = "provider-session-error"
+            raise ProviderSessionError(
+                reason_alias=reason_alias,
+                error_type=error_type,
+            ) from None
 
     async def receive_audio(self) -> AsyncIterator[AudioSocketFrame]:
         playback = PlaybackBuffer()
@@ -367,16 +456,20 @@ class RealtimeCallSession:
 
     async def _produce_provider_audio(self, playback: PlaybackBuffer) -> None:
         packet_buffer = bytearray()
+        packet_sources: deque[_BufferedProviderAudioSource] = deque()
         packet_bytes = round(self.telephony_rate * 0.02) * 2
         try:
             async for message in self.provider_session.receive():
                 if isinstance(message, ProviderEvent):
+                    control_received_at = datetime.now(UTC)
+                    control_received_monotonic = monotonic()
                     self.observer.observe_metric(f"provider_{message.event_type}", 1.0)
                     if message.event_type == "input_speech_stopped":
                         self._end_caller_speech(
                             completion_observed=True,
                             stop_reason="provider_speech_stopped",
                         )
+                        self._schedule_flush_if_due()
                         continue
                     if message.event_type in {"input_speech_started", "interrupted"}:
                         if message.event_type == "input_speech_started":
@@ -400,6 +493,7 @@ class RealtimeCallSession:
                                 else "provider"
                             ),
                             direction="caller_to_assistant",
+                            ts=control_received_at,
                         )
                         if message.event_type == "input_speech_started":
                             self._active_caller_speech_alias = correlation_alias
@@ -476,6 +570,7 @@ class RealtimeCallSession:
                                 attributes={"played_audio_end_ms": position.audio_end_ms},
                             )
                             step += 1
+                        written_audio_ms_before_control = self._playback_written_audio_ms
                         self._end_assistant_playback(
                             ts=datetime.now(UTC),
                             stop_reason="barge_in",
@@ -486,26 +581,34 @@ class RealtimeCallSession:
                         self._inflight_started_at = None
                         self._current_provider_item = None
                         self._output_resampler = None
+                        partial_pcm = bytes(packet_buffer)
+                        partial_source_window = _buffered_source_window(packet_sources)
                         packet_buffer.clear()
-                        dropped = await playback.clear()
-                        discarded_audio_ms = dropped * 20
+                        packet_sources.clear()
+                        dropped_frames = await playback.drain()
+                        discard_attributes = self._observe_barge_in_audio_evidence(
+                            correlation_alias=correlation_alias,
+                            frames=dropped_frames,
+                            partial_pcm=partial_pcm,
+                            partial_source_window=partial_source_window,
+                            control_received_at=control_received_at,
+                            control_received_monotonic=control_received_monotonic,
+                            written_audio_ms_before_control=written_audio_ms_before_control,
+                        )
                         self._observe_barge_in_event(
                             correlation_alias,
                             step,
                             name="playback_queue_cleared",
                             category="buffer",
                             direction="assistant_to_caller",
-                            attributes={
-                                "dropped_frames": dropped,
-                                "discarded_audio_ms": discarded_audio_ms,
-                            },
+                            attributes=discard_attributes,
                         )
                         step += 1
                         self.observer.observe_metric("barge_in_events", 1.0)
-                        if dropped:
+                        if dropped_frames:
                             self.observer.observe_metric(
                                 "output_frames_dropped",
-                                float(dropped),
+                                float(len(dropped_frames)),
                             )
                         self._observe_barge_in_event(
                             correlation_alias,
@@ -518,15 +621,52 @@ class RealtimeCallSession:
                                 "played_audio_end_ms": (
                                     position.audio_end_ms if position is not None else None
                                 ),
-                                "dropped_frames": dropped,
-                                "discarded_audio_ms": discarded_audio_ms,
+                                "dropped_frames": len(dropped_frames),
+                                "discarded_audio_ms": discard_attributes[
+                                    "discarded_audio_ms"
+                                ],
+                                "discarded_signal_bearing_audio_ms": discard_attributes[
+                                    "discarded_signal_bearing_audio_ms"
+                                ],
+                                "provider_chunks_last_30ms": discard_attributes[
+                                    "provider_chunks_last_30ms"
+                                ],
+                                "provider_chunks_last_100ms": discard_attributes[
+                                    "provider_chunks_last_100ms"
+                                ],
+                                "first_discarded_audio_lead_ms": discard_attributes[
+                                    "first_discarded_audio_lead_ms"
+                                ],
+                                "written_audio_ms_before_control": (
+                                    written_audio_ms_before_control
+                                ),
+                                "remote_playout_observed": False,
                             },
                         )
+                    self._schedule_flush_if_due()
                     continue
 
                 provider_audio = message
+                provider_received_at = datetime.now(UTC)
+                provider_received_monotonic = monotonic()
                 if provider_audio.encoding != "pcm16" or provider_audio.channels != 1:
                     raise ValueError("provider output must be mono pcm16")
+                self._provider_output_chunk_ordinal += 1
+                provider_chunk_duration_ms = (
+                    len(provider_audio.pcm) / (2 * provider_audio.sample_rate) * 1000
+                )
+                provider_chunk_rms = pcm_s16le_rms(provider_audio.pcm)
+                _, _, provider_chunk_silence_pct = pcm_s16le_quality(provider_audio.pcm)
+                provider_chunk_observation = _ProviderAudioChunkObservation(
+                    ordinal=self._provider_output_chunk_ordinal,
+                    received_at=provider_received_at,
+                    received_monotonic=provider_received_monotonic,
+                    duration_ms=provider_chunk_duration_ms,
+                    rms=provider_chunk_rms,
+                    silence_sample_pct=provider_chunk_silence_pct,
+                    signal_bearing=provider_chunk_rms > self.noise_floor,
+                )
+                self._recent_provider_audio_chunks.append(provider_chunk_observation)
                 provider_item = (
                     (provider_audio.item_id, provider_audio.content_index)
                     if provider_audio.item_id is not None
@@ -535,6 +675,7 @@ class RealtimeCallSession:
                 )
                 if provider_item != self._current_provider_item:
                     packet_buffer.clear()
+                    packet_sources.clear()
                     self._last_enqueued_playback_position = None
                     self._current_provider_item = provider_item
                     self._output_resampler = None
@@ -582,21 +723,47 @@ class RealtimeCallSession:
                     sample_rate_hz=self.telephony_rate,
                 )
                 packet_buffer.extend(limited)
+                packet_sources.append(
+                    _BufferedProviderAudioSource(
+                        chunk_ordinal=provider_chunk_observation.ordinal,
+                        received_at=provider_received_at,
+                        received_monotonic=provider_received_monotonic,
+                        remaining_bytes=len(limited),
+                    )
+                )
                 while len(packet_buffer) >= packet_bytes:
                     payload = bytes(packet_buffer[:packet_bytes])
                     del packet_buffer[:packet_bytes]
+                    source_window = _consume_buffered_sources(
+                        packet_sources,
+                        packet_bytes,
+                    )
                     playback_position = None
                     if self._current_provider_item is not None:
                         playback_position = self._next_playback_position()
+                    self._provider_output_frame_ordinal += 1
+                    output_rms = pcm_s16le_rms(payload)
+                    _, _, silence_sample_pct = pcm_s16le_quality(payload)
+                    enqueued_at = datetime.now(UTC)
                     dropped = await playback.put(
                         AudioSocketFrame(
                             frame_type=0x10,
                             payload=payload,
                             playback_position=playback_position,
+                            _playback_observation=_PlaybackFrameObservation(
+                                frame_ordinal=self._provider_output_frame_ordinal,
+                                source_window=source_window,
+                                enqueued_at=enqueued_at,
+                                enqueued_monotonic=monotonic(),
+                                output_rms=output_rms,
+                                silence_sample_pct=silence_sample_pct,
+                                signal_bearing=output_rms > self.noise_floor,
+                            ),
                         )
                     )
                     if dropped:
                         self.observer.observe_metric("output_frames_dropped", 1.0)
+                self._schedule_flush_if_due()
             if getattr(
                 self.provider_session,
                 "persistent_receive_stream",
@@ -606,9 +773,16 @@ class RealtimeCallSession:
                 raise ProviderStreamEndedError("provider receive stream ended")
         except ProviderStreamEndedError:
             raise
-        except Exception:
+        except Exception as exc:
             self.observer.observe_metric("provider_stream_errors", 1.0)
-            raise ProviderSessionError("provider receive stream failed") from None
+            reason_alias, error_type = classify_provider_error(exc)
+            if reason_alias == "provider-connect-error":
+                reason_alias = "provider-session-error"
+            self.observer.observe_metric(f"provider_stream_error_{reason_alias}", 1.0)
+            raise ProviderSessionError(
+                reason_alias=reason_alias,
+                error_type=error_type,
+            ) from None
         finally:
             await playback.close()
 
@@ -787,6 +961,249 @@ class RealtimeCallSession:
             audio_end_ms=min(inflight.audio_end_ms, frame_start_ms + elapsed_ms),
         )
 
+    def _observe_barge_in_audio_evidence(
+        self,
+        *,
+        correlation_alias: str,
+        frames: tuple[AudioSocketFrame, ...],
+        partial_pcm: bytes,
+        partial_source_window: _ProviderAudioSourceWindow | None,
+        control_received_at: datetime,
+        control_received_monotonic: float,
+        written_audio_ms_before_control: float,
+    ) -> dict[str, str | int | float | bool | None]:
+        recent_chunks = [
+            chunk
+            for chunk in self._recent_provider_audio_chunks
+            if 0.0
+            <= (control_received_monotonic - chunk.received_monotonic) * 1000
+            <= BARGE_IN_CHUNK_LOOKBACK_MS
+        ]
+        selected_chunks = _bounded_evidence(
+            recent_chunks,
+            BARGE_IN_CHUNK_EVIDENCE_LIMIT,
+        )
+        for chunk in selected_chunks:
+            lead_ms = max(
+                0.0,
+                (control_received_monotonic - chunk.received_monotonic) * 1000,
+            )
+            self.observer.observe_timeline_event(
+                TimelineEvent(
+                    event_id=f"{correlation_alias}:provider-chunk:{chunk.ordinal}",
+                    category="provider",
+                    name="provider_output_audio_chunk_received",
+                    source="audiosocket_bridge",
+                    correlation_alias=correlation_alias,
+                    direction="assistant_to_caller",
+                    stream_alias=self._provider_output_stream_alias,
+                    attributes={
+                        "provider_chunk_ordinal": chunk.ordinal,
+                        "chunk_duration_ms": round(chunk.duration_ms, 3),
+                        "input_rms": round(chunk.rms, 3),
+                        "silence_sample_pct": round(chunk.silence_sample_pct, 3),
+                        "signal_bearing": chunk.signal_bearing,
+                        "signal_threshold_rms": self.noise_floor,
+                        "received_before_control_ms": round(lead_ms, 3),
+                    },
+                    ts=chunk.received_at,
+                )
+            )
+
+        frame_observations = [
+            observation
+            for frame in frames
+            if (observation := frame._playback_observation) is not None
+        ]
+        selected_frames = _bounded_evidence(
+            frame_observations,
+            BARGE_IN_FRAME_EVIDENCE_LIMIT,
+        )
+        for observation in selected_frames:
+            source_window = observation.source_window
+            provider_lead_ms = max(
+                0.0,
+                (
+                    control_received_monotonic
+                    - source_window.first_received_monotonic
+                )
+                * 1000,
+            )
+            enqueue_lead_ms = max(
+                0.0,
+                (control_received_monotonic - observation.enqueued_monotonic) * 1000,
+            )
+            self.observer.observe_timeline_event(
+                TimelineEvent(
+                    event_id=(
+                        f"{correlation_alias}:discarded-frame:"
+                        f"{observation.frame_ordinal}"
+                    ),
+                    category="buffer",
+                    name="playback_frame_enqueued_before_barge_in",
+                    source="audiosocket_bridge",
+                    correlation_alias=correlation_alias,
+                    direction="assistant_to_caller",
+                    stage="serializer",
+                    stream_alias=self._provider_output_stream_alias,
+                    attributes={
+                        "frame_ordinal": observation.frame_ordinal,
+                        "provider_chunk_first_ordinal": (
+                            source_window.chunk_ordinals[0]
+                        ),
+                        "provider_chunk_last_ordinal": (
+                            source_window.chunk_ordinals[-1]
+                        ),
+                        "provider_chunk_count": len(source_window.chunk_ordinals),
+                        "frame_duration_ms": 20.0,
+                        "output_rms": round(observation.output_rms, 3),
+                        "silence_sample_pct": round(
+                            observation.silence_sample_pct,
+                            3,
+                        ),
+                        "signal_bearing": observation.signal_bearing,
+                        "signal_threshold_rms": self.noise_floor,
+                        "queue_depth_after_enqueue": (
+                            observation.queue_depth_after_enqueue
+                        ),
+                        "provider_receive_to_enqueue_ms": round(
+                            (
+                                observation.enqueued_monotonic
+                                - source_window.first_received_monotonic
+                            )
+                            * 1000,
+                            3,
+                        ),
+                        "provider_received_before_control_ms": round(
+                            provider_lead_ms,
+                            3,
+                        ),
+                        "enqueued_before_control_ms": round(enqueue_lead_ms, 3),
+                        "outcome": "discarded_on_barge_in",
+                    },
+                    ts=observation.enqueued_at,
+                )
+            )
+
+        partial_audio_ms = len(partial_pcm) / (2 * self.telephony_rate) * 1000
+        partial_signal_bearing = (
+            bool(partial_pcm) and pcm_s16le_rms(partial_pcm) > self.noise_floor
+        )
+        if partial_pcm and partial_source_window is not None:
+            _, _, partial_silence_pct = pcm_s16le_quality(partial_pcm)
+            self.observer.observe_timeline_event(
+                TimelineEvent(
+                    event_id=f"{correlation_alias}:discarded-partial-frame",
+                    category="buffer",
+                    name="playback_partial_frame_buffered_before_barge_in",
+                    source="audiosocket_bridge",
+                    correlation_alias=correlation_alias,
+                    direction="assistant_to_caller",
+                    stage="serializer",
+                    stream_alias=self._provider_output_stream_alias,
+                    attributes={
+                        "provider_chunk_first_ordinal": (
+                            partial_source_window.chunk_ordinals[0]
+                        ),
+                        "provider_chunk_last_ordinal": (
+                            partial_source_window.chunk_ordinals[-1]
+                        ),
+                        "provider_chunk_count": len(
+                            partial_source_window.chunk_ordinals
+                        ),
+                        "partial_audio_ms": round(partial_audio_ms, 3),
+                        "output_rms": round(pcm_s16le_rms(partial_pcm), 3),
+                        "silence_sample_pct": round(partial_silence_pct, 3),
+                        "signal_bearing": partial_signal_bearing,
+                        "signal_threshold_rms": self.noise_floor,
+                        "outcome": "discarded_on_barge_in",
+                    },
+                    ts=partial_source_window.first_received_at,
+                )
+            )
+
+        frame_audio_ms = sum(
+            len(frame.payload) / (2 * self.telephony_rate) * 1000 for frame in frames
+        )
+        signal_bearing_frame_audio_ms = sum(
+            len(frame.payload) / (2 * self.telephony_rate) * 1000
+            for frame in frames
+            if frame._playback_observation is not None
+            and frame._playback_observation.signal_bearing
+        )
+        discarded_signal_bearing_audio_ms = signal_bearing_frame_audio_ms + (
+            partial_audio_ms if partial_signal_bearing else 0.0
+        )
+        discarded_source_ordinals = {
+            ordinal
+            for observation in frame_observations
+            for ordinal in observation.source_window.chunk_ordinals
+        }
+        if partial_source_window is not None:
+            discarded_source_ordinals.update(partial_source_window.chunk_ordinals)
+        discarded_source_times = [
+            observation.source_window.first_received_monotonic
+            for observation in frame_observations
+        ]
+        if partial_source_window is not None:
+            discarded_source_times.append(
+                partial_source_window.first_received_monotonic
+            )
+        first_discarded_audio_lead_ms = (
+            round(
+                max(
+                    0.0,
+                    (control_received_monotonic - min(discarded_source_times))
+                    * 1000,
+                ),
+                3,
+            )
+            if discarded_source_times
+            else None
+        )
+        return {
+            "dropped_frames": len(frames),
+            "discarded_audio_ms": round(frame_audio_ms, 3),
+            "partial_audio_ms": round(partial_audio_ms, 3),
+            "discarded_total_audio_ms": round(frame_audio_ms + partial_audio_ms, 3),
+            "discarded_signal_bearing_frames": sum(
+                observation.signal_bearing for observation in frame_observations
+            ),
+            "discarded_signal_bearing_audio_ms": round(
+                discarded_signal_bearing_audio_ms,
+                3,
+            ),
+            "discarded_provider_chunks": len(discarded_source_ordinals),
+            "provider_chunks_last_30ms": sum(
+                (control_received_monotonic - chunk.received_monotonic) * 1000
+                <= 30.0
+                for chunk in recent_chunks
+            ),
+            "provider_chunks_last_100ms": sum(
+                (control_received_monotonic - chunk.received_monotonic) * 1000
+                <= 100.0
+                for chunk in recent_chunks
+            ),
+            "first_discarded_audio_lead_ms": first_discarded_audio_lead_ms,
+            "queue_depth_before_clear": len(frames),
+            "evidence_frames_recorded": len(selected_frames),
+            "evidence_frames_omitted": len(frame_observations) - len(selected_frames),
+            "signal_threshold_rms": self.noise_floor,
+            "written_audio_ms_before_control": round(
+                written_audio_ms_before_control,
+                3,
+            ),
+            "remote_playout_observed": False,
+        }
+
+    def _schedule_flush_if_due(self) -> None:
+        now = monotonic()
+        if now < self._next_flush_at:
+            return
+        self._next_flush_at = now + self.flush_interval_seconds
+        if self._flush_task is None or self._flush_task.done():
+            self._flush_task = asyncio.create_task(asyncio.to_thread(self.observer.flush))
+
     def _observe_barge_in_event(
         self,
         correlation_alias: str,
@@ -796,6 +1213,7 @@ class RealtimeCallSession:
         category: TimelineCategory,
         direction: str | None = None,
         attributes: dict[str, str | int | float | bool | None] | None = None,
+        ts: datetime | None = None,
     ) -> None:
         self.observer.observe_timeline_event(
             TimelineEvent(
@@ -806,7 +1224,7 @@ class RealtimeCallSession:
                 correlation_alias=correlation_alias,
                 direction=direction,
                 attributes=attributes or {},
-                ts=datetime.now(UTC),
+                ts=ts or datetime.now(UTC),
             )
         )
 
@@ -834,11 +1252,65 @@ class RealtimeCallSession:
             stop_reason="call_closed",
         )
         self.mark_output_ended(stop_reason="call_closed")
+        if self._flush_task is not None:
+            await self._flush_task
         await asyncio.to_thread(self.observer.flush)
         if failure_alias is not None and self.fail_run is not None:
             await asyncio.to_thread(self.fail_run, failure_alias)
         else:
             await asyncio.to_thread(self.complete_run)
+
+
+def _buffered_source_window(
+    sources: deque[_BufferedProviderAudioSource],
+) -> _ProviderAudioSourceWindow | None:
+    if not sources:
+        return None
+    return _source_window(tuple(sources))
+
+
+def _consume_buffered_sources(
+    sources: deque[_BufferedProviderAudioSource],
+    byte_count: int,
+) -> _ProviderAudioSourceWindow:
+    if byte_count <= 0:
+        raise ValueError("byte_count must be positive")
+    remaining = byte_count
+    consumed: list[_BufferedProviderAudioSource] = []
+    while remaining:
+        if not sources:
+            raise RuntimeError("packet source accounting underrun")
+        source = sources[0]
+        consumed.append(source)
+        consumed_bytes = min(remaining, source.remaining_bytes)
+        remaining -= consumed_bytes
+        source.remaining_bytes -= consumed_bytes
+        if source.remaining_bytes == 0:
+            sources.popleft()
+    return _source_window(tuple(consumed))
+
+
+def _source_window(
+    sources: tuple[_BufferedProviderAudioSource, ...],
+) -> _ProviderAudioSourceWindow:
+    first = sources[0]
+    last = sources[-1]
+    return _ProviderAudioSourceWindow(
+        chunk_ordinals=tuple(dict.fromkeys(source.chunk_ordinal for source in sources)),
+        first_received_at=first.received_at,
+        first_received_monotonic=first.received_monotonic,
+        last_received_monotonic=last.received_monotonic,
+    )
+
+
+def _bounded_evidence[T](values: list[T], limit: int) -> list[T]:
+    if limit <= 0:
+        return []
+    if len(values) <= limit:
+        return values
+    head_count = (limit + 1) // 2
+    tail_count = limit - head_count
+    return [*values[:head_count], *values[-tail_count:]]
 
 
 RealtimeSessionFactory = Callable[[UUID], Awaitable[RealtimeCallSession]]
@@ -849,6 +1321,7 @@ class AudioSocketRealtimeServer:
     session_factory: RealtimeSessionFactory
     host: str = "127.0.0.1"
     port: int = 9019
+    on_failure: Callable[[str, str], None] | None = None
 
     async def serve_forever(self) -> None:
         server = await asyncio.start_server(self._handle_connection, self.host, self.port)
@@ -899,30 +1372,41 @@ class AudioSocketRealtimeServer:
                     break
         except ProviderStreamEndedError:
             failure_alias = "provider-stream-ended"
-        except ProviderSessionError:
-            failure_alias = "provider-session-error"
-        except Exception:
+        except ProviderSessionError as exc:
+            failure_alias = exc.reason_alias
+            self._report_failure(exc.reason_alias, exc.error_type)
+        except Exception as exc:
             failure_alias = "realtime-bridge-error"
+            self._report_failure(failure_alias, type(exc).__name__)
         finally:
-            if output_task is not None and not output_task.done():
-                output_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await output_task
-            elif output_task is not None and failure_alias is None:
+            if output_task is not None:
+                if not output_task.done():
+                    output_task.cancel()
                 try:
                     await output_task
+                except asyncio.CancelledError:
+                    pass
                 except ProviderStreamEndedError:
-                    failure_alias = "provider-stream-ended"
-                except ProviderSessionError:
-                    failure_alias = "provider-session-error"
-                except Exception:
-                    failure_alias = "realtime-bridge-error"
+                    if failure_alias is None:
+                        failure_alias = "provider-stream-ended"
+                except ProviderSessionError as exc:
+                    if failure_alias is None:
+                        failure_alias = exc.reason_alias
+                        self._report_failure(exc.reason_alias, exc.error_type)
+                except Exception as exc:
+                    if failure_alias is None:
+                        failure_alias = "realtime-bridge-error"
+                        self._report_failure(failure_alias, type(exc).__name__)
             try:
                 if session is not None:
                     await session.close(failure_alias)
             finally:
                 writer.close()
                 await writer.wait_closed()
+
+    def _report_failure(self, reason_alias: str, error_type: str) -> None:
+        if self.on_failure is not None:
+            self.on_failure(reason_alias, error_type)
 
     async def _pump_output(
         self,

@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="$ROOT/examples/asterisk/docker/compose.yaml"
+CONTAINER="voxbench-asterisk-dev"
+SIP_PORT="${VOXBENCH_SIP_PORT:-5060}"
+SIP_PASSWORD="${VOXBENCH_SIP_PASSWORD:-voxbench-6001-local-only}"
+AMI_PORT="${VOXBENCH_AMI_PORT:-5038}"
+AMI_PASSWORD="${VOXBENCH_AMI_PASSWORD:-voxbench-ami-local-only}"
+CONTROL_PLANE_URL="${VOXBENCH_CONTROL_PLANE_URL:-http://127.0.0.1:8001}"
+DOCKER=""
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/asterisk-local <command>
+
+Commands:
+  up       Build and start the local Asterisk container
+  down     Stop and remove the local Asterisk container
+  status   Show container, SIP endpoint, dialplan, and AudioSocket module status
+  logs     Follow the Asterisk console log
+  cli      Open the Asterisk CLI
+  settings Print the macOS Telephone account settings
+  gemini   Run the Gemini Live AudioSocket bridge (requires a local API key)
+EOF
+}
+
+find_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    DOCKER="$(command -v docker)"
+  elif [[ -x /Applications/Docker.app/Contents/Resources/bin/docker ]]; then
+    DOCKER="/Applications/Docker.app/Contents/Resources/bin/docker"
+  else
+    echo "Docker is required. Install/start Docker Desktop and retry." >&2
+    exit 1
+  fi
+
+  "$DOCKER" info >/dev/null 2>&1 || {
+    echo "Docker is installed, but Docker Desktop is not running." >&2
+    exit 1
+  }
+}
+
+print_settings() {
+  cat <<EOF
+macOS Telephone account
+  Account / description : VoxBench
+  Full name / display   : VoxBench 6001
+  Domain / SIP server   : 127.0.0.1
+  Port                  : $SIP_PORT
+  User name             : 6001
+  Authorization user    : 6001
+  Password              : $SIP_PASSWORD
+  Transport             : UDP
+  Outbound proxy        : blank
+  STUN                  : off
+  Codec                  : PCMU / G.711 mu-law
+
+After the AudioSocket bridge is listening on 127.0.0.1:9019, call: 7000
+
+RTCP collector (optional)
+  AMI host               : 127.0.0.1
+  AMI port               : $AMI_PORT
+  AMI user               : voxbench-rtcp
+  AMI password           : $AMI_PASSWORD
+EOF
+}
+
+wait_until_healthy() {
+  local attempts=0
+  local health=""
+
+  until [[ "$health" == "healthy" ]]; do
+    health="$(
+      "$DOCKER" inspect \
+        --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        "$CONTAINER" 2>/dev/null || true
+    )"
+    if [[ "$health" == "unhealthy" ]] || [[ "$health" == "exited" ]]; then
+      "$DOCKER" logs "$CONTAINER" >&2 || true
+      echo "Asterisk failed to become ready." >&2
+      exit 1
+    fi
+    attempts=$((attempts + 1))
+    if [[ "$attempts" -ge 40 ]]; then
+      "$DOCKER" logs "$CONTAINER" >&2 || true
+      echo "Asterisk did not become healthy within 40 seconds." >&2
+      exit 1
+    fi
+    sleep 1
+  done
+}
+
+command="${1:-}"
+case "$command" in
+  up)
+    find_docker
+    "$DOCKER" compose -f "$COMPOSE_FILE" up --detach --build
+    wait_until_healthy
+    echo
+    echo "Asterisk is ready."
+    print_settings
+    echo
+    echo "Next, start the bridge in another terminal:"
+    echo "  voxbench audiosocket-loopback --control-plane-url http://127.0.0.1:8001"
+    ;;
+  down)
+    find_docker
+    "$DOCKER" compose -f "$COMPOSE_FILE" down
+    ;;
+  status)
+    find_docker
+    "$DOCKER" compose -f "$COMPOSE_FILE" ps
+    echo
+    "$DOCKER" exec "$CONTAINER" asterisk -rx "module show like audiosocket"
+    "$DOCKER" exec "$CONTAINER" asterisk -rx "pjsip show endpoints"
+    "$DOCKER" exec "$CONTAINER" asterisk -rx "dialplan show 7000@voxbench-demo"
+    ;;
+  logs)
+    find_docker
+    "$DOCKER" compose -f "$COMPOSE_FILE" logs --follow asterisk
+    ;;
+  cli)
+    find_docker
+    "$DOCKER" exec -it "$CONTAINER" asterisk -rvvv
+    ;;
+  settings)
+    print_settings
+    ;;
+  gemini)
+    shift
+    gemini_model="${VOXBENCH_GEMINI_MODEL:-gemini-3.1-flash-live-preview}"
+    previous_arg=""
+    gemini_args=()
+    for arg in "$@"; do
+      if [[ "$previous_arg" == "--model" ]]; then
+        gemini_model="$arg"
+        previous_arg=""
+        continue
+      fi
+      case "$arg" in
+        --model)
+          previous_arg="--model"
+          ;;
+        --model=*)
+          gemini_model="${arg#--model=}"
+          ;;
+        *)
+          gemini_args+=("$arg")
+          ;;
+      esac
+    done
+    if [[ "$previous_arg" == "--model" ]]; then
+      echo "--model requires a value." >&2
+      exit 64
+    fi
+    find_docker
+    health="$(
+      "$DOCKER" inspect \
+        --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        "$CONTAINER" 2>/dev/null || true
+    )"
+    if [[ "$health" != "healthy" ]]; then
+      echo "Asterisk is not healthy. Run: ./scripts/asterisk-local up" >&2
+      exit 1
+    fi
+    if [[ -z "${GOOGLE_API_KEY:-}" ]] && [[ -z "${GEMINI_API_KEY:-}" ]]; then
+      cat >&2 <<'EOF'
+Gemini API key is not set in this terminal.
+
+For fish:
+  set -gx GOOGLE_API_KEY 'your-key'
+
+For zsh/bash:
+  export GOOGLE_API_KEY='your-key'
+
+Do not paste the key into repository files. Then rerun:
+  ./scripts/asterisk-local gemini
+EOF
+      exit 1
+    fi
+    if [[ ! -x "$ROOT/.venv/bin/voxbench" ]]; then
+      echo "Missing .venv/bin/voxbench. Activate/install the development environment first." >&2
+      exit 1
+    fi
+    "$ROOT/.venv/bin/python" -c "import google.genai" 2>/dev/null || {
+      echo "Gemini SDK is missing. Run: python -m pip install -e '.[live]'" >&2
+      exit 1
+    }
+    command -v curl >/dev/null 2>&1 || {
+      echo "curl is required to verify the Control Plane." >&2
+      exit 1
+    }
+    curl --fail --silent --show-error \
+      "$CONTROL_PLANE_URL/repository/readiness" >/dev/null || {
+      echo "VoxBench Control Plane is not ready at $CONTROL_PLANE_URL." >&2
+      echo "Set VOXBENCH_CONTROL_PLANE_URL if it uses another port." >&2
+      exit 1
+    }
+    echo "Checking Gemini API key and Live model access."
+    "$ROOT/.venv/bin/voxbench" gemini-live-preflight --model "$gemini_model"
+    echo "Starting Gemini Live bridge on 127.0.0.1:9019."
+    echo "Model: $gemini_model"
+    echo "Control Plane: $CONTROL_PLANE_URL"
+    echo "Call 7000 after the listening message appears. Press Ctrl+C to stop."
+    exec "$ROOT/.venv/bin/voxbench" audiosocket-realtime \
+      --control-plane-url "$CONTROL_PLANE_URL" \
+      --provider gemini-live \
+      --model "$gemini_model" \
+      "${gemini_args[@]}"
+    ;;
+  *)
+    usage >&2
+    exit 64
+    ;;
+esac

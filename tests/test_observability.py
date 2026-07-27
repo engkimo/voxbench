@@ -17,6 +17,7 @@ from voxbench.observability import (
     RtpPacketTapAdapter,
     RtpStats,
     SipEvent,
+    TimelineEvent,
     VoxBenchObserver,
     rtp_packet_from_datagram,
 )
@@ -64,6 +65,18 @@ class RecordingTransport(ObservationTransport):
         self.batches: list[ObservationBatch] = []
 
     def send(self, batch: ObservationBatch) -> None:
+        self.batches.append(batch)
+
+
+class FailingSecondTransport(ObservationTransport):
+    def __init__(self) -> None:
+        self.batches: list[ObservationBatch] = []
+        self.calls = 0
+
+    def send(self, batch: ObservationBatch) -> None:
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("second batch unavailable")
         self.batches.append(batch)
 
 
@@ -691,6 +704,48 @@ def test_observer_restores_pending_items_when_transport_fails() -> None:
         observer.flush()
 
     assert observer.pending_count == 1
+
+
+def test_observer_splits_bursty_observations_at_ingest_contract_limits() -> None:
+    transport = RecordingTransport()
+    observer = VoxBenchObserver("run-1", transport)
+    for ordinal in range(501):
+        observer.observe_metric(f"burst_metric_{ordinal}", float(ordinal))
+    for ordinal in range(129):
+        observer.observe_timeline_event(
+            TimelineEvent(
+                event_id=f"burst-event-{ordinal}",
+                category="provider",
+                name="provider_output_audio_chunk_received",
+                source="test",
+            )
+        )
+
+    assert observer.flush() == 630
+    assert len(transport.batches) == 2
+    assert len(transport.batches[0].metrics) == 500
+    assert len(transport.batches[0].timeline_events) == 128
+    assert len(transport.batches[1].metrics) == 1
+    assert len(transport.batches[1].timeline_events) == 1
+    assert observer.pending_count == 0
+
+
+def test_observer_restores_only_unsent_remainder_after_partial_batch_failure() -> None:
+    transport = FailingSecondTransport()
+    observer = VoxBenchObserver("run-1", transport)
+    for ordinal in range(501):
+        observer.observe_metric(f"burst_metric_{ordinal}", float(ordinal))
+
+    with pytest.raises(RuntimeError, match="second batch unavailable"):
+        observer.flush()
+
+    assert len(transport.batches) == 1
+    assert len(transport.batches[0].metrics) == 500
+    assert observer.pending_count == 1
+    retry_transport = RecordingTransport()
+    observer.transport = retry_transport
+    assert observer.flush() == 1
+    assert retry_transport.batches[0].metrics[0].name == "burst_metric_500"
 
 
 def test_observed_run_can_fail_with_safe_alias(tmp_path: Path) -> None:

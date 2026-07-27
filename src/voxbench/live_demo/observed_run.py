@@ -28,8 +28,11 @@ def build_audiosocket_observed_run_payload(
     max_gain: float,
     noise_floor: float,
     mode: AudioSocketDemoMode = "loopback",
+    model: str | None = None,
 ) -> dict[str, Any]:
     config = deepcopy(_load_json(f"configs/live-demo-{provider}.json"))
+    selected_model = model or str(config["spec"]["ai"]["model"])
+    config["spec"]["ai"]["model"] = selected_model
     config["spec"]["engine"]["params"].update(
         {
             "websocket_url": "alias:local-asterisk-audiosocket",
@@ -53,6 +56,7 @@ def build_audiosocket_observed_run_payload(
         if mode == "loopback"
         else "Bidirectional AudioSocket media connected to the selected provider."
     )
+    provider_note = f"{provider_note} Provider model: {selected_model}."
     return {
         "config_name": config["meta"]["name"],
         "configs": [config],
@@ -64,7 +68,7 @@ def build_audiosocket_observed_run_payload(
         "environment": {
             "environment_profile": "demo",
             "server_alias": "local-audiosocket-bridge",
-            "integration_target_alias": f"{provider}-{mode}",
+            "integration_target_alias": f"{provider}:{selected_model}:{mode}",
             "started_from": f"voxbench-audiosocket-{mode}",
             "operator_note": provider_note,
             "tags": ["live-demo", "audiosocket", mode, provider],

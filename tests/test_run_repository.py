@@ -188,6 +188,7 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
     )
     run_id = first_client.post("/runs/observed", json=_run_payload()).json()["run_id"]
     pcm = base64.b64encode(struct.pack("<h", 1200) * 160).decode("ascii")
+    barge_in_t0 = datetime.now(UTC)
 
     observed = first_client.post(
         "/v1/observations",
@@ -224,24 +225,79 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
                     "event_id": "barge-in-1:1",
                     "category": "conversation",
                     "name": "provider_input_speech_started",
+                    "ts": (barge_in_t0 + timedelta(milliseconds=12)).isoformat(),
                     "source": "audiosocket_bridge",
                     "correlation_alias": "barge-in-1",
+                },
+                {
+                    "event_id": "barge-in-1:provider-chunk:1",
+                    "category": "provider",
+                    "name": "provider_output_audio_chunk_received",
+                    "ts": barge_in_t0.isoformat(),
+                    "source": "audiosocket_bridge",
+                    "correlation_alias": "barge-in-1",
+                    "direction": "assistant_to_caller",
+                    "stream_alias": "provider-output-test",
+                    "attributes": {
+                        "provider_chunk_ordinal": 1,
+                        "chunk_duration_ms": 40,
+                        "input_rms": 1200,
+                        "silence_sample_pct": 0,
+                        "signal_bearing": True,
+                        "signal_threshold_rms": 200,
+                        "received_before_control_ms": 12,
+                    },
+                },
+                {
+                    "event_id": "barge-in-1:discarded-frame:1",
+                    "category": "buffer",
+                    "name": "playback_frame_enqueued_before_barge_in",
+                    "ts": (barge_in_t0 + timedelta(milliseconds=1)).isoformat(),
+                    "source": "audiosocket_bridge",
+                    "correlation_alias": "barge-in-1",
+                    "direction": "assistant_to_caller",
+                    "stage": "serializer",
+                    "stream_alias": "provider-output-test",
+                    "attributes": {
+                        "frame_ordinal": 1,
+                        "frame_duration_ms": 20,
+                        "output_rms": 1200,
+                        "silence_sample_pct": 0,
+                        "signal_bearing": True,
+                        "outcome": "discarded_on_barge_in",
+                    },
                 },
                 {
                     "event_id": "barge-in-1:2",
                     "category": "buffer",
                     "name": "playback_queue_cleared",
+                    "ts": (barge_in_t0 + timedelta(milliseconds=13)).isoformat(),
                     "source": "audiosocket_bridge",
                     "correlation_alias": "barge-in-1",
                     "attributes": {
                         "dropped_frames": 2,
                         "discarded_audio_ms": 40,
+                        "partial_audio_ms": 0,
+                        "discarded_total_audio_ms": 40,
+                        "discarded_signal_bearing_frames": 2,
+                        "discarded_signal_bearing_audio_ms": 40,
+                        "discarded_provider_chunks": 1,
+                        "provider_chunks_last_30ms": 4,
+                        "provider_chunks_last_100ms": 4,
+                        "first_discarded_audio_lead_ms": 12,
+                        "queue_depth_before_clear": 2,
+                        "evidence_frames_recorded": 2,
+                        "evidence_frames_omitted": 0,
+                        "signal_threshold_rms": 200,
+                        "written_audio_ms_before_control": 0,
+                        "remote_playout_observed": False,
                     },
                 },
                 {
                     "event_id": "barge-in-1:3",
                     "category": "conversation",
                     "name": "barge_in_completed",
+                    "ts": (barge_in_t0 + timedelta(milliseconds=14)).isoformat(),
                     "source": "audiosocket_bridge",
                     "correlation_alias": "barge-in-1",
                     "attributes": {
@@ -311,6 +367,8 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
         for event in timeline["lanes"]["events"]
         if (event["correlation_alias"] or "").startswith("barge-in")
     ] == [
+        "barge-in-1:provider-chunk:1",
+        "barge-in-1:discarded-frame:1",
         "barge-in-1:1",
         "barge-in-1:2",
         "barge-in-1:3",
@@ -321,7 +379,15 @@ def test_postgres_repository_persists_observation_mutations_and_failure(tmp_path
         if incident["rule_id"] == "barge_in_sequence"
     )
     assert barge_in["observed"]["discarded_audio_ms"] == 40.0
+    assert barge_in["observed"]["discarded_signal_bearing_audio_ms"] == 40.0
+    assert barge_in["observed"]["provider_chunks_last_30ms"] == 4.0
+    assert barge_in["observed"]["first_discarded_audio_lead_ms"] == 12.0
+    assert barge_in["observed"]["remote_playout_observed"] is False
+    assert barge_in["severity"] == "warning"
+    assert barge_in["title"] == "Signal-bearing audio discarded before playout"
     assert barge_in["evidence_refs"] == [
+        "barge-in-1:provider-chunk:1",
+        "barge-in-1:discarded-frame:1",
         "barge-in-1:1",
         "barge-in-1:2",
         "barge-in-1:3",

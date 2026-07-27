@@ -63,8 +63,8 @@ class FakeGeminiSession:
         self.sent: list[FakeBlob] = []
         self.receive_calls = 0
 
-    async def send_realtime_input(self, *, media: FakeBlob) -> None:
-        self.sent.append(media)
+    async def send_realtime_input(self, *, audio: FakeBlob) -> None:
+        self.sent.append(audio)
 
     def receive(self):
         self.receive_calls += 1
@@ -312,7 +312,32 @@ def test_initial_provider_connection_exhaustion_has_safe_error() -> None:
                 sleep=fake_sleep,
             )
         assert captured.value.attempts == 2
-        assert str(captured.value) == "provider connection failed after 2 attempts"
+        assert captured.value.reason_alias == "provider-connect-error"
+        assert captured.value.error_type == "RuntimeError"
         assert "secret-provider" not in str(captured.value)
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_alias"),
+    [
+        ("API key not valid. Please pass a valid API key.", "invalid-api-key"),
+        ("Requested model was not found for bidiGenerateContent", "model-unavailable"),
+        ("RESOURCE_EXHAUSTED: quota exceeded", "quota-or-rate-limit"),
+        ("PERMISSION_DENIED for this project", "permission-denied"),
+    ],
+)
+def test_initial_provider_connection_classifies_safe_failure(
+    message: str,
+    expected_alias: str,
+) -> None:
+    class UnavailableProvider:
+        async def connect(self, *, dry_run: bool = True):
+            raise RuntimeError(message)
+
+    with pytest.raises(ProviderConnectionError) as captured:
+        asyncio.run(connect_with_retry(UnavailableProvider(), attempts=1))
+
+    assert captured.value.reason_alias == expected_alias
+    assert message not in str(captured.value)

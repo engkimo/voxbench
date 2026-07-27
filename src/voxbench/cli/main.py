@@ -145,6 +145,13 @@ def audiosocket_realtime(
         LiveDemoProvider,
         typer.Option("--provider"),
     ] = "openai-realtime",
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Provider model ID; defaults to the selected adapter's pinned model.",
+        ),
+    ] = None,
     target_rms: Annotated[float, typer.Option("--target-rms", min=1.0)] = 3000.0,
     max_gain: Annotated[float, typer.Option("--max-gain", min=0.01)] = 8.0,
     noise_floor: Annotated[float, typer.Option("--noise-floor", min=0.0)] = 200.0,
@@ -160,8 +167,11 @@ def audiosocket_realtime(
     """Bridge Asterisk AudioSocket PCM to a realtime AI provider."""
 
     provider_adapter = (
-        OpenAIRealtimeProvider() if provider == "openai-realtime" else GeminiLiveProvider()
+        OpenAIRealtimeProvider(**({"model": model} if model is not None else {}))
+        if provider == "openai-realtime"
+        else GeminiLiveProvider(**({"model": model} if model is not None else {}))
     )
+    selected_model = provider_adapter.model
     readiness = provider_adapter.readiness(dry_run=False)
     if not readiness.ready:
         env_vars = ", ".join((readiness.env_var, *readiness.alternate_env_vars))
@@ -179,6 +189,7 @@ def audiosocket_realtime(
             max_gain=max_gain,
             noise_floor=noise_floor,
             mode="provider",
+            model=selected_model,
         )
         run = await asyncio.to_thread(transport.start_run, payload)
         observer = VoxBenchObserver(run["run_id"], transport)
@@ -197,6 +208,11 @@ def audiosocket_realtime(
                 on_retry=report_retry,
             )
         except ProviderConnectionError as exc:
+            typer.echo(
+                f"Provider connection exhausted: {exc.reason_alias} "
+                f"({exc.error_type})",
+                err=True,
+            )
             observer.observe_metric("provider_connect_attempts", float(exc.attempts))
             observer.observe_metric("provider_connect_retries", float(exc.attempts - 1))
             observer.observe_metric("provider_connect_failures", float(exc.attempts))
@@ -225,7 +241,10 @@ def audiosocket_realtime(
                 float(connection.attempts - 1),
             )
         await asyncio.to_thread(observer.flush)
-        typer.echo(f"AudioSocket call {call_id} -> {provider} -> run {run['run_id']}")
+        typer.echo(
+            f"AudioSocket call {call_id} -> {provider}/{selected_model} "
+            f"-> run {run['run_id']}"
+        )
         return RealtimeCallSession(
             call_id=call_id,
             observer=observer,
@@ -244,12 +263,53 @@ def audiosocket_realtime(
         session_factory=create_session,
         host=host,
         port=port,
+        on_failure=lambda reason_alias, error_type: typer.echo(
+            f"Provider session failed: {reason_alias} ({error_type})",
+            err=True,
+        ),
     )
-    typer.echo(f"Listening for {provider} AudioSocket calls on {host}:{port}")
+    typer.echo(
+        f"Listening for {provider}/{selected_model} AudioSocket calls on {host}:{port}"
+    )
     try:
         asyncio.run(server.serve_forever())
     except KeyboardInterrupt:
         typer.echo("AudioSocket realtime bridge stopped")
+
+
+@app.command("gemini-live-preflight")
+def gemini_live_preflight(
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Gemini Live model ID; defaults to the adapter's current pinned model.",
+        ),
+    ] = None,
+) -> None:
+    """Validate Gemini credentials and Live model access without sending audio."""
+
+    provider = GeminiLiveProvider(**({"model": model} if model is not None else {}))
+    readiness = provider.readiness(dry_run=False)
+    if not readiness.ready:
+        env_vars = ", ".join((readiness.env_var, *readiness.alternate_env_vars))
+        detail = f"set {env_vars} and install the live extra: pip install -e '.[live]'"
+        raise typer.BadParameter(detail)
+
+    async def preflight() -> None:
+        connection = await connect_with_retry(provider, attempts=1)
+        await connection.session.close()
+
+    try:
+        asyncio.run(preflight())
+    except ProviderConnectionError as exc:
+        typer.echo(
+            f"Gemini Live preflight failed: {exc.reason_alias} ({exc.error_type})",
+            err=True,
+        )
+        raise typer.Exit(code=2) from None
+
+    typer.echo(f"Gemini Live preflight passed: {provider.model}")
 
 
 @app.command("asterisk-ami-rtcp")

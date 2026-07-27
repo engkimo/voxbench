@@ -148,6 +148,33 @@ observer calls at these boundaries:
 The provider session stays owned by the application. VoxBench receives PCM and
 metrics only, so provider API keys never enter an observation payload.
 
+### Barge-in Packet Evidence Contract
+
+Applications with their own playback queue can project the same causal evidence
+as the built-in realtime AudioSocket bridge. Use one safe `correlation_alias` for
+the control event, provider audio close to that event, discarded queue frames,
+the queue-clear result, and completion:
+
+- `provider_output_audio_chunk_received`
+- `playback_frame_enqueued_before_barge_in`
+- optional `playback_partial_frame_buffered_before_barge_in`
+- `provider_input_speech_started` or `provider_interrupted`
+- `playback_queue_cleared`
+- `barge_in_completed`
+
+Record timestamps at the actual receive/enqueue boundaries. Use safe ordinals and
+stream aliases rather than provider item IDs. The queue-clear event should
+aggregate complete and partial duration, signal-bearing duration, provider chunks
+in the preceding 30 ms and 100 ms, first discarded-audio lead, queue depth, audio
+already written before the control event, and whether remote playout was actually
+observed. Keep at most 16 scalar attributes per event and 128 timeline events per
+batch.
+
+The built-in bridge retains at most 250 ms of provider-chunk metadata and emits a
+bounded first/last sample of discarded frame evidence. It never retains packet
+bodies in the timeline. “Provider chunk” is an application-level adapter output,
+not an RTP datagram; use `RtpPacketTapAdapter` for RTP arrival and sequence claims.
+
 ## Pipecat Applications
 
 For Pipecat, keep the existing pipeline and add a thin FrameProcessor or callback

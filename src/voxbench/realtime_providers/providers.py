@@ -102,9 +102,62 @@ class ProviderConnectionResult:
 
 
 class ProviderConnectionError(RuntimeError):
-    def __init__(self, attempts: int) -> None:
+    def __init__(
+        self,
+        attempts: int,
+        *,
+        reason_alias: str = "provider-connect-error",
+        error_type: str = "Exception",
+    ) -> None:
         self.attempts = attempts
-        super().__init__(f"provider connection failed after {attempts} attempts")
+        self.reason_alias = reason_alias
+        self.error_type = error_type
+        super().__init__(
+            f"provider connection failed after {attempts} attempts "
+            f"({reason_alias}; {error_type})"
+        )
+
+
+def classify_provider_error(exc: Exception) -> tuple[str, str]:
+    """Classify a provider error without retaining URLs, credentials, or raw payloads."""
+
+    error_type = type(exc).__name__
+    status = str(getattr(exc, "status", "") or "")
+    message = str(getattr(exc, "message", "") or "")
+    if not message and not status:
+        message = str(exc)
+    normalized = f"{status} {message}".lower()
+
+    if any(token in normalized for token in ("api key not valid", "invalid api key")):
+        return "invalid-api-key", error_type
+    if any(
+        token in normalized
+        for token in ("permission_denied", "permission denied", "forbidden")
+    ):
+        return "permission-denied", error_type
+    if any(
+        token in normalized
+        for token in ("resource_exhausted", "quota", "rate limit", "too many requests")
+    ):
+        return "quota-or-rate-limit", error_type
+    if (
+        "model" in normalized
+        and any(
+            token in normalized
+            for token in ("not found", "not supported", "unavailable", "unsupported")
+        )
+    ):
+        return "model-unavailable", error_type
+    if any(token in normalized for token in ("location", "region")) and any(
+        token in normalized for token in ("not supported", "unavailable", "restricted")
+    ):
+        return "location-unavailable", error_type
+    if any(
+        token in normalized
+        for token in ("unavailable", "timed out", "timeout", "connection", "network")
+    ):
+        return "provider-temporarily-unavailable", error_type
+    return "provider-connect-error", error_type
 
 
 async def connect_with_retry(
@@ -123,12 +176,19 @@ async def connect_with_retry(
     if initial_backoff_seconds < 0 or max_backoff_seconds < 0:
         raise ValueError("connection backoff must be non-negative")
 
+    last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             session = await provider.connect(dry_run=False)
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             if attempt >= attempts:
-                raise ProviderConnectionError(attempts) from None
+                reason_alias, error_type = classify_provider_error(exc)
+                raise ProviderConnectionError(
+                    attempts,
+                    reason_alias=reason_alias,
+                    error_type=error_type,
+                ) from None
             delay = min(
                 max_backoff_seconds,
                 initial_backoff_seconds * (2 ** (attempt - 1)),
@@ -139,7 +199,9 @@ async def connect_with_retry(
         else:
             return ProviderConnectionResult(session=session, attempts=attempt)
 
-    raise AssertionError("provider connection retry loop did not terminate")
+    raise AssertionError(
+        f"provider connection retry loop did not terminate: {type(last_error).__name__}"
+    )
 
 
 @dataclass
@@ -279,7 +341,7 @@ class GeminiLiveSdkSession:
     async def send_pcm(self, audio: AudioChunk) -> None:
         _validate_pcm_chunk(audio, expected_rate=self.input_rate)
         await self.session.send_realtime_input(
-            media=self.blob_type(
+            audio=self.blob_type(
                 data=audio.pcm,
                 mime_type=f"audio/pcm;rate={self.input_rate}",
             )
@@ -393,7 +455,7 @@ class OpenAIRealtimeProvider:
 
 @dataclass(frozen=True)
 class GeminiLiveProvider:
-    model: str = "gemini-live-2.5-flash-preview"
+    model: str = "gemini-3.1-flash-live-preview"
     api_key_env_var: str = "GOOGLE_API_KEY"
     alternate_api_key_env_vars: tuple[str, ...] = ("GEMINI_API_KEY",)
     input_rate: int = 16000

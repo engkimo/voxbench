@@ -612,21 +612,41 @@ when an older API still occupies `8001`. The example also supports `clean` and
 `capture-drop`, allowing a local check that observer-side loss downgrades the
 network-loss claim instead of being misreported as a confirmed network problem.
 
-For a real macOS softphone audio loopback through Asterisk, install the local-only
-config snippets under `examples/asterisk/`, then run:
+For a real macOS Telephone audio loopback, the repository includes a local-only
+Asterisk container. Build and start it, then copy the printed account values into
+Telephone:
 
 ```bash
-voxbench audiosocket-loopback --provider openai-realtime
+./scripts/asterisk-local up
+```
+
+Start the bridge with the actual Control Plane port:
+
+```bash
+voxbench audiosocket-loopback \
+  --control-plane-url http://127.0.0.1:8001 \
+  --provider openai-realtime
 ```
 
 Calling extension `7000` from the configured `6001` account sends PCM through
 the VoxBench observer, AGC, limiter, stage WAV taps, and back to the softphone.
+Use `./scripts/asterisk-local status` to verify PJSIP, AudioSocket, and the
+dialplan. See
+[examples/asterisk/docker/README.md](examples/asterisk/docker/README.md) for the
+Telephone fields, local AMI values, credential overrides, logs, and shutdown.
 To replace loopback with a real provider session, install `.[live]`, set
 `OPENAI_API_KEY` or `GOOGLE_API_KEY`, and run:
 
 ```bash
 voxbench audiosocket-realtime --provider openai-realtime
 ```
+
+Use `--model '<exact-provider-model-id>'` for model-to-model experiments. VoxBench
+stores the selected model in the run config and environment target. The Web
+comparison panel then shows provider burst and signal-bearing queue-discard
+evidence for correlated barge-in events. See
+[docs/demo-live-softphone.md](docs/demo-live-softphone.md#validate-provider-audio-before-barge-in)
+for the matched-call procedure and interpretation boundary.
 
 Switch the provider argument to `gemini-live` for Gemini. API key values remain
 in environment variables and are not stored in run payloads or artifacts. The

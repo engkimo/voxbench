@@ -3239,6 +3239,55 @@ def _typed_timeline_incidents(
         )
         dropped_frames = _numeric_attribute(cleared.attributes, "dropped_frames")
         discarded_ms = _numeric_attribute(cleared.attributes, "discarded_audio_ms")
+        discarded_total_ms = _numeric_attribute(
+            cleared.attributes,
+            "discarded_total_audio_ms",
+        )
+        discarded_signal_ms = _numeric_attribute(
+            cleared.attributes,
+            "discarded_signal_bearing_audio_ms",
+        )
+        discarded_signal_frames = _numeric_attribute(
+            cleared.attributes,
+            "discarded_signal_bearing_frames",
+        )
+        partial_audio_ms = _numeric_attribute(cleared.attributes, "partial_audio_ms")
+        discarded_provider_chunks = _numeric_attribute(
+            cleared.attributes,
+            "discarded_provider_chunks",
+        )
+        provider_chunks_last_30ms = _numeric_attribute(
+            cleared.attributes,
+            "provider_chunks_last_30ms",
+        )
+        provider_chunks_last_100ms = _numeric_attribute(
+            cleared.attributes,
+            "provider_chunks_last_100ms",
+        )
+        first_discarded_audio_lead_ms = _numeric_attribute(
+            cleared.attributes,
+            "first_discarded_audio_lead_ms",
+        )
+        queue_depth_before_clear = _numeric_attribute(
+            cleared.attributes,
+            "queue_depth_before_clear",
+        )
+        evidence_frames_recorded = _numeric_attribute(
+            cleared.attributes,
+            "evidence_frames_recorded",
+        )
+        evidence_frames_omitted = _numeric_attribute(
+            cleared.attributes,
+            "evidence_frames_omitted",
+        )
+        signal_threshold_rms = _numeric_attribute(
+            cleared.attributes,
+            "signal_threshold_rms",
+        )
+        written_audio_ms_before_control = _numeric_attribute(
+            cleared.attributes,
+            "written_audio_ms_before_control",
+        )
         played_audio_end_ms = _numeric_attribute(
             completed.attributes,
             "played_audio_end_ms",
@@ -3247,13 +3296,34 @@ def _typed_timeline_incidents(
         summary = "Playback queue cleared"
         if discarded_ms is not None:
             summary += f"; {discarded_ms:g} ms queued audio discarded"
+        if discarded_signal_ms is not None:
+            summary += f"; {discarded_signal_ms:g} ms was signal-bearing"
+        if provider_chunks_last_30ms is not None:
+            summary += (
+                f"; {provider_chunks_last_30ms:g} provider audio chunks arrived "
+                "in the preceding 30 ms"
+            )
+        signal_before_playout = (
+            discarded_signal_ms is not None
+            and discarded_signal_ms > 0
+            and (
+                written_audio_ms_before_control is None
+                or written_audio_ms_before_control <= 0
+            )
+        )
         incidents.append(
             TimelineIncident(
                 incident_id=f"barge-in:{correlation_alias}",
                 rule_id="barge_in_sequence",
                 category="conversation",
-                severity="info",
-                title="Barge-in handled",
+                severity="warning" if signal_before_playout else "info",
+                title=(
+                    "Signal-bearing audio discarded before playout"
+                    if signal_before_playout
+                    else "Barge-in packet evidence captured"
+                    if discarded_signal_ms is not None
+                    else "Barge-in handled"
+                ),
                 summary=summary,
                 start_ms=start_ms,
                 end_ms=end_ms,
@@ -3265,11 +3335,36 @@ def _typed_timeline_incidents(
                     "played_audio_end_ms": played_audio_end_ms,
                     "dropped_frames": dropped_frames,
                     "discarded_audio_ms": discarded_ms,
+                    "partial_audio_ms": partial_audio_ms,
+                    "discarded_total_audio_ms": discarded_total_ms,
+                    "discarded_signal_bearing_frames": discarded_signal_frames,
+                    "discarded_signal_bearing_audio_ms": discarded_signal_ms,
+                    "discarded_provider_chunks": discarded_provider_chunks,
+                    "provider_chunks_last_30ms": provider_chunks_last_30ms,
+                    "provider_chunks_last_100ms": provider_chunks_last_100ms,
+                    "first_discarded_audio_lead_ms": (
+                        first_discarded_audio_lead_ms
+                    ),
+                    "queue_depth_before_clear": queue_depth_before_clear,
+                    "evidence_frames_recorded": evidence_frames_recorded,
+                    "evidence_frames_omitted": evidence_frames_omitted,
+                    "signal_threshold_rms": signal_threshold_rms,
+                    "written_audio_ms_before_control": (
+                        written_audio_ms_before_control
+                    ),
+                    "remote_playout_observed": False,
                 },
                 expected={
                     "interrupt_path": "provider-auto-or-request",
                     "playback_queue_cleared": True,
                     "truncate_when_position_available": True,
+                    "packet_evidence": (
+                        "captured"
+                        if discarded_signal_ms is not None
+                        else "not observed"
+                    ),
+                    "remote_playout": "not observed",
+                    "provider_version_comparison": "requires repeated matched calls",
                 },
                 evidence_refs=[event.event_id for event in events],
             )
@@ -3357,6 +3452,9 @@ def _correlated_barge_in_events(
             "provider_auto_interrupt_confirmed",
             "provider_interrupt_requested",
             "provider_truncate_requested",
+            "provider_output_audio_chunk_received",
+            "playback_frame_enqueued_before_barge_in",
+            "playback_partial_frame_buffered_before_barge_in",
             "playback_queue_cleared",
             "barge_in_completed",
         }:

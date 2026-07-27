@@ -1,0 +1,13 @@
+[globals]
+VOXBENCH_AUDIOSOCKET=REPLACE_WITH_AUDIOSOCKET_HOST:REPLACE_WITH_AUDIOSOCKET_PORT
+
+[voxbench-demo]
+exten => 7000,1,NoOp(VoxBench observed AudioSocket loopback)
+ same => n,Answer()
+ ; Alpine's Asterisk package does not ship func_uuid. Linux provides a canonical
+ ; random UUID. FILTER keeps only the canonical lowercase UUID characters and
+ ; removes the newline that Asterisk's SHELL function appends.
+ same => n,Set(CALL_UUID=${FILTER(0-9a-f-,${SHELL(cat /proc/sys/kernel/random/uuid)})})
+ same => n,NoOp(VoxBench AudioSocket call UUID ${CALL_UUID})
+ same => n,AudioSocket(${CALL_UUID},${VOXBENCH_AUDIOSOCKET})
+ same => n,Hangup()

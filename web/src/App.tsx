@@ -989,6 +989,60 @@ export function App() {
   )
 }
 
+function BargeInPacketProof({ incident }: { incident: TimelineIncident }) {
+  if (incident.rule_id !== 'barge_in_sequence') {
+    return null
+  }
+  const observedNumber = (name: string) => {
+    const value = incident.observed[name]
+    return typeof value === 'number' && Number.isFinite(value) ? value : null
+  }
+  const signalMs = observedNumber('discarded_signal_bearing_audio_ms')
+  if (signalMs === null) {
+    return (
+      <div className="bargeInPacketProof unobserved">
+        <strong>Packet proof not captured</strong>
+        <span>Re-run with the instrumented realtime AudioSocket bridge.</span>
+      </div>
+    )
+  }
+  const chunks30 = observedNumber('provider_chunks_last_30ms')
+  const discardedMs =
+    observedNumber('discarded_total_audio_ms') ??
+    observedNumber('discarded_audio_ms')
+  const leadMs = observedNumber('first_discarded_audio_lead_ms')
+  const writtenMs = observedNumber('written_audio_ms_before_control')
+  return (
+    <div className="bargeInPacketProof">
+      <strong>Local packet proof</strong>
+      <dl>
+        <div>
+          <dt>Provider burst</dt>
+          <dd>{chunks30 === null ? '-' : `${displayValue(chunks30)} chunks / 30 ms`}</dd>
+        </div>
+        <div>
+          <dt>Discarded signal</dt>
+          <dd>
+            {displayValue(signalMs)} / {displayValue(discardedMs)} ms
+          </dd>
+        </div>
+        <div>
+          <dt>First arrival lead</dt>
+          <dd>{leadMs === null ? '-' : `${displayValue(leadMs)} ms`}</dd>
+        </div>
+        <div>
+          <dt>Written before control</dt>
+          <dd>{writtenMs === null ? '-' : `${displayValue(writtenMs)} ms`}</dd>
+        </div>
+      </dl>
+      <span>
+        Provider chunks and local queue disposal are correlated. Caller-side playout still
+        requires a phone recording.
+      </span>
+    </div>
+  )
+}
+
 function LinkedCallInspector({
   apiBase,
   audioSessionRevision,
@@ -1265,6 +1319,7 @@ function LinkedCallInspector({
               {formatTimelineTime(selectedIncident.start_ms)}–
               {formatTimelineTime(selectedIncident.end_ms)}
             </small>
+            <BargeInPacketProof incident={selectedIncident} />
             {selectedEvidenceEvents.length > 0 ? (
               <ol className="incidentEvidenceChain" aria-label="Correlated evidence chain">
                 {selectedEvidenceEvents.map((event) => (
@@ -1902,6 +1957,7 @@ function ComparisonTable({
       </div>
       <div className="comparisonTable" role="table">
         <EnvironmentComparison primary={primary} compare={compare} />
+        <BargeInComparison primary={primary} compare={compare} />
         <div className="comparisonRow header" role="row">
           <span>Stage</span>
           <span>Primary</span>
@@ -1921,6 +1977,119 @@ function ComparisonTable({
         })}
       </div>
     </section>
+  )
+}
+
+function BargeInComparison({
+  primary,
+  compare,
+}: {
+  primary: TimelineResponse
+  compare: TimelineResponse
+}) {
+  const summarize = (timeline: TimelineResponse) => {
+    const incidents = timeline.lanes.incidents.filter(
+      (incident) => incident.rule_id === 'barge_in_sequence',
+    )
+    const number = (incident: TimelineIncident, name: string) => {
+      const value = incident.observed[name]
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    }
+    const captured = incidents.filter(
+      (incident) => number(incident, 'discarded_signal_bearing_audio_ms') !== null,
+    )
+    const signalMs = captured.reduce(
+      (total, incident) =>
+        total + (number(incident, 'discarded_signal_bearing_audio_ms') ?? 0),
+      0,
+    )
+    const discardedMs = captured.reduce(
+      (total, incident) =>
+        total +
+        (number(incident, 'discarded_total_audio_ms') ??
+          number(incident, 'discarded_audio_ms') ??
+          0),
+      0,
+    )
+    const chunks30 = captured
+      .map((incident) => number(incident, 'provider_chunks_last_30ms'))
+      .filter((value): value is number => value !== null)
+    const lead = captured
+      .map((incident) => number(incident, 'first_discarded_audio_lead_ms'))
+      .filter((value): value is number => value !== null)
+    return {
+      events: incidents.length,
+      captured: captured.length,
+      signalMs,
+      discardedMs,
+      chunks30Average:
+        chunks30.length > 0
+          ? chunks30.reduce((total, value) => total + value, 0) / chunks30.length
+          : null,
+      leadMax: lead.length > 0 ? Math.max(...lead) : null,
+    }
+  }
+  const primaryStats = summarize(primary)
+  const compareStats = summarize(compare)
+  const rows = [
+    {
+      label: 'Barge-in events',
+      primary: primaryStats.events,
+      compare: compareStats.events,
+    },
+    {
+      label: 'Packet proof captured',
+      primary: `${primaryStats.captured}/${primaryStats.events}`,
+      compare: `${compareStats.captured}/${compareStats.events}`,
+    },
+    {
+      label: 'Signal / discarded',
+      primary: `${displayValue(roundDisplay(primaryStats.signalMs))} / ${displayValue(roundDisplay(primaryStats.discardedMs))} ms`,
+      compare: `${displayValue(roundDisplay(compareStats.signalMs))} / ${displayValue(roundDisplay(compareStats.discardedMs))} ms`,
+    },
+    {
+      label: 'Provider burst avg',
+      primary:
+        primaryStats.chunks30Average === null
+          ? null
+          : `${roundDisplay(primaryStats.chunks30Average)} chunks / 30 ms`,
+      compare:
+        compareStats.chunks30Average === null
+          ? null
+          : `${roundDisplay(compareStats.chunks30Average)} chunks / 30 ms`,
+    },
+    {
+      label: 'Max discarded lead',
+      primary:
+        primaryStats.leadMax === null ? null : `${roundDisplay(primaryStats.leadMax)} ms`,
+      compare:
+        compareStats.leadMax === null ? null : `${roundDisplay(compareStats.leadMax)} ms`,
+    },
+  ]
+  return (
+    <div className="environmentCompare bargeInCompare">
+      <div className="environmentCompareHeader">Barge-in packet evidence</div>
+      {rows.map((row) => {
+        const primaryValue = displayValue(row.primary)
+        const compareValue = displayValue(row.compare)
+        const changed = primaryValue !== compareValue
+        return (
+          <div
+            className={changed ? 'environmentCompareRow changed' : 'environmentCompareRow'}
+            key={row.label}
+          >
+            <strong>{row.label}</strong>
+            <span>{primaryValue}</span>
+            <span>{compareValue}</span>
+            <em>{changed ? 'different' : 'same'}</em>
+          </div>
+        )
+      })}
+      <p>
+        Local provider chunks and AudioSocket queue disposal only. Use matched repeated calls
+        and a caller-side recording before making an audible-quality claim.
+      </p>
+    </div>
   )
 }
 
@@ -2935,6 +3104,10 @@ function displayValue(value: string | number | null | undefined) {
     return '-'
   }
   return String(value)
+}
+
+function roundDisplay(value: number) {
+  return Math.round(value * 1000) / 1000
 }
 
 function joinList(values: string[]) {

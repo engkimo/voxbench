@@ -369,6 +369,49 @@ class ObservationBatch:
         )
 
 
+OBSERVATION_BATCH_LIMITS = {
+    "metrics": 500,
+    "audio_chunks": 64,
+    "sip_events": 64,
+    "rtp_stats": 64,
+    "timeline_events": 128,
+}
+
+
+def _bounded_observation_batches(batch: ObservationBatch) -> tuple[ObservationBatch, ...]:
+    batch_count = max(
+        1,
+        *(
+            (len(getattr(batch, field_name)) + limit - 1) // limit
+            for field_name, limit in OBSERVATION_BATCH_LIMITS.items()
+        ),
+    )
+    batches: list[ObservationBatch] = []
+    for index in range(batch_count):
+        values = {
+            field_name: getattr(batch, field_name)[index * limit : (index + 1) * limit]
+            for field_name, limit in OBSERVATION_BATCH_LIMITS.items()
+        }
+        candidate = ObservationBatch(run_id=batch.run_id, **values)
+        if candidate.item_count:
+            batches.append(candidate)
+    return tuple(batches)
+
+
+def _merge_observation_batches(
+    run_id: str,
+    batches: tuple[ObservationBatch, ...],
+) -> ObservationBatch:
+    return ObservationBatch(
+        run_id=run_id,
+        metrics=tuple(item for batch in batches for item in batch.metrics),
+        audio_chunks=tuple(item for batch in batches for item in batch.audio_chunks),
+        sip_events=tuple(item for batch in batches for item in batch.sip_events),
+        rtp_stats=tuple(item for batch in batches for item in batch.rtp_stats),
+        timeline_events=tuple(item for batch in batches for item in batch.timeline_events),
+    )
+
+
 class ObservationTransport(Protocol):
     """Destination for batches produced by :class:`VoxBenchObserver`."""
 
@@ -626,17 +669,22 @@ class VoxBenchObserver:
             self._timeline_events.clear()
         if batch.item_count == 0:
             return 0
-        try:
-            self.transport.send(batch)
-        except Exception:
-            with self._lock:
-                self._metrics[0:0] = batch.metrics
-                self._audio_chunks[0:0] = batch.audio_chunks
-                self._sip_events[0:0] = batch.sip_events
-                self._rtp_stats[0:0] = batch.rtp_stats
-                self._timeline_events[0:0] = batch.timeline_events
-            raise
-        return batch.item_count
+        batches = _bounded_observation_batches(batch)
+        sent_count = 0
+        for index, bounded_batch in enumerate(batches):
+            try:
+                self.transport.send(bounded_batch)
+            except Exception:
+                unsent = _merge_observation_batches(self.run_id, batches[index:])
+                with self._lock:
+                    self._metrics[0:0] = unsent.metrics
+                    self._audio_chunks[0:0] = unsent.audio_chunks
+                    self._sip_events[0:0] = unsent.sip_events
+                    self._rtp_stats[0:0] = unsent.rtp_stats
+                    self._timeline_events[0:0] = unsent.timeline_events
+                raise
+            sent_count += bounded_batch.item_count
+        return sent_count
 
     @property
     def pending_count(self) -> int:

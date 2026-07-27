@@ -189,6 +189,7 @@ def test_audiosocket_observed_payload_resolves(tmp_path: Path) -> None:
         target_rms=2500.0,
         max_gain=3.0,
         noise_floor=150.0,
+        model="test-realtime-model",
     )
     config = payload["configs"][0]
     agc = next(stage for stage in config["spec"]["media"]["pipeline"] if stage["type"] == "agc")
@@ -199,6 +200,10 @@ def test_audiosocket_observed_payload_resolves(tmp_path: Path) -> None:
     }
     assert config["spec"]["engine"]["params"]["websocket_url"] == (
         "alias:local-asterisk-audiosocket"
+    )
+    assert config["spec"]["ai"]["model"] == "test-realtime-model"
+    assert payload["environment"]["integration_target_alias"] == (
+        "openai-realtime:test-realtime-model:loopback"
     )
 
     response = TestClient(create_app(artifact_root=tmp_path / "recordings")).post(
@@ -286,6 +291,9 @@ def test_realtime_call_session_drops_buffered_audio_on_barge_in() -> None:
     assert [event.name for event in events] == [
         "provider_input_speech_started",
         "provider_interrupt_requested",
+        "provider_output_audio_chunk_received",
+        "playback_frame_enqueued_before_barge_in",
+        "playback_frame_enqueued_before_barge_in",
         "playback_queue_cleared",
         "barge_in_completed",
         "provider_input_speech_stopped",
@@ -295,15 +303,114 @@ def test_realtime_call_session_drops_buffered_audio_on_barge_in() -> None:
     correlation_alias = next(iter(correlation_aliases))
     assert correlation_alias is not None
     assert correlation_alias.startswith("barge-in-")
-    assert events[-3].attributes == {
+    discarded_frames = [
+        event
+        for event in events
+        if event.name == "playback_frame_enqueued_before_barge_in"
+    ]
+    assert [event.attributes["frame_ordinal"] for event in discarded_frames] == [1, 2]
+    assert all(event.attributes["signal_bearing"] is True for event in discarded_frames)
+    assert all(
+        event.attributes["outcome"] == "discarded_on_barge_in"
+        for event in discarded_frames
+    )
+    cleared = next(event for event in events if event.name == "playback_queue_cleared")
+    assert cleared.attributes == {
         "dropped_frames": 2,
-        "discarded_audio_ms": 40,
+        "discarded_audio_ms": 40.0,
+        "partial_audio_ms": 0.0,
+        "discarded_total_audio_ms": 40.0,
+        "discarded_signal_bearing_frames": 2,
+        "discarded_signal_bearing_audio_ms": 40.0,
+        "discarded_provider_chunks": 1,
+        "provider_chunks_last_30ms": 1,
+        "provider_chunks_last_100ms": 1,
+        "first_discarded_audio_lead_ms": pytest.approx(0, abs=20),
+        "queue_depth_before_clear": 2,
+        "evidence_frames_recorded": 2,
+        "evidence_frames_omitted": 0,
+        "signal_threshold_rms": 100.0,
+        "written_audio_ms_before_control": 0.0,
+        "remote_playout_observed": False,
     }
+    completed = next(event for event in events if event.name == "barge_in_completed")
+    assert completed.attributes["discarded_signal_bearing_audio_ms"] == 40.0
+    assert completed.attributes["provider_chunks_last_30ms"] == 1
     assert events[-2].attributes["interrupt_path"] == "provider-request"
     assert events[-1].attributes == {
         "completion_observed": False,
         "stop_reason": "call_closed",
     }
+
+
+def test_barge_in_packet_evidence_reaches_control_plane_timeline(tmp_path: Path) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    payload = build_audiosocket_observed_run_payload(
+        provider="gemini-live",
+        call_id=str(uuid4()),
+        target_rms=500.0,
+        max_gain=1.0,
+        noise_floor=100.0,
+        mode="provider",
+        model="comparison-model",
+    )
+    run_id = client.post("/runs/observed", json=payload).json()["run_id"]
+
+    async def scenario() -> list[AudioSocketFrame]:
+        provider = FakeProviderSession(
+            messages=[
+                AudioChunk(pcm=_pcm(500, frame_count=960), sample_rate=24_000),
+                ProviderEvent("input_speech_started"),
+                AudioChunk(pcm=_pcm(1000, frame_count=480), sample_rate=24_000),
+            ]
+        )
+
+        def complete() -> None:
+            response = client.post(f"/runs/{run_id}/complete", json={})
+            response.raise_for_status()
+
+        session = RealtimeCallSession(
+            call_id="packet-proof-call",
+            observer=VoxBenchObserver(run_id, ApiTestTransport(client)),
+            provider_session=provider,
+            complete_run=complete,
+            target_rms=500.0,
+            max_gain=1.0,
+            noise_floor=100.0,
+        )
+        output = [frame async for frame in session.receive_audio()]
+        await session.close()
+        return output
+
+    output = asyncio.run(scenario())
+    assert len(output) == 1
+    timeline = client.get(f"/runs/{run_id}/timeline").json()
+    incident = next(
+        item
+        for item in timeline["lanes"]["incidents"]
+        if item["rule_id"] == "barge_in_sequence"
+    )
+    assert incident["title"] == "Signal-bearing audio discarded before playout"
+    assert incident["severity"] == "warning"
+    assert incident["observed"]["discarded_signal_bearing_audio_ms"] == 40.0
+    assert incident["observed"]["provider_chunks_last_30ms"] == 1.0
+    assert incident["observed"]["written_audio_ms_before_control"] == 0.0
+    assert incident["observed"]["remote_playout_observed"] is False
+    evidence_names = {
+        event["name"]
+        for event in timeline["lanes"]["events"]
+        if event["event_id"] in incident["evidence_refs"]
+    }
+    assert {
+        "provider_output_audio_chunk_received",
+        "playback_frame_enqueued_before_barge_in",
+        "provider_input_speech_started",
+        "playback_queue_cleared",
+        "barge_in_completed",
+    } <= evidence_names
+    assert timeline["environment"]["integration_target_alias"] == (
+        "gemini-live:comparison-model:provider"
+    )
 
 
 def test_realtime_call_session_observes_speech_and_playback_lifecycles() -> None:
@@ -495,12 +602,17 @@ def test_realtime_call_session_truncates_openai_item_at_played_position() -> Non
         "provider_input_speech_started",
         "provider_auto_interrupt_confirmed",
         "provider_truncate_requested",
+        "provider_output_audio_chunk_received",
+        "playback_frame_enqueued_before_barge_in",
         "playback_queue_cleared",
         "barge_in_completed",
         "provider_input_speech_stopped",
     ]
     assert events[2].attributes["played_audio_end_ms"] == 20
     assert events[-2].attributes["interrupt_path"] == "provider-auto"
+    assert events[-3].attributes["dropped_frames"] == 1
+    assert events[-3].attributes["discarded_signal_bearing_audio_ms"] == 20.0
+    assert events[-3].attributes["written_audio_ms_before_control"] == 0.0
     assert events[-1].attributes == {
         "completion_observed": False,
         "stop_reason": "call_closed",
@@ -560,6 +672,7 @@ def test_realtime_server_sanitizes_provider_stream_errors() -> None:
     async def scenario():
         transport = CapturingTransport()
         failures: list[str] = []
+        reported_failures: list[tuple[str, str]] = []
         provider = FailingProvider()
 
         async def session_factory(call_uuid) -> RealtimeCallSession:
@@ -571,7 +684,12 @@ def test_realtime_server_sanitizes_provider_stream_errors() -> None:
                 fail_run=failures.append,
             )
 
-        bridge = AudioSocketRealtimeServer(session_factory=session_factory)
+        bridge = AudioSocketRealtimeServer(
+            session_factory=session_factory,
+            on_failure=lambda reason_alias, error_type: reported_failures.append(
+                (reason_alias, error_type)
+            ),
+        )
         server = await asyncio.start_server(bridge._handle_connection, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
@@ -583,10 +701,11 @@ def test_realtime_server_sanitizes_provider_stream_errors() -> None:
         await writer.wait_closed()
         server.close()
         await server.wait_closed()
-        return transport, failures
+        return transport, failures, reported_failures
 
-    transport, failures = asyncio.run(scenario())
+    transport, failures, reported_failures = asyncio.run(scenario())
     assert failures == ["provider-session-error"]
+    assert reported_failures == [("provider-session-error", "RuntimeError")]
     assert "provider.example" not in failures[0]
     metrics = [metric for batch in transport.batches for metric in batch.metrics]
     assert any(metric.name == "provider_stream_errors" for metric in metrics)
