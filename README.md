@@ -3,6 +3,8 @@
   
   <img width="300" alt="voxbench-logo2" src="https://github.com/user-attachments/assets/c574858b-5fce-45aa-9a09-83b416b6d323" />
 
+  <p><strong>Align every signal in an AI voice call on one timeline—from audible symptom to root cause.</strong></p>
+
   [![Code License: Apache-2.0](https://img.shields.io/badge/Code%20License-Apache--2.0-blue.svg)](LICENSE)
   [![Documentation License: MIT](https://img.shields.io/badge/Documentation%20License-MIT-green.svg)](#license)
   [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
