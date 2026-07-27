@@ -1,5 +1,3 @@
-# VoxBench
-
 <div align="center">
   <img width="300" alt="voxbench-logo" src="https://github.com/user-attachments/assets/3c35ddd4-b633-4413-ab22-c2a5f01f17ef" />
 
