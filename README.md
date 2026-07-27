@@ -1,11 +1,18 @@
 # VoxBench
 
-[![Code License: Apache-2.0](https://img.shields.io/badge/Code%20License-Apache--2.0-blue.svg)](LICENSE)
-[![Documentation License: MIT](https://img.shields.io/badge/Documentation%20License-MIT-green.svg)](#license)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
-[![GitHub Stars](https://img.shields.io/github/stars/engkimo/voxbench?style=flat&logo=github)](https://github.com/engkimo/voxbench/stargazers)
-[![GitHub last commit](https://img.shields.io/github/last-commit/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/commits/main)
-[![GitHub contributors](https://img.shields.io/github/contributors/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/graphs/contributors)
+<div align="center">
+  
+
+  https://github.com/user-attachments/assets/6d952cfb-891c-4b50-8cc3-6ebb1bf07de0
+
+
+  [![Code License: Apache-2.0](https://img.shields.io/badge/Code%20License-Apache--2.0-blue.svg)](LICENSE)
+  [![Documentation License: MIT](https://img.shields.io/badge/Documentation%20License-MIT-green.svg)](#license)
+  [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+  [![GitHub Stars](https://img.shields.io/github/stars/engkimo/voxbench?style=flat&logo=github)](https://github.com/engkimo/voxbench/stargazers)
+  [![GitHub last commit](https://img.shields.io/github/last-commit/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/commits/main)
+  [![GitHub contributors](https://img.shields.io/github/contributors/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/graphs/contributors)
+</div>
 
 VoxBench is an early OSS implementation of the schema and registry foundation
 described in `DESIGN.md`.
