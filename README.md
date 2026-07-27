@@ -1,5 +1,7 @@
+
 <div align="center">
-  <img width="300" alt="voxbench-logo" src="https://github.com/user-attachments/assets/3c35ddd4-b633-4413-ab22-c2a5f01f17ef" />
+  
+  <img width="300" alt="voxbench-logo2" src="https://github.com/user-attachments/assets/c574858b-5fce-45aa-9a09-83b416b6d323" />
 
   [![Code License: Apache-2.0](https://img.shields.io/badge/Code%20License-Apache--2.0-blue.svg)](LICENSE)
   [![Documentation License: MIT](https://img.shields.io/badge/Documentation%20License-MIT-green.svg)](#license)
