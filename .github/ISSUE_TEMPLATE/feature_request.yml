@@ -1,0 +1,60 @@
+name: Feature request
+description: Propose a bounded product, library, adapter, or evidence improvement
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the operator or library problem before proposing an implementation. New evidence must say what is directly observed and what remains inferred.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and the roadmap.
+          required: true
+        - label: This request does not require storing secrets or personal call content by default.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What debugging or integration problem cannot be solved today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the operator-visible or library-visible result.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence contract
+      description: What is observed, derived, inferred, or explicitly unobserved?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: Optional implementation sketch, API, UI, or adapter boundary.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - I can implement this
+        - I can test or review this
+        - I can provide domain guidance
+        - I am requesting help
+    validations:
+      required: true

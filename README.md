@@ -11,6 +11,7 @@
   [![GitHub Stars](https://img.shields.io/github/stars/engkimo/voxbench?style=flat&logo=github)](https://github.com/engkimo/voxbench/stargazers)
   [![GitHub last commit](https://img.shields.io/github/last-commit/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/commits/main)
   [![GitHub contributors](https://img.shields.io/github/contributors/engkimo/voxbench?logo=github)](https://github.com/engkimo/voxbench/graphs/contributors)
+  [![Contributions welcome](https://img.shields.io/badge/Contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
   https://github.com/user-attachments/assets/6d952cfb-891c-4b50-8cc3-6ebb1bf07de0
   
@@ -51,6 +52,26 @@ Implemented so far:
 This implementation intentionally does not include SIP packet capture, production
 live-host hardening, production-validated multi-process worker deployment, or the
 scale profile.
+
+## Contributing
+
+Contributions are welcome across realtime provider adapters, telephony and RTP
+evidence, audio-quality analysis, the common-time-axis Web UI, storage, tests,
+and documentation. Start with:
+
+- [Contributing guide](CONTRIBUTING.md) for setup, quality rules, and the pull
+  request workflow
+- [Roadmap](ROADMAP.md) for current priorities and deliberately unobserved
+  boundaries
+- [Provider adapter guide](docs/provider-adapter-guide.md) for adding a
+  realtime voice provider without leaking provider details into the core
+- [Good first issues](https://github.com/engkimo/voxbench/labels/good%20first%20issue)
+  and [help wanted issues](https://github.com/engkimo/voxbench/labels/help%20wanted)
+- [Security policy](SECURITY.md) and [Code of Conduct](CODE_OF_CONDUCT.md)
+
+VoxBench treats evidence boundaries as part of correctness. A contribution must
+distinguish observed facts from inference, keep raw call content and secrets out
+of telemetry, and avoid claiming that an unobserved layer is healthy.
 
 ## Install for development
 
