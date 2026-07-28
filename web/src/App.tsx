@@ -2846,7 +2846,11 @@ function RtpQualityPanel({ stats }: { stats: TimelineRtpStat[] }) {
           ))}
         </div>
       ) : (
-        <div className="emptyInline">No RTP quality points</div>
+        <div className="emptyInline">
+          Transport quality unobserved — no RTP/RTCP points were collected for this run, so this
+          does not imply zero packet loss. Enable an RTCP collector or RTP packet tap (for local
+          Asterisk demos, use the asterisk-ami-rtcp workflow) to observe transport quality.
+        </div>
       )}
     </section>
   )
