@@ -214,6 +214,36 @@ def test_audiosocket_observed_payload_resolves(tmp_path: Path) -> None:
     assert response.json()["status"] == "running"
 
 
+def test_audiosocket_observed_payload_records_experiment_condition() -> None:
+    payload = build_audiosocket_observed_run_payload(
+        provider="gemini-live",
+        call_id=str(uuid4()),
+        target_rms=3000.0,
+        max_gain=8.0,
+        noise_floor=200.0,
+        mode="provider",
+        experiment_condition=" Intentional-Barge-In ",
+    )
+
+    environment = payload["environment"]
+    assert "experiment-intentional-barge-in" in environment["tags"]
+    assert environment["operator_note"].endswith(
+        "Experiment condition: intentional-barge-in."
+    )
+
+
+def test_audiosocket_observed_payload_rejects_unsafe_experiment_condition() -> None:
+    with pytest.raises(ValueError, match="experiment_condition"):
+        build_audiosocket_observed_run_payload(
+            provider="gemini-live",
+            call_id=str(uuid4()),
+            target_rms=3000.0,
+            max_gain=8.0,
+            noise_floor=200.0,
+            experiment_condition="https://example.invalid/call",
+        )
+
+
 def test_realtime_call_session_resamples_provider_audio_and_observes_stages() -> None:
     async def scenario():
         transport = CapturingTransport()
@@ -254,6 +284,42 @@ def test_realtime_call_session_resamples_provider_audio_and_observes_stages() ->
         "serializer",
     }
     assert any(metric.name == "provider_input_rms" for metric in batch.metrics)
+
+
+def test_realtime_call_session_stops_background_tasks_before_completion() -> None:
+    async def scenario() -> tuple[bool, bool]:
+        transport = CapturingTransport()
+        provider = FakeProviderSession()
+        background_started = asyncio.Event()
+        background_stopped = False
+        completed_after_stop = False
+
+        async def background() -> None:
+            nonlocal background_stopped
+            background_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                background_stopped = True
+
+        task = asyncio.create_task(background())
+        await background_started.wait()
+
+        def complete() -> None:
+            nonlocal completed_after_stop
+            completed_after_stop = background_stopped
+
+        session = RealtimeCallSession(
+            call_id="call-with-collector",
+            observer=VoxBenchObserver("run-1", transport),
+            provider_session=provider,
+            complete_run=complete,
+            background_tasks=(task,),
+        )
+        await session.close()
+        return background_stopped, completed_after_stop
+
+    assert asyncio.run(scenario()) == (True, True)
 
 
 def test_realtime_call_session_drops_buffered_audio_on_barge_in() -> None:

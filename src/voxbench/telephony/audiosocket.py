@@ -379,6 +379,10 @@ class RealtimeCallSession:
     limiter_ceiling: float = 0.7
     telephony_rate: int = 8_000
     flush_interval_seconds: float = 0.1
+    background_tasks: tuple[asyncio.Task[object], ...] = field(
+        default_factory=tuple,
+        repr=False,
+    )
     _closed: bool = False
     _input_resampler: Pcm16MonoStreamResampler | None = None
     _output_resampler: Pcm16MonoStreamResampler | None = None
@@ -1254,6 +1258,11 @@ class RealtimeCallSession:
         self.mark_output_ended(stop_reason="call_closed")
         if self._flush_task is not None:
             await self._flush_task
+        for task in self.background_tasks:
+            if not task.done():
+                task.cancel()
+        if self.background_tasks:
+            await asyncio.gather(*self.background_tasks, return_exceptions=True)
         await asyncio.to_thread(self.observer.flush)
         if failure_alias is not None and self.fail_run is not None:
             await asyncio.to_thread(self.fail_run, failure_alias)

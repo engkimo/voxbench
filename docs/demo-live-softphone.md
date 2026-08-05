@@ -296,25 +296,65 @@ export VOXBENCH_AMI_USERNAME=voxbench-rtcp
 export VOXBENCH_AMI_SECRET='REPLACE_WITH_LOCAL_SECRET'
 ```
 
-Start the AudioSocket bridge and place a call. Copy the run ID printed by the
-bridge, then start the collector in a third terminal while that run is active:
+The recommended local workflow attaches the collector automatically when each
+AudioSocket run is created:
 
-```bash
-voxbench asterisk-ami-rtcp \
-  --run-id '<run_id>' \
-  --host 127.0.0.1 \
-  --port 5038 \
-  --clock-rate-hz 8000
+```fish
+./scripts/asterisk-local gemini \
+  --collect-rtcp \
+  --experiment-condition no-interruption
 ```
 
-`--clock-rate-hz` is the RTP codec clock, not necessarily an audio output sample
-rate. Use 8000 for PCMU/PCMA and configure the actual clock for other codecs. Stop
-the collector when the call/run ends. The Web RTP quality panel shows direction,
-jitter, loss, RTT, MOS when separately supplied, and each point's relative time.
-Live preview also shows an RTP collector block: `connected` after AMI login,
-`collecting` after the first normalized RTCP event, and `failed` after a safe
-collector failure observation. Its event count is additive across collector
-restarts for the same run.
+The helper supplies the development AMI credentials through environment
+variables. The bridge starts one collector after provider connection succeeds,
+binds it to the new run ID, and cancels it before that run is completed. Collector
+failure is reported as operational evidence but does not fail an otherwise valid
+voice call.
+
+To invoke the bridge directly, set `VOXBENCH_AMI_USERNAME` and
+`VOXBENCH_AMI_SECRET`, then pass `--collect-rtcp`, `--ami-host`, `--ami-port`, and
+`--ami-clock-rate-hz`. The clock rate is the RTP codec clock, not necessarily an
+audio output sample rate. Use 8000 for PCMU/PCMA and configure the actual clock
+for other codecs.
+
+The standalone `voxbench asterisk-ami-rtcp --run-id ...` command remains
+available for integrations that manage run and collector lifecycles separately.
+
+The Web RTP quality panel shows direction, jitter, loss, RTT, MOS when separately
+supplied, and each point's relative time. Live preview also shows an RTP collector
+block: `connected` after AMI login, `collecting` after the first normalized RTCP
+event, and `failed` after a safe collector failure observation. Its event count
+is additive across collector restarts for the same run.
+
+Keep only one call active while automatic collection is enabled. The privacy-safe
+collector intentionally drops Asterisk Channel, address, and SSRC fields, so AMI
+events from concurrent calls cannot be attributed safely.
+
+## Matched Choppy-Audio Experiment
+
+Use identical provider model, codec, route, gain, noise floor, caller phrase, and
+call duration for both conditions.
+
+1. Use a headset to prevent speaker audio from re-entering the microphone.
+2. Start `no-interruption` with automatic RTCP collection, call `7000`, speak one
+   fixed prompt, and remain silent until Gemini finishes.
+3. Keep the call active for 20–30 seconds, hang up, and retain the printed run ID.
+4. Restart the bridge with `--experiment-condition intentional-barge-in`.
+5. Repeat the same prompt, but interrupt Gemini once at the same relative phrase.
+6. Retain an independent caller-side recording for each call and name it with the
+   corresponding run ID.
+7. Select the no-interruption run as **Primary** and the interruption run as
+   **Compare**.
+
+Confirm all of the following before attributing choppy audio:
+
+- **RTP quality** contains received or sent points rather than remaining empty.
+- The experiment condition is present in the run environment tags/operator note.
+- The same provider model appears on both runs.
+- Stage WAVs identify the first local stage containing the audible defect.
+- Barge-in evidence explains any queued audio disposal.
+- The caller-side recording confirms that the candidate instant was actually
+  audible after Asterisk RTP and softphone playout.
 
 Relevant Asterisk references:
 

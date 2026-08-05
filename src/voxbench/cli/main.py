@@ -15,6 +15,7 @@ import typer
 from voxbench.live_demo.observed_run import (
     LiveDemoProvider,
     build_audiosocket_observed_run_payload,
+    normalize_experiment_condition,
 )
 from voxbench.observability import HttpObservationTransport, VoxBenchObserver
 from voxbench.realtime_providers import (
@@ -163,6 +164,34 @@ def audiosocket_realtime(
         float,
         typer.Option("--connect-backoff-seconds", min=0.0, max=30.0),
     ] = 0.5,
+    experiment_condition: Annotated[
+        str | None,
+        typer.Option(
+            "--experiment-condition",
+            help="Safe alias recorded on each run, such as no-interruption.",
+        ),
+    ] = None,
+    collect_rtcp: Annotated[
+        bool,
+        typer.Option(
+            "--collect-rtcp",
+            help="Attach aggregate Asterisk AMI RTCP observations to each call run.",
+        ),
+    ] = False,
+    ami_host: Annotated[str, typer.Option("--ami-host")] = "127.0.0.1",
+    ami_port: Annotated[int, typer.Option("--ami-port", min=1, max=65535)] = 5038,
+    ami_clock_rate_hz: Annotated[
+        int,
+        typer.Option("--ami-clock-rate-hz", min=1, max=384_000),
+    ] = 8_000,
+    ami_username_env: Annotated[
+        str,
+        typer.Option("--ami-username-env"),
+    ] = "VOXBENCH_AMI_USERNAME",
+    ami_secret_env: Annotated[
+        str,
+        typer.Option("--ami-secret-env"),
+    ] = "VOXBENCH_AMI_SECRET",
 ) -> None:
     """Bridge Asterisk AudioSocket PCM to a realtime AI provider."""
 
@@ -178,6 +207,30 @@ def audiosocket_realtime(
         detail = f"set {env_vars} and install the live extra: pip install -e '.[live]'"
         raise typer.BadParameter(detail)
 
+    if experiment_condition is not None:
+        try:
+            experiment_condition = normalize_experiment_condition(experiment_condition)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from None
+
+    ami_username: str | None = None
+    ami_secret: str | None = None
+    if collect_rtcp:
+        ami_username = os.environ.get(ami_username_env)
+        ami_secret = os.environ.get(ami_secret_env)
+        missing = [
+            name
+            for name, value in (
+                (ami_username_env, ami_username),
+                (ami_secret_env, ami_secret),
+            )
+            if not value
+        ]
+        if missing:
+            raise typer.BadParameter(
+                f"set required environment variable(s): {', '.join(missing)}"
+            )
+
     transport = HttpObservationTransport(control_plane_url)
 
     async def create_session(call_uuid: UUID) -> RealtimeCallSession:
@@ -190,6 +243,7 @@ def audiosocket_realtime(
             noise_floor=noise_floor,
             mode="provider",
             model=selected_model,
+            experiment_condition=experiment_condition,
         )
         run = await asyncio.to_thread(transport.start_run, payload)
         observer = VoxBenchObserver(run["run_id"], transport)
@@ -245,6 +299,40 @@ def audiosocket_realtime(
             f"AudioSocket call {call_id} -> {provider}/{selected_model} "
             f"-> run {run['run_id']}"
         )
+        if experiment_condition is not None:
+            typer.echo(f"Experiment condition: {experiment_condition}")
+        background_tasks: tuple[asyncio.Task[object], ...] = ()
+        if collect_rtcp:
+            assert ami_username is not None
+            assert ami_secret is not None
+            rtcp_observer = VoxBenchObserver(run["run_id"], transport)
+            collector = AmiRtcpCollector(
+                host=ami_host,
+                port=ami_port,
+                username=ami_username,
+                secret=ami_secret,
+                clock_rate_hz=ami_clock_rate_hz,
+            )
+
+            async def collect_call_rtcp() -> None:
+                try:
+                    await collector.collect(rtcp_observer)
+                except asyncio.CancelledError:
+                    raise
+                except AmiError as exc:
+                    rtcp_observer.observe_metric("asterisk_ami_rtcp_failures", 1.0)
+                    with suppress(Exception):
+                        await asyncio.to_thread(rtcp_observer.flush)
+                    typer.echo(
+                        f"Asterisk RTCP collection failed for run {run['run_id']}: {exc}",
+                        err=True,
+                    )
+
+            background_tasks = (asyncio.create_task(collect_call_rtcp()),)
+            typer.echo(
+                f"Asterisk RTCP collection attached to run {run['run_id']} "
+                f"on {ami_host}:{ami_port}"
+            )
         return RealtimeCallSession(
             call_id=call_id,
             observer=observer,
@@ -257,6 +345,7 @@ def audiosocket_realtime(
             target_rms=target_rms,
             max_gain=max_gain,
             noise_floor=noise_floor,
+            background_tasks=background_tasks,
         )
 
     server = AudioSocketRealtimeServer(
