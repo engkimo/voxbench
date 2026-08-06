@@ -133,6 +133,7 @@ case "$command" in
     shift
     gemini_model="${VOXBENCH_GEMINI_MODEL:-gemini-3.1-flash-live-preview}"
     previous_arg=""
+    collect_rtcp=0
     gemini_args=()
     for arg in "$@"; do
       if [[ "$previous_arg" == "--model" ]]; then
@@ -146,6 +147,10 @@ case "$command" in
           ;;
         --model=*)
           gemini_model="${arg#--model=}"
+          ;;
+        --collect-rtcp)
+          collect_rtcp=1
+          gemini_args+=("$arg")
           ;;
         *)
           gemini_args+=("$arg")
@@ -204,6 +209,12 @@ EOF
     echo "Starting Gemini Live bridge on 127.0.0.1:9019."
     echo "Model: $gemini_model"
     echo "Control Plane: $CONTROL_PLANE_URL"
+    if [[ "$collect_rtcp" == "1" ]]; then
+      export VOXBENCH_AMI_USERNAME="${VOXBENCH_AMI_USERNAME:-voxbench-rtcp}"
+      export VOXBENCH_AMI_SECRET="${VOXBENCH_AMI_SECRET:-$AMI_PASSWORD}"
+      echo "Asterisk RTCP auto-collection: enabled on 127.0.0.1:$AMI_PORT"
+      echo "Keep only one test call active so aggregate AMI events stay attributable."
+    fi
     echo "Call 7000 after the listening message appears. Press Ctrl+C to stop."
     exec "$ROOT/.venv/bin/voxbench" audiosocket-realtime \
       --control-plane-url "$CONTROL_PLANE_URL" \

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +19,19 @@ PROCESSOR_MANIFESTS = (
     "manifests/processor/limiter.json",
     "manifests/processor/serializer.json",
 )
+EXPERIMENT_CONDITION_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+def normalize_experiment_condition(value: str) -> str:
+    """Return a safe, stable alias for a matched live-call condition."""
+
+    normalized = value.strip().lower()
+    if EXPERIMENT_CONDITION_PATTERN.fullmatch(normalized) is None:
+        raise ValueError(
+            "experiment_condition must be a 1-64 character lowercase alias using "
+            "letters, digits, dot, underscore, or dash"
+        )
+    return normalized
 
 
 def build_audiosocket_observed_run_payload(
@@ -29,6 +43,7 @@ def build_audiosocket_observed_run_payload(
     noise_floor: float,
     mode: AudioSocketDemoMode = "loopback",
     model: str | None = None,
+    experiment_condition: str | None = None,
 ) -> dict[str, Any]:
     config = deepcopy(_load_json(f"configs/live-demo-{provider}.json"))
     selected_model = model or str(config["spec"]["ai"]["model"])
@@ -57,6 +72,13 @@ def build_audiosocket_observed_run_payload(
         else "Bidirectional AudioSocket media connected to the selected provider."
     )
     provider_note = f"{provider_note} Provider model: {selected_model}."
+    tags = ["live-demo", "audiosocket", mode, provider]
+    if experiment_condition is not None:
+        experiment_condition = normalize_experiment_condition(experiment_condition)
+        provider_note = (
+            f"{provider_note} Experiment condition: {experiment_condition}."
+        )
+        tags.append(f"experiment-{experiment_condition}")
     return {
         "config_name": config["meta"]["name"],
         "configs": [config],
@@ -71,7 +93,7 @@ def build_audiosocket_observed_run_payload(
             "integration_target_alias": f"{provider}:{selected_model}:{mode}",
             "started_from": f"voxbench-audiosocket-{mode}",
             "operator_note": provider_note,
-            "tags": ["live-demo", "audiosocket", mode, provider],
+            "tags": tags,
             "secret_ref_names": (
                 ["OPENAI_API_KEY"] if provider == "openai-realtime" else ["GOOGLE_API_KEY"]
             )

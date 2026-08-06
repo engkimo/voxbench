@@ -67,3 +67,6 @@ def test_local_launcher_distinguishes_gemini_from_loopback() -> None:
     assert '[[ -z "${GEMINI_API_KEY:-}" ]]' in launcher
     assert "audiosocket-realtime" in launcher
     assert "--provider gemini-live" in launcher
+    assert "--collect-rtcp" in launcher
+    assert 'VOXBENCH_AMI_USERNAME:-voxbench-rtcp' in launcher
+    assert 'VOXBENCH_AMI_SECRET:-$AMI_PASSWORD' in launcher

@@ -244,28 +244,58 @@ speaker-to-microphone echo. The bridge records local queue disposal and provider
 chunk correlation, but `remote_playout_observed: false` means it cannot claim
 exactly what the caller heard without a caller-side recording.
 
-### 7. Collect RTCP during the next call
+### 7. Run the matched real-call experiment with RTCP
 
 An empty **RTP quality** panel does not prove the network was clean. It means no
-normalized RTP/RTCP evidence reached that run. Start the collector in terminal 4
-while the real call is active, using the new run ID:
+normalized RTP/RTCP evidence reached that run. For a matched experiment, run one
+condition at a time. The bridge automatically binds the read-only AMI collector
+to the run ID created for each call.
+
+First use a headset and let Gemini finish without speaking over it:
+
+```fish
+./scripts/asterisk-local gemini \
+  --collect-rtcp \
+  --experiment-condition no-interruption
+```
+
+Call `7000`, keep the call active for 20–30 seconds, hang up, and stop the
+bridge. Then repeat with one deliberate interruption at a repeatable point:
+
+```fish
+./scripts/asterisk-local gemini \
+  --collect-rtcp \
+  --experiment-condition intentional-barge-in
+```
+
+The local helper supplies the loopback-only AMI account from the Asterisk
+development configuration. When invoking the CLI directly, keep credentials in
+environment variables:
 
 ```fish
 set -gx VOXBENCH_AMI_USERNAME voxbench-rtcp
 set -gx VOXBENCH_AMI_SECRET voxbench-ami-local-only
 
-voxbench asterisk-ami-rtcp \
-  --run-id '<run-id>' \
+voxbench audiosocket-realtime \
+  --provider gemini-live \
   --control-plane-url http://127.0.0.1:8001 \
-  --host 127.0.0.1 \
-  --port 5038 \
-  --clock-rate-hz 8000
+  --collect-rtcp \
+  --ami-host 127.0.0.1 \
+  --ami-port 5038 \
+  --ami-clock-rate-hz 8000 \
+  --experiment-condition no-interruption
 ```
 
-Keep the call active for 20–30 seconds so Asterisk has time to emit RTCP
-reports. Aggregate RTCP can show loss, jitter, and RTT; it cannot identify an
-exact missing RTP sequence number. Use the library packet-observation adapter
-when packet-level proof is required.
+Keep only one test call active. AMI reports aggregate Asterisk RTCP events and
+does not retain the Channel identifier, so concurrent calls cannot be safely
+attributed to separate runs. Aggregate RTCP can show loss, jitter, and RTT; it
+cannot identify an exact missing RTP sequence number. Use the library
+packet-observation adapter when packet-level proof is required.
+
+For an audible-quality conclusion, retain a caller-side reference recording.
+The simplest independent setup is a second device recording the headset output;
+label it with the run ID printed by the bridge. VoxBench stage WAVs prove the
+local processing path, but not what the remote softphone ultimately played.
 
 ## Local demo troubleshooting
 
@@ -282,7 +312,7 @@ when packet-level proof is required.
 | **Fetch** or the circular refresh button appears to do nothing | Refreshing the same completed run does not create new evidence or change immutable recordings. Select a different run, keep an active call running, or create a new call. |
 | **Readiness** shows unchecked/incomplete items | Readiness is an evidence checklist, not an automatic failure count. A live bridge can complete while deployment-specific checklist fields remain unknown. |
 | Audio is choppy or clicks | Compare all four stage WAVs, click the barge-in incidents, repeat once with a headset and no overlap, then repeat with RTCP collection. Do not attribute the symptom to packet loss until transport evidence exists. |
-| **RTP quality** is empty | Start `asterisk-ami-rtcp` during the active call and keep the call long enough for RTCP. No points means unobserved transport quality, not confirmed zero loss. |
+| **RTP quality** is empty | Restart the Gemini bridge with `--collect-rtcp`, keep exactly one call active, and keep it connected long enough for RTCP. The standalone `asterisk-ami-rtcp` command remains available for manual collection. No points means unobserved transport quality, not confirmed zero loss. |
 
 Detailed operator and library integration references are available in
 [`docs/demo-live-softphone.md`](docs/demo-live-softphone.md) and
