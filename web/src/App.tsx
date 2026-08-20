@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
+  Copy,
   Database,
   Headphones,
   ListChecks,
@@ -466,6 +467,10 @@ export function App() {
   const [quickDemoError, setQuickDemoError] = useState<string | null>(null)
   const [quickDemoTargetRms, setQuickDemoTargetRms] = useState(1600)
   const [quickDemoScenario, setQuickDemoScenario] = useState<QuickDemoScenario>('rtp-gap')
+  const [copyLinkFeedback, setCopyLinkFeedback] = useState<{
+    kind: 'success' | 'error'
+    message: string
+  } | null>(null)
   const stageDetailRef = useRef<HTMLDivElement>(null)
 
   const timelineQuery = useQuery({
@@ -625,6 +630,25 @@ export function App() {
     })
   }
 
+  async function copyDeepLink() {
+    const url = new URL(window.location.href)
+    url.search = ''
+    url.searchParams.set('run_id', runId)
+    if (compareRunId) {
+      url.searchParams.set('compare_run_id', compareRunId)
+    }
+
+    try {
+      await navigator.clipboard.writeText(url.toString())
+      setCopyLinkFeedback({ kind: 'success', message: 'Run link copied.' })
+    } catch {
+      setCopyLinkFeedback({
+        kind: 'error',
+        message: 'Could not copy the run link. Check clipboard permissions and try again.',
+      })
+    }
+  }
+
   async function loadExamplePayload() {
     setExamplePayloadPending(true)
     setAsyncRunError(null)
@@ -771,6 +795,24 @@ export function App() {
           >
             <RefreshCw size={17} />
           </button>
+          <button
+            type="button"
+            title="Copy a link to the selected runs"
+            onClick={() => void copyDeepLink()}
+            disabled={!runId}
+          >
+            <Copy size={17} />
+            Copy link
+          </button>
+          {copyLinkFeedback ? (
+            <span
+              className={`copyLinkFeedback ${copyLinkFeedback.kind}`}
+              role="status"
+              aria-live="polite"
+            >
+              {copyLinkFeedback.message}
+            </span>
+          ) : null}
         </form>
       </header>
 
