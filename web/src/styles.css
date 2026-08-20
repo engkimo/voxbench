@@ -134,7 +134,7 @@ a {
 
 .runForm {
   display: grid;
-  grid-template-columns: minmax(130px, 190px) minmax(200px, 330px) minmax(200px, 330px) auto auto;
+  grid-template-columns: minmax(130px, 190px) minmax(200px, 330px) minmax(200px, 330px) auto auto auto;
   align-items: end;
   gap: 10px;
 }
@@ -155,6 +155,18 @@ a {
   padding: 0 10px;
   color: #1d2430;
   background: #ffffff;
+}
+
+.copyLinkFeedback {
+  grid-column: 1 / -1;
+  color: #33665b;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.copyLinkFeedback.error {
+  color: #8e2f35;
 }
 
 .summaryGrid {
