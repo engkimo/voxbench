@@ -103,6 +103,11 @@ type QuickDemoResponse = {
   status: string
 }
 
+type RunProvenance = {
+  label: 'Synthetic demo' | 'Observed call' | 'Unknown provenance'
+  tone: 'synthetic' | 'observed' | 'unknown'
+}
+
 const ENVIRONMENT_PROFILES: EnvironmentProfile[] = [
   'local',
   'dev',
@@ -780,7 +785,12 @@ export function App() {
       />
 
       <section className="summaryGrid">
-        <SummaryTile icon={<Database size={18} />} label="Run" value={timeline?.run_id ?? '-'} />
+        <SummaryTile
+          accessory={timeline ? <ProvenanceBadge environment={timeline.environment} /> : null}
+          icon={<Database size={18} />}
+          label="Run"
+          value={timeline?.run_id ?? '-'}
+        />
         <SummaryTile icon={<Database size={18} />} label="Compare" value={compareTimeline?.run_id ?? '-'} />
         <SummaryTile
           icon={<Server size={18} />}
@@ -1120,6 +1130,7 @@ function LinkedCallInspector({
       <div className="sectionHeader compact">
         <Activity size={17} />
         <h2>Call inspector</h2>
+        <ProvenanceBadge environment={timeline.environment} />
         <span className="inspectorCursorReadout">Cursor {formatTimelineTime(cursorMs)}</span>
       </div>
       <p className="panelLead">
@@ -1901,10 +1912,12 @@ function RecentRuns({
 }
 
 function SummaryTile({
+  accessory,
   icon,
   label,
   value,
 }: {
+  accessory?: React.ReactNode
   icon: React.ReactNode
   label: string
   value: React.ReactNode
@@ -1914,7 +1927,20 @@ function SummaryTile({
       <span className="summaryIcon">{icon}</span>
       <span className="summaryLabel">{label}</span>
       <strong>{value}</strong>
+      {accessory ? <span className="summaryAccessory">{accessory}</span> : null}
     </div>
+  )
+}
+
+function ProvenanceBadge({ environment }: { environment: RunEnvironmentMetadata }) {
+  const provenance = runProvenance(environment)
+  return (
+    <span
+      aria-label={`Run provenance: ${provenance.label}`}
+      className={`provenanceBadge ${provenance.tone}`}
+    >
+      {provenance.label}
+    </span>
   )
 }
 
@@ -2998,6 +3024,23 @@ function environmentStatusLabel(run: LiveRunStatus) {
 function environmentHeadline(environment: RunEnvironmentMetadata) {
   const server = environment.server_alias ?? environment.integration_target_alias
   return server ? `${environment.environment_profile} / ${server}` : environment.environment_profile
+}
+
+function runProvenance(environment: RunEnvironmentMetadata): RunProvenance {
+  const tags = new Set(environment.tags.map((tag) => tag.toLowerCase()))
+  if (
+    environment.started_from === 'live-demo-simulated-bridge' ||
+    tags.has('simulated-audio')
+  ) {
+    return { label: 'Synthetic demo', tone: 'synthetic' }
+  }
+  if (
+    environment.started_from?.startsWith('voxbench-audiosocket-') ||
+    tags.has('audiosocket')
+  ) {
+    return { label: 'Observed call', tone: 'observed' }
+  }
+  return { label: 'Unknown provenance', tone: 'unknown' }
 }
 
 function readinessHeadline(summary: ReadinessSummary) {

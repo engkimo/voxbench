@@ -169,13 +169,19 @@ a {
   grid-template-columns: auto 1fr;
   grid-template-areas:
     "icon label"
-    "icon value";
+    "icon value"
+    "icon accessory";
   column-gap: 10px;
   min-height: 74px;
   padding: 13px;
   border: 1px solid #d0d8e1;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.summaryAccessory {
+  grid-area: accessory;
+  margin-top: 5px;
 }
 
 .summaryIcon {
@@ -316,6 +322,35 @@ a {
 
 .sectionHeader.compact {
   margin: 4px 0 10px;
+}
+
+.provenanceBadge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 24px;
+  border: 1px solid #a7b3c0;
+  border-radius: 999px;
+  padding: 3px 9px;
+  color: #405064;
+  background: #f3f5f7;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.provenanceBadge.synthetic {
+  border-color: #d79d3a;
+  color: #704812;
+  background: #fff4d8;
+}
+
+.provenanceBadge.observed {
+  border-color: #4f9b75;
+  color: #1d5c3c;
+  background: #e8f7ee;
 }
 
 .stageStack {
