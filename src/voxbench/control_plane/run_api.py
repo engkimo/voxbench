@@ -64,6 +64,11 @@ from voxbench.control_plane.models import (
 from voxbench.control_plane.models import (
     Verification as VerificationRow,
 )
+from voxbench.control_plane.real_call_diagnostics import (
+    RealCallExperimentRequest,
+    RealCallExperimentResponse,
+    analyze_real_call_experiment,
+)
 from voxbench.control_plane.repository_config import (
     RepositoryReadiness,
     memory_repository_readiness,
@@ -4848,6 +4853,35 @@ def create_runs_router() -> APIRouter:
                 await asyncio.sleep(interval_ms / 1000.0)
         except WebSocketDisconnect:
             return
+
+    @router.post(
+        "/diagnostics/real-call-experiment",
+        response_model=RealCallExperimentResponse,
+    )
+    async def diagnose_real_call_experiment(
+        request: RealCallExperimentRequest,
+        api_state: RunApiStateDependency,
+    ) -> RealCallExperimentResponse:
+        primary = api_state.repository.get(request.primary_run_id)
+        if primary is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown primary run '{request.primary_run_id}'",
+            )
+        compare = None
+        if request.compare_run_id is not None:
+            if request.compare_run_id == request.primary_run_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Primary and Compare must be different runs",
+                )
+            compare = api_state.repository.get(request.compare_run_id)
+            if compare is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"unknown compare run '{request.compare_run_id}'",
+                )
+        return analyze_real_call_experiment(primary, compare)
 
     @router.get("/runs/{run_id}", response_model=RunResponse)
     async def get_run(
