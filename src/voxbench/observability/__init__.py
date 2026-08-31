@@ -15,6 +15,7 @@ from voxbench.observability.observer import (
     TimelineCategory,
     TimelineEvent,
     VoxBenchObserver,
+    detect_pcm_s16le_discontinuity,
     rtp_packet_from_datagram,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "TimelineCategory",
     "TimelineEvent",
     "VoxBenchObserver",
+    "detect_pcm_s16le_discontinuity",
     "rtp_packet_from_datagram",
 ]

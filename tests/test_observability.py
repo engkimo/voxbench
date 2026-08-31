@@ -19,6 +19,7 @@ from voxbench.observability import (
     SipEvent,
     TimelineEvent,
     VoxBenchObserver,
+    detect_pcm_s16le_discontinuity,
     rtp_packet_from_datagram,
 )
 
@@ -82,6 +83,92 @@ class FailingSecondTransport(ObservationTransport):
 
 def _pcm(value: int, frame_count: int = 160) -> bytes:
     return struct.pack("<h", value) * frame_count
+
+
+@pytest.mark.parametrize(
+    ("pcm", "previous", "expected"),
+    [
+        (struct.pack("<hhhh", 1000, 1100, 1200, 1300), None, None),
+        (struct.pack("<hhh", -100, 0, 100), None, None),
+        (struct.pack("<hh", 12000, -12000), None, (1, 24000 / 32768, 0)),
+        (_pcm(0, 4), (0,), None),
+        (struct.pack("<hh", 32767, -32768), None, (1, 65535 / 32768, 0)),
+    ],
+)
+def test_pcm_discontinuity_detector_contract(pcm, previous, expected) -> None:
+    observed = detect_pcm_s16le_discontinuity(
+        pcm,
+        previous_samples=previous,
+    )
+    if expected is None:
+        assert observed is None
+    else:
+        assert observed is not None
+        assert observed[0] == expected[0]
+        assert observed[1] == pytest.approx(expected[1])
+        assert observed[2] == expected[2]
+
+
+def test_pcm_discontinuity_observation_uses_media_time_and_deduplicates() -> None:
+    transport = RecordingTransport()
+    observer = VoxBenchObserver("run", transport)
+    t0 = datetime(2026, 1, 1)
+    for index, value in enumerate((12000, -12000)):
+        observer.observe_stage_audio(
+            stage="serializer",
+            input_pcm_s16le=_pcm(value, 40),
+            output_pcm_s16le=_pcm(value, 40),
+            sample_rate_hz=8_000,
+            record_output=False,
+            ts=t0 + timedelta(seconds=index * 5),
+        )
+    observer.flush()
+
+    events = transport.batches[0].timeline_events
+    assert len(events) == 1
+    assert events[0].attributes["media_time_ms"] == 5.0
+    assert events[0].attributes["magnitude"] == pytest.approx(24000 / 32768)
+    assert events[0].attributes["remote_playout_observed"] is False
+    assert events[0].ts == t0 + timedelta(seconds=5)
+
+
+def test_pcm_discontinuity_projects_bounded_incident(tmp_path: Path) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    run_id = client.post(
+        "/runs/observed",
+        json=_observed_run_payload(),
+    ).json()["run_id"]
+    timeline = client.get(f"/runs/{run_id}/timeline").json()
+    t0 = datetime.fromisoformat(timeline["t0"])
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+    for index, value in enumerate((12000, -12000)):
+        observer.observe_stage_audio(
+            stage="serializer",
+            input_pcm_s16le=_pcm(value, 40),
+            output_pcm_s16le=_pcm(value, 40),
+            sample_rate_hz=8_000,
+            ts=t0 + timedelta(milliseconds=index * 5),
+        )
+    observer.flush()
+
+    lanes = client.get(f"/runs/{run_id}/timeline").json()["lanes"]
+    incident = next(
+        item
+        for item in lanes["incidents"]
+        if item["rule_id"] == "pcm16_adjacent_delta_v1"
+    )
+    assert incident["stage"] == "serializer"
+    assert incident["confidence"] == "low"
+    assert incident["observed"]["media_time_ms"] == 5.0
+    assert incident["observed"]["magnitude"] == pytest.approx(24000 / 32768)
+    assert incident["observed"]["remote_playout_observed"] is False
+    assert incident["expected"]["audibility"] == (
+        "not proven by this detector"
+    )
+    assert incident["evidence_refs"] == [
+        "recording:0",
+        "pcm-discontinuity:0",
+    ]
 
 
 def _rtp_datagram(
