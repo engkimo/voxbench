@@ -21,6 +21,10 @@ PCM16_SILENCE_THRESHOLD_DBFS = -60.0
 PCM16_SILENCE_AMPLITUDE = round(
     PCM16_FULL_SCALE * 10 ** (PCM16_SILENCE_THRESHOLD_DBFS / 20.0)
 )
+PCM_DISCONTINUITY_CONTRACT_VERSION = "pcm16_adjacent_delta_v1"
+PCM_DISCONTINUITY_THRESHOLD = 0.25
+PCM_DISCONTINUITY_MIN_SIGNAL_LEVEL = 0.02
+PCM_DISCONTINUITY_DEDUP_MS = 5.0
 TimelineCategory = Literal[
     "conversation",
     "signaling",
@@ -476,6 +480,10 @@ class VoxBenchObserver:
         self._timeline_events: list[TimelineEvent] = []
         self._rtp_packet_ordinal = 0
         self._rtp_capture_health_ordinal = 0
+        self._discontinuity_ordinal = 0
+        self._stage_pcm_state: dict[
+            str, tuple[int, int, tuple[int, ...], int, float | None]
+        ] = {}
         self._lock = Lock()
 
     def observe_stage_audio(
@@ -507,6 +515,15 @@ class VoxBenchObserver:
         sample_count = len(output_pcm_s16le) // 2
         frame_count = sample_count / channels
         chunk_duration_ms = frame_count / sample_rate_hz * 1000.0
+        prior = self._stage_pcm_state.get(stage)
+        same_format = (
+            prior is not None and prior[:2] == (sample_rate_hz, channels)
+        )
+        discontinuity = detect_pcm_s16le_discontinuity(
+            output_pcm_s16le,
+            channels=channels,
+            previous_samples=prior[2] if same_format and prior[2] else None,
+        )
         metrics = [
             MetricPoint(stage=stage, name="input_rms", value=input_rms, ts=observed_at),
             MetricPoint(stage=stage, name="output_rms", value=output_rms, ts=observed_at),
@@ -552,6 +569,64 @@ class VoxBenchObserver:
             )
         with self._lock:
             self._metrics.extend(metrics)
+            media_frame_offset = prior[3] if same_format else 0
+            last_incident_ms = prior[4] if same_format else None
+            if discontinuity is not None:
+                media_time_ms = (
+                    media_frame_offset + discontinuity[0]
+                ) / sample_rate_hz * 1000.0
+                if (
+                    last_incident_ms is None
+                    or media_time_ms - last_incident_ms >= PCM_DISCONTINUITY_DEDUP_MS
+                ):
+                    event_ordinal = self._discontinuity_ordinal
+                    self._discontinuity_ordinal += 1
+                    self._timeline_events.append(
+                        TimelineEvent(
+                            event_id=f"pcm-discontinuity:{event_ordinal}",
+                            category="pipeline",
+                            name="stage.pcm_discontinuity_detected",
+                            source="pcm_adjacent_delta_detector",
+                            stage=stage,
+                            correlation_alias=(
+                                f"pcm-discontinuity:{stage}:{event_ordinal}"
+                            ),
+                            attributes={
+                                "media_time_ms": media_time_ms,
+                                "magnitude": discontinuity[1],
+                                "channel": discontinuity[2],
+                                "detector_contract": (
+                                    PCM_DISCONTINUITY_CONTRACT_VERSION
+                                ),
+                                "sample_format": "pcm_s16le",
+                                "sample_rate_hz": sample_rate_hz,
+                                "channels": channels,
+                                "threshold": PCM_DISCONTINUITY_THRESHOLD,
+                                "minimum_signal_level": (
+                                    PCM_DISCONTINUITY_MIN_SIGNAL_LEVEL
+                                ),
+                                "silence_treatment": (
+                                    "ignore_when_both_samples_below_minimum"
+                                ),
+                                "dedup_window_ms": PCM_DISCONTINUITY_DEDUP_MS,
+                                "remote_playout_observed": False,
+                            },
+                            ts=observed_at,
+                        )
+                    )
+                    last_incident_ms = media_time_ms
+            final_samples = (
+                _pcm_s16le_final_frame(output_pcm_s16le, channels)
+                if output_pcm_s16le
+                else (prior[2] if same_format else ())
+            )
+            self._stage_pcm_state[stage] = (
+                sample_rate_hz,
+                channels,
+                final_samples,
+                media_frame_offset + int(frame_count),
+                last_incident_ms,
+            )
             if record_output and output_pcm_s16le:
                 self._audio_chunks.append(
                     AudioChunk(
@@ -870,6 +945,49 @@ def pcm_s16le_quality(pcm: bytes) -> tuple[float, float, float]:
         sample_peak_dbfs,
         full_scale_count / sample_count * 100.0,
         silence_count / sample_count * 100.0,
+    )
+
+
+def detect_pcm_s16le_discontinuity(
+    pcm: bytes,
+    *,
+    channels: int = 1,
+    previous_samples: tuple[int, ...] | None = None,
+) -> tuple[int, float, int] | None:
+    """Return strongest suspicious delta as frame offset, magnitude, channel."""
+
+    if channels <= 0:
+        raise ValueError("channels must be positive")
+    if len(pcm) % (2 * channels):
+        raise ValueError("PCM16LE must contain complete channel frames")
+    if previous_samples is not None and len(previous_samples) != channels:
+        raise ValueError("previous_samples must contain one value per channel")
+    samples = [value for (value,) in struct.iter_unpack("<h", pcm)]
+    strongest: tuple[int, float, int] | None = None
+    for frame_offset in range(len(samples) // channels):
+        for channel in range(channels):
+            current = samples[frame_offset * channels + channel]
+            if frame_offset:
+                previous = samples[(frame_offset - 1) * channels + channel]
+            elif previous_samples is not None:
+                previous = previous_samples[channel]
+            else:
+                continue
+            magnitude = abs(current - previous) / PCM16_FULL_SCALE
+            signal_level = max(abs(current), abs(previous)) / PCM16_FULL_SCALE
+            if (
+                magnitude >= PCM_DISCONTINUITY_THRESHOLD
+                and signal_level >= PCM_DISCONTINUITY_MIN_SIGNAL_LEVEL
+                and (strongest is None or magnitude > strongest[1])
+            ):
+                strongest = (frame_offset, magnitude, channel)
+    return strongest
+
+
+def _pcm_s16le_final_frame(pcm: bytes, channels: int) -> tuple[int, ...]:
+    return tuple(
+        value[0]
+        for value in struct.iter_unpack("<h", pcm[-2 * channels :])
     )
 
 

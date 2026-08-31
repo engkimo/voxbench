@@ -253,3 +253,22 @@ The Control Plane endpoints used by the library are:
 During the run, the Web UI can fetch the normal run timeline and stage recording
 audio endpoints. Completing the run computes the existing VoxBench verifications.
 Failure aliases must not contain URLs, raw provider responses, SIP/SDP, or secrets.
+
+## PCM click/pop observation contract
+
+`observe_stage_audio` applies the deterministic `pcm16_adjacent_delta_v1`
+detector to each stage's output. Its input contract is interleaved signed
+16-bit little-endian PCM with the declared sample rate and channel count. It
+compares adjacent samples independently per channel, including chunk boundaries,
+and reports the strongest delta when it is at least 0.25 of PCM full scale and
+either endpoint is at least 0.02 of full scale. Transitions where both endpoints
+are below that minimum are treated as silence and ignored. Incidents less than
+5 ms apart in the same stage are deduplicated.
+
+The observation contains only bounded metadata: stage, channel, cumulative
+stage media time, normalized magnitude, and the detector contract. Media time is
+not derived from the event's wall-clock timestamp. Queue-clear, interruption, or
+barge-in events within 100 ms may be referenced as correlated evidence, but the
+detector does not retain extra PCM, prove subjective audibility, identify the
+cause, or prove remote playout. `remote_playout_observed` therefore remains
+`false` unless a separate adapter supplies that evidence.
