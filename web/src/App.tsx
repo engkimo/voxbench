@@ -27,6 +27,7 @@ import {
 } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 
+import { RealCallAgentPanel } from './RealCallAgentPanel'
 import type {
   CrossSessionTrend,
   EnvironmentProfile,
@@ -973,6 +974,17 @@ export function App() {
           </div>
 
           <aside className="sideRail">
+            <RealCallAgentPanel
+              apiBase={apiBase}
+              compareRunId={compareRunId}
+              onUseRuns={(primary, compare) => {
+                setDraftRunId(primary)
+                setRunId(primary)
+                setDraftCompareRunId(compare)
+                setCompareRunId(compare)
+              }}
+              primaryRunId={runId}
+            />
             <RecentRuns
               compareRunId={compareRunId}
               isError={runsQuery.isError}

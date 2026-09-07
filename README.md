@@ -616,6 +616,23 @@ Open `http://127.0.0.1:5173/`. The Web UI can inspect a run timeline, compare tw
 runs, play stage recordings, watch live run status, and start an async run from an
 example payload.
 
+### Guided real-call reproduction
+
+Select an observed baseline run and open **Ask VoxBench** in the right rail. The
+guided experiment keeps the main UI to three steps: baseline, intentional
+barge-in, and evidence. Add the second run ID and select **Compare evidence**.
+VoxBench validates that the runs are distinct observed AudioSocket calls, carry
+the expected experiment-condition tags, last at least 20 seconds, use the same
+provider/configuration, and contain RTCP evidence. It then contrasts barge-in
+incidents and returns one recommended next action.
+
+Setup commands are available under the collapsed **Call setup and commands**
+section. Starting Docker/Asterisk, supplying a Gemini API key, placing the
+Telephone call, and speaking the controlled interruption remain explicit
+operator actions; the diagnostic endpoint never receives or stores the key and
+does not execute shell commands. This keeps the comparison reproducible without
+giving the Web agent access to the host or credentials.
+
 For the shortest product walkthrough, use **Diagnose a call in 3 seconds** at
 the top of the page:
 

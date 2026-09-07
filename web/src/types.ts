@@ -206,6 +206,44 @@ export type TimelineResponse = {
   }
 }
 
+export type ExperimentCriterion = {
+  key: string
+  label: string
+  status: 'pass' | 'fail' | 'missing'
+  detail: string
+}
+
+export type ExperimentFinding = {
+  classification: 'observed' | 'derived' | 'unknown' | 'recommended'
+  title: string
+  detail: string
+  run_role: 'primary' | 'compare' | 'both'
+  evidence_refs: string[]
+}
+
+export type RunExperimentSnapshot = {
+  run_id: string
+  role: 'no-interruption' | 'intentional-barge-in' | 'unknown'
+  observed_call: boolean
+  duration_ms: number
+  provider: string
+  config_hash: string
+  rtp_report_count: number
+  incident_count: number
+  barge_in_count: number
+  recording_stages: string[]
+}
+
+export type RealCallExperiment = {
+  status: 'needs-compare' | 'ready' | 'inconclusive'
+  summary: string
+  primary: RunExperimentSnapshot
+  compare: RunExperimentSnapshot | null
+  criteria: ExperimentCriterion[]
+  findings: ExperimentFinding[]
+  next_actions: string[]
+}
+
 export type RunSummary = {
   run_id: string
   config_hash: string
