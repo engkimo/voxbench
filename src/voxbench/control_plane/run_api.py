@@ -1157,6 +1157,7 @@ STAGE_SILENCE_THRESHOLD_DBFS = -60.0
 STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
 STAGE_SILENCE_MIN_WINDOW_MS = 200.0
 STAGE_SILENCE_MAX_OBSERVATION_GAP_MS = 100.0
+PCM_DISCONTINUITY_CORRELATION_WINDOW_MS = 100.0
 ASSISTANT_OUTPUT_DEAD_AIR_MIN_OVERLAP_MS = 200.0
 ASSISTANT_PLAYBACK_UNDERRUN_MIN_GAP_MS = 200.0
 
@@ -2904,6 +2905,74 @@ def _typed_timeline_incidents(
         item.stage: item for item in _stage_signal_evidence(run)
     }
     incidents: list[TimelineIncident] = []
+    correlation_names = {
+        "playback_queue_cleared",
+        "barge_in_completed",
+        "provider_interrupt_requested",
+        "provider_interrupted",
+    }
+    for event in run.timeline_events:
+        if event.name != "stage.pcm_discontinuity_detected":
+            continue
+        nearby = sorted(
+            (
+                candidate
+                for candidate in run.timeline_events
+                if candidate.name in correlation_names
+                and abs((candidate.ts - event.ts).total_seconds() * 1000.0)
+                <= PCM_DISCONTINUITY_CORRELATION_WINDOW_MS
+            ),
+            key=lambda candidate: (
+                abs((candidate.ts - event.ts).total_seconds()),
+                candidate.event_id,
+            ),
+        )
+        magnitude = _numeric_attribute(event.attributes, "magnitude") or 0.0
+        media_time_ms = (
+            _numeric_attribute(event.attributes, "media_time_ms") or 0.0
+        )
+        wall_time_ms = max(
+            0.0,
+            _relative_seconds(event.ts, run.started_at) * 1000.0,
+        )
+        evidence_refs = []
+        artifact_id = artifact_by_stage.get(event.stage)
+        if artifact_id is not None:
+            evidence_refs.append(artifact_id)
+        evidence_refs.extend(
+            [event.event_id, *(candidate.event_id for candidate in nearby)]
+        )
+        incidents.append(
+            TimelineIncident(
+                incident_id=f"pcm-discontinuity:{event.event_id}",
+                rule_id="pcm16_adjacent_delta_v1",
+                category="pipeline",
+                severity="warning",
+                title=(
+                    f"PCM discontinuity suspected at "
+                    f"{event.stage or 'unknown stage'}"
+                ),
+                summary=(
+                    f"Adjacent PCM samples differed by {magnitude:.3g} full "
+                    f"scale at media time {media_time_ms:.3f} ms"
+                ),
+                start_ms=wall_time_ms,
+                end_ms=wall_time_ms,
+                confidence="medium" if nearby else "low",
+                stage=event.stage,
+                observed={
+                    **event.attributes,
+                    "temporally_correlated_event_count": len(nearby),
+                    "remote_playout_observed": False,
+                },
+                expected={
+                    "magnitude_below": event.attributes.get("threshold", 0.25),
+                    "audibility": "not proven by this detector",
+                    "remote_playout": "not observed",
+                },
+                evidence_refs=evidence_refs,
+            )
+        )
     failure_index = 0
     for verification_index, verification in enumerate(run.verifications):
         if verification.passed:
