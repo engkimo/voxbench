@@ -515,15 +515,6 @@ class VoxBenchObserver:
         sample_count = len(output_pcm_s16le) // 2
         frame_count = sample_count / channels
         chunk_duration_ms = frame_count / sample_rate_hz * 1000.0
-        prior = self._stage_pcm_state.get(stage)
-        same_format = (
-            prior is not None and prior[:2] == (sample_rate_hz, channels)
-        )
-        discontinuity = detect_pcm_s16le_discontinuity(
-            output_pcm_s16le,
-            channels=channels,
-            previous_samples=prior[2] if same_format and prior[2] else None,
-        )
         metrics = [
             MetricPoint(stage=stage, name="input_rms", value=input_rms, ts=observed_at),
             MetricPoint(stage=stage, name="output_rms", value=output_rms, ts=observed_at),
@@ -569,6 +560,15 @@ class VoxBenchObserver:
             )
         with self._lock:
             self._metrics.extend(metrics)
+            prior = self._stage_pcm_state.get(stage)
+            same_format = (
+                prior is not None and prior[:2] == (sample_rate_hz, channels)
+            )
+            discontinuity = detect_pcm_s16le_discontinuity(
+                output_pcm_s16le,
+                channels=channels,
+                previous_samples=prior[2] if same_format and prior[2] else None,
+            )
             media_frame_offset = prior[3] if same_format else 0
             last_incident_ms = prior[4] if same_format else None
             if discontinuity is not None:
