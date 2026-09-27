@@ -18,8 +18,14 @@ from voxbench.control_plane.job_queue import (
     PostgresRunJobQueue,
     _claim_statement,
 )
-from voxbench.control_plane.run_api import PostgresRunRepository, StoredRun
+from voxbench.control_plane.run_api import (
+    PostgresRunRepository,
+    StoredRun,
+    _service_event_artifact,
+)
 from voxbench.engine_harness.models import SpanArtifact, TimelineEventArtifact
+from voxbench.observability import ServiceEvent
+from voxbench.registry.service import RegistryService
 
 TEST_POSTGRES_URL_ENV = "VOXBENCH_TEST_POSTGRES_URL"
 
@@ -217,6 +223,106 @@ def test_postgres_round_trips_rtp_packet_gap_evidence(
         "rtp-capture-health:0",
     ]
     assert incident.direction == "received"
+
+
+def test_postgres_restart_reconstructs_cascade_causal_analysis(
+    postgres_runtime: PostgresRuntime,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    resolved = RegistryService.from_files(
+        config_paths=[root / "examples/v2/configs/cascade.json"],
+        manifest_paths=(root / "examples/v2/manifests").glob("*.json"),
+    ).resolve_config("example-cascade")
+    base = datetime.now(UTC)
+    run = StoredRun(
+        run_id=str(uuid4()),
+        config_hash=resolved.hash,
+        call_id=None,
+        conversation_id="",
+        provider="cascade",
+        engine="example-telephony",
+        status="complete",
+        started_at=base - timedelta(seconds=1),
+        ended_at=base + timedelta(seconds=1),
+        resolved_config=resolved.resolved,
+        recordings=[],
+        spans=[],
+        metrics=[],
+    )
+
+    def observed(
+        kind: str,
+        component_id: str,
+        role: str,
+        alias: str,
+        offset_ms: int,
+        **relations,
+    ) -> TimelineEventArtifact:
+        return _service_event_artifact(
+            ServiceEvent(
+                collector_alias="postgres-cascade",
+                event_alias=alias,
+                kind=kind,
+                component_id=component_id,
+                role=role,
+                ts=base + timedelta(milliseconds=offset_ms),
+                clock_domain="application-monotonic",
+                alignment_uncertainty_ms=1,
+                **relations,
+            )
+        )
+
+    run.timeline_events = [
+        observed(
+            "turn.speech_ended", "application", "coordinator", "speech-end", 0,
+            turn_alias="turn", request_alias="stt",
+        ),
+        observed(
+            "stt.final_emitted", "stt-main", "stt", "stt-final", 20,
+            session_alias="session", request_alias="stt",
+        ),
+        observed(
+            "turn.committed", "application", "coordinator", "turn", 30,
+            turn_alias="turn", parent_request_alias="stt",
+        ),
+        observed(
+            "llm.request_started", "llm-main", "llm", "llm-start", 40,
+            turn_alias="turn", request_alias="llm", parent_request_alias="stt",
+            response_alias="response",
+        ),
+        observed(
+            "llm.first_answer_text", "llm-main", "llm", "llm-answer", 70,
+            turn_alias="turn", request_alias="llm", response_alias="response",
+        ),
+        observed(
+            "aggregation.segment_ready", "aggregation-main", "aggregation", "ready", 80,
+            request_alias="aggregation", parent_request_alias="llm",
+            response_alias="response", segment_alias="segment",
+        ),
+        observed(
+            "tts.request_started", "tts-main", "tts", "tts-start", 90,
+            request_alias="tts", parent_request_alias="aggregation",
+            response_alias="response", segment_alias="segment",
+        ),
+        observed(
+            "tts.first_pcm", "tts-main", "tts", "tts-pcm", 110,
+            request_alias="tts", response_alias="response", segment_alias="segment",
+        ),
+        observed(
+            "playback.write_started", "output-resampler", "playback", "write", 130,
+            parent_request_alias="tts", response_alias="response", segment_alias="segment",
+        ),
+    ]
+    expected = run.to_timeline().lanes.turns
+    postgres_runtime.repository.save(run)
+
+    restored = PostgresRunRepository(postgres_runtime.sessions).get(run.run_id)
+    assert restored is not None
+    assert restored.to_timeline().lanes.turns == expected
+    assert restored.to_timeline().ai_mode == "cascade"
+    assert [item.role for item in restored.to_timeline().ai_components] == [
+        "stt", "llm", "aggregation", "tts",
+    ]
 
 
 def test_postgres_skip_locked_claims_next_job_without_waiting(

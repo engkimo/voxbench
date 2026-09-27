@@ -1,0 +1,437 @@
+{
+  "$defs": {
+    "AudioFormat": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "exclusiveMinimum": 0,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "encoding": {
+          "enum": [
+            "pcm16",
+            "pcm24",
+            "pcm32",
+            "float32"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "rate": {
+          "exclusiveMinimum": 0,
+          "title": "Rate",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "encoding",
+        "rate",
+        "channels"
+      ],
+      "title": "AudioFormat",
+      "type": "object"
+    },
+    "AudioIoContract": {
+      "additionalProperties": false,
+      "properties": {
+        "accepts": {
+          "$ref": "#/$defs/AudioFormat"
+        },
+        "mode": {
+          "enum": [
+            "passthrough",
+            "rate_changing",
+            "format_changing"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "produces": {
+          "$ref": "#/$defs/AudioFormat"
+        }
+      },
+      "required": [
+        "mode",
+        "accepts",
+        "produces"
+      ],
+      "title": "AudioIoContract",
+      "type": "object"
+    },
+    "CancellationCaps": {
+      "additionalProperties": false,
+      "properties": {
+        "conversation_truncation": {
+          "default": false,
+          "title": "Conversation Truncation",
+          "type": "boolean"
+        },
+        "request": {
+          "default": false,
+          "title": "Request",
+          "type": "boolean"
+        },
+        "terminal_ack": {
+          "default": false,
+          "title": "Terminal Ack",
+          "type": "boolean"
+        },
+        "transport_abort": {
+          "default": false,
+          "title": "Transport Abort",
+          "type": "boolean"
+        }
+      },
+      "title": "CancellationCaps",
+      "type": "object"
+    },
+    "EngineCaps": {
+      "additionalProperties": false,
+      "properties": {
+        "authorities": {
+          "items": {
+            "enum": [
+              "speech_detector",
+              "end_of_turn",
+              "interruption"
+            ],
+            "type": "string"
+          },
+          "title": "Authorities",
+          "type": "array"
+        },
+        "decoded_input": {
+          "$ref": "#/$defs/AudioFormat"
+        },
+        "decoded_output": {
+          "$ref": "#/$defs/AudioFormat"
+        },
+        "supported_codecs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Supported Codecs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "supported_codecs",
+        "decoded_input",
+        "decoded_output"
+      ],
+      "title": "EngineCaps",
+      "type": "object"
+    },
+    "LifecycleCaps": {
+      "additionalProperties": false,
+      "properties": {
+        "final_output": {
+          "default": false,
+          "title": "Final Output",
+          "type": "boolean"
+        },
+        "partial_output": {
+          "default": false,
+          "title": "Partial Output",
+          "type": "boolean"
+        },
+        "response_boundaries": {
+          "default": false,
+          "title": "Response Boundaries",
+          "type": "boolean"
+        },
+        "usage": {
+          "default": false,
+          "title": "Usage",
+          "type": "boolean"
+        }
+      },
+      "title": "LifecycleCaps",
+      "type": "object"
+    },
+    "OverridePermission": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "float",
+            "boolean",
+            "object",
+            "array"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "type"
+      ],
+      "title": "OverridePermission",
+      "type": "object"
+    },
+    "ServiceCaps": {
+      "additionalProperties": false,
+      "properties": {
+        "audio_inputs": {
+          "items": {
+            "$ref": "#/$defs/AudioFormat"
+          },
+          "title": "Audio Inputs",
+          "type": "array"
+        },
+        "audio_outputs": {
+          "items": {
+            "$ref": "#/$defs/AudioFormat"
+          },
+          "title": "Audio Outputs",
+          "type": "array"
+        },
+        "authorities": {
+          "items": {
+            "enum": [
+              "speech_detector",
+              "end_of_turn",
+              "interruption"
+            ],
+            "type": "string"
+          },
+          "title": "Authorities",
+          "type": "array"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/CancellationCaps"
+        },
+        "input_modality": {
+          "enum": [
+            "audio",
+            "text"
+          ],
+          "title": "Input Modality",
+          "type": "string"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/LifecycleCaps"
+        },
+        "model_selection": {
+          "default": "explicit",
+          "enum": [
+            "explicit",
+            "deployment_pinned"
+          ],
+          "title": "Model Selection",
+          "type": "string"
+        },
+        "output_modality": {
+          "enum": [
+            "audio",
+            "text"
+          ],
+          "title": "Output Modality",
+          "type": "string"
+        },
+        "roles": {
+          "items": {
+            "enum": [
+              "stt",
+              "llm",
+              "tts",
+              "realtime"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Roles",
+          "type": "array"
+        },
+        "supported_models": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Supported Models",
+          "type": "array"
+        }
+      },
+      "required": [
+        "roles",
+        "input_modality",
+        "output_modality"
+      ],
+      "title": "ServiceCaps",
+      "type": "object"
+    },
+    "TextIoContract": {
+      "additionalProperties": false,
+      "properties": {
+        "input_modality": {
+          "const": "text",
+          "title": "Input Modality",
+          "type": "string"
+        },
+        "output_modality": {
+          "const": "text",
+          "title": "Output Modality",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_modality",
+        "output_modality"
+      ],
+      "title": "TextIoContract",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "allowed_overrides": {
+      "items": {
+        "$ref": "#/$defs/OverridePermission"
+      },
+      "title": "Allowed Overrides",
+      "type": "array"
+    },
+    "apiVersion": {
+      "const": "voxbench/v2",
+      "title": "Apiversion",
+      "type": "string"
+    },
+    "authorities": {
+      "items": {
+        "enum": [
+          "speech_detector",
+          "end_of_turn",
+          "interruption"
+        ],
+        "type": "string"
+      },
+      "title": "Authorities",
+      "type": "array"
+    },
+    "engine_caps": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EngineCaps"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "invariants_applicable": {
+      "items": {
+        "enum": [
+          "duration_preserving",
+          "level_preserving",
+          "isochronous"
+        ],
+        "type": "string"
+      },
+      "title": "Invariants Applicable",
+      "type": "array"
+    },
+    "invariants_enforced": {
+      "items": {
+        "enum": [
+          "duration_preserving",
+          "level_preserving",
+          "isochronous"
+        ],
+        "type": "string"
+      },
+      "title": "Invariants Enforced",
+      "type": "array"
+    },
+    "io": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AudioIoContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "kind": {
+      "enum": [
+        "engine",
+        "provider",
+        "processor"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "lossy_expected": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Lossy Expected",
+      "type": "array"
+    },
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "param_schema": {
+      "additionalProperties": true,
+      "title": "Param Schema",
+      "type": "object"
+    },
+    "requires_host_capability": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Requires Host Capability",
+      "type": "array"
+    },
+    "service_caps": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ServiceCaps"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "text_io": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TextIoContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "version": {
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "name",
+    "version"
+  ],
+  "title": "CapabilityManifestV2",
+  "type": "object"
+}

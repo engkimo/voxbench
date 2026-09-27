@@ -12,6 +12,7 @@ from voxbench.engine_harness.models import HarnessResult, MetricArtifact
 from voxbench.engine_harness.plan import build_stage_plan
 from voxbench.engine_harness.storage import RecordingSink
 from voxbench.engine_harness.telemetry import HarnessTracer, span_attrs
+from voxbench.registry.config_views import require_v1_workflow
 
 
 class EngineHarness:
@@ -33,6 +34,7 @@ class EngineHarness:
         resolved_config: dict[str, object],
         config_hash: str,
     ) -> HarnessResult:
+        require_v1_workflow(resolved_config, operation="legacy harness execution")
         conversation_id = str(uuid4())
         recordings = []
         metrics = []

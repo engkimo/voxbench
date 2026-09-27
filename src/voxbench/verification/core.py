@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact
+from voxbench.registry.config_views import require_v1_workflow
 
 SUPPORTED_INVARIANTS = {"duration_preserving", "level_preserving", "isochronous"}
 DEFAULT_DURATION_TOLERANCE_RATIO = 0.02
@@ -49,6 +50,7 @@ def verify_recordings(
 ) -> list[VerificationResult]:
     """Verify declared signal invariants across adjacent stage recordings."""
 
+    require_v1_workflow(resolved_config, operation="legacy recording verification")
     by_stage = {recording.stage: recording for recording in recordings}
     metrics_by_stage = _metrics_by_stage(metrics or [])
     previous: RecordingArtifact | None = None

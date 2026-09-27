@@ -1,0 +1,26 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "engine",
+  "name": "example-telephony",
+  "version": "1.0.0",
+  "param_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "engine_caps": {
+    "supported_codecs": [
+      "mulaw",
+      "pcm16"
+    ],
+    "decoded_input": {
+      "encoding": "pcm16",
+      "rate": 8000,
+      "channels": 1
+    },
+    "decoded_output": {
+      "encoding": "pcm16",
+      "rate": 8000,
+      "channels": 1
+    }
+  }
+}

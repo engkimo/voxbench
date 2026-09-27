@@ -1,0 +1,70 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "VoiceConfig",
+  "meta": {
+    "name": "example-realtime",
+    "version": "1.0.0"
+  },
+  "spec": {
+    "engine": {
+      "kind": "example-telephony",
+      "manifest_version": "1.0.0",
+      "params": {}
+    },
+    "transport": {
+      "codec": "mulaw",
+      "ptime_ms": 20
+    },
+    "media": {
+      "input_pipeline": [
+        {
+          "id": "input-resampler",
+          "type": "resampler",
+          "plugin": "example-input-resampler",
+          "manifest_version": "1.0.0",
+          "params": {},
+          "host_capabilities": [
+            "cadence_pacing"
+          ]
+        }
+      ],
+      "output_pipeline": [
+        {
+          "id": "output-resampler",
+          "type": "resampler",
+          "plugin": "example-output-resampler",
+          "manifest_version": "1.0.0",
+          "params": {},
+          "host_capabilities": [
+            "cadence_pacing"
+          ]
+        }
+      ]
+    },
+    "turn_taking": {
+      "speech_detector": "application",
+      "end_of_turn": "application",
+      "interruption": "application"
+    },
+    "ai": {
+      "mode": "realtime",
+      "realtime": {
+        "id": "realtime-main",
+        "plugin": "example-realtime",
+        "manifest_version": "1.0.0",
+        "model": "pinned-realtime-model",
+        "params": {},
+        "input_audio": {
+          "encoding": "pcm16",
+          "rate": 16000,
+          "channels": 1
+        },
+        "output_audio": {
+          "encoding": "pcm16",
+          "rate": 24000,
+          "channels": 1
+        }
+      }
+    }
+  }
+}

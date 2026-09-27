@@ -1,5 +1,10 @@
 # Live Softphone Realtime Demo
 
+This guide describes the integrated realtime/loopback paths. Current feature
+and validation status is in [implementation-status.md](implementation-status.md).
+The separate STT → LLM → TTS path is a [design proposal](cascade-design.md),
+not an available option in the commands below.
+
 This demo is staged as small vertical slices while real SIP/RTP media is wired:
 
 ```text

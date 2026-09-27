@@ -92,7 +92,18 @@ from voxbench.engine_harness.storage import (
     RemoteRecordingUnavailableError,
 )
 from voxbench.live_demo.simulated_bridge import run_simulated_live_bridge
+from voxbench.observability.cascade_analysis import (
+    CascadeTurnAnalysis,
+    analyze_cascade_service_events,
+)
+from voxbench.observability.service_events import SERVICE_EVENT_KINDS, ServiceEvent
 from voxbench.realtime_providers import GeminiLiveProvider, OpenAIRealtimeProvider
+from voxbench.registry.config_views import (
+    ai_mode,
+    pipeline_chains,
+    require_v1_workflow,
+    safe_ai_components,
+)
 from voxbench.registry.errors import RegistryError
 from voxbench.registry.service import RegistryService
 from voxbench.verification import VerificationResult, verify_recordings
@@ -326,6 +337,14 @@ class TimelineMetricPoint(BaseModel):
     ts: float
     name: str
     value: float
+
+
+class AiComponentResponse(BaseModel):
+    role: str
+    component_id: str
+    plugin: str
+    manifest_version: str | None = None
+    model: str | None = None
 
 
 class TimelineViolation(BaseModel):
@@ -580,7 +599,19 @@ class TimelineEventObservationRequest(BaseModel):
     def validate_reference_fields(cls, value: str | None, info) -> str | None:
         if value is None:
             return None
-        return _validate_reference_text(value, info.field_name)
+        value = _validate_reference_text(value, info.field_name)
+        if info.field_name == "event_id" and value.startswith("service:"):
+            raise ValueError("service event IDs are reserved for service_events")
+        if info.field_name == "source" and value == "service_observation":
+            raise ValueError("service_observation source is reserved for service_events")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def reject_reserved_service_name(cls, value: str) -> str:
+        if value in SERVICE_EVENT_KINDS:
+            raise ValueError("reserved service event names must use service_events")
+        return value
 
     @field_validator("attributes")
     @classmethod
@@ -616,6 +647,7 @@ class ObservationBatchRequest(BaseModel):
         default_factory=list,
         max_length=128,
     )
+    service_events: list[ServiceEvent] = Field(default_factory=list, max_length=128)
 
     @model_validator(mode="after")
     def require_observation(self) -> "ObservationBatchRequest":
@@ -625,11 +657,17 @@ class ObservationBatchRequest(BaseModel):
             or self.sip_events
             or self.rtp_stats
             or self.timeline_events
+            or self.service_events
         ):
             raise ValueError("at least one observation is required")
         event_ids = [event.event_id for event in self.timeline_events]
         if len(event_ids) != len(set(event_ids)):
             raise ValueError("timeline event_id values must be unique within a batch")
+        if len(self.timeline_events) + len(self.service_events) > 128:
+            raise ValueError("timeline_events and service_events are limited to 128 combined")
+        service_ids = [event.normalized_event_id for event in self.service_events]
+        if len(service_ids) != len(set(service_ids)):
+            raise ValueError("service event collector/event aliases must be unique within a batch")
         return self
 
 
@@ -640,6 +678,7 @@ class ObservationBatchResponse(BaseModel):
     sip_event_count: int
     rtp_stat_count: int
     timeline_event_count: int
+    service_event_count: int = 0
     recording_count: int
 
 
@@ -696,7 +735,7 @@ class TimelineLanes(BaseModel):
     sip_ladder: list[TimelineSipEvent]
     rtp_quality: list[TimelineRtpStat]
     stages: list[TimelineStageLane]
-    turns: list[dict[str, Any]]
+    turns: list[CascadeTurnAnalysis]
     host: list[TimelineMetricPoint]
     recordings: list[TimelineRecording]
     events: list[TimelineTypedEvent]
@@ -710,6 +749,8 @@ class TimelineResponse(BaseModel):
     run_id: str
     t0: datetime
     config_hash: str
+    ai_mode: str
+    ai_components: list[AiComponentResponse]
     environment: RunEnvironmentMetadata
     readiness_checklist: list[ReadinessChecklistItem]
     readiness_summary: ReadinessSummaryResponse
@@ -723,6 +764,8 @@ class RunResponse(BaseModel):
     conversation_id: str
     provider: str
     engine: str
+    ai_mode: str
+    ai_components: list[AiComponentResponse]
     status: str
     failure_alias: str | None
     recordings: list[RecordingResponse]
@@ -739,6 +782,8 @@ class RunSummaryResponse(BaseModel):
     config_hash: str
     provider: str
     engine: str
+    ai_mode: str
+    ai_components: list[AiComponentResponse]
     status: str
     started_at: datetime
     ended_at: datetime | None
@@ -797,6 +842,8 @@ class LiveRunStatusResponse(BaseModel):
     failure_alias: str | None
     started_at: datetime
     ended_at: datetime | None
+    ai_mode: str
+    ai_components: list[AiComponentResponse]
     environment_profile: EnvironmentProfile
     server_alias: str | None
     integration_target_alias: str | None
@@ -842,6 +889,8 @@ class StoredRun:
             conversation_id=self.conversation_id,
             provider=self.provider,
             engine=self.engine,
+            ai_mode=_run_ai_mode(self.resolved_config),
+            ai_components=_run_ai_components(self.resolved_config),
             status=self.status,
             failure_alias=self.failure_alias,
             recordings=[RecordingResponse(**recording.__dict__) for recording in self.recordings],
@@ -863,6 +912,8 @@ class StoredRun:
             config_hash=self.config_hash,
             provider=self.provider,
             engine=self.engine,
+            ai_mode=_run_ai_mode(self.resolved_config),
+            ai_components=_run_ai_components(self.resolved_config),
             status=self.status,
             started_at=self.started_at,
             ended_at=self.ended_at,
@@ -886,6 +937,8 @@ class StoredRun:
             failure_alias=self.failure_alias,
             started_at=self.started_at,
             ended_at=self.ended_at,
+            ai_mode=_run_ai_mode(self.resolved_config),
+            ai_components=_run_ai_components(self.resolved_config),
             environment_profile=self.environment.environment_profile,
             server_alias=self.environment.server_alias,
             integration_target_alias=self.environment.integration_target_alias,
@@ -901,10 +954,7 @@ class StoredRun:
         )
 
     def to_timeline(self) -> TimelineResponse:
-        stage_names = [
-            stage["type"]
-            for stage in self.resolved_config["spec"]["media"]["pipeline"]
-        ]
+        stage_names = sorted(_configured_stage_names(self))
         metrics_by_stage = {
             stage: [
                 TimelineMetricPoint(
@@ -962,15 +1012,24 @@ class StoredRun:
             )
             for stat in self.rtp_stats
         ]
+        cascade_turns = (
+            analyze_cascade_service_events(self.timeline_events)
+            if _run_ai_mode(self.resolved_config) == "cascade"
+            else []
+        )
         typed_events = _typed_timeline_events(self)
-        typed_intervals = _typed_timeline_intervals(self)
+        typed_intervals = _typed_timeline_intervals(self, cascade_turns)
         typed_series = _typed_timeline_series(self)
         typed_artifacts = _typed_timeline_artifacts(self)
         typed_incidents = _typed_timeline_incidents(self, typed_artifacts)
+        typed_incidents.extend(_cascade_latency_incidents(self, cascade_turns))
+        typed_incidents.sort(key=lambda item: (item.start_ms, item.incident_id))
         return TimelineResponse(
             run_id=self.run_id,
             t0=self.started_at,
             config_hash=self.config_hash,
+            ai_mode=_run_ai_mode(self.resolved_config),
+            ai_components=_run_ai_components(self.resolved_config),
             environment=self.environment,
             readiness_checklist=self.readiness_checklist,
             readiness_summary=self.readiness_summary(),
@@ -985,7 +1044,7 @@ class StoredRun:
                     )
                     for stage in stage_names
                 ],
-                turns=[],
+                turns=cascade_turns,
                 host=host_metrics,
                 recordings=[
                     TimelineRecording(**recording.__dict__)
@@ -1874,9 +1933,7 @@ def _duration_contraction_evidence(
 
 
 def _pipeline_stage_names(run: StoredRun) -> list[str]:
-    return [
-        stage["type"] for stage in run.resolved_config["spec"]["media"]["pipeline"]
-    ]
+    return sorted(_configured_stage_names(run))
 
 
 def _plain_number(value: Any) -> float | None:
@@ -2515,7 +2572,100 @@ def _typed_timeline_events(run: StoredRun) -> list[TimelineTypedEvent]:
     return sorted(events, key=lambda event: (event.t_rel_ms, event.event_id))
 
 
-def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
+def _service_latency_slos(run: StoredRun) -> dict[str, dict[str, Any]]:
+    observability = run.resolved_config.get("spec", {}).get("observability", {})
+    contracts = observability.get("service_latency_slos", [])
+    if not isinstance(contracts, list):
+        return {}
+    return {
+        item["measurement"]: item
+        for item in contracts
+        if isinstance(item, dict)
+        and isinstance(item.get("measurement"), str)
+        and isinstance(item.get("id"), str)
+        and isinstance(item.get("max_ms"), int | float)
+        and not isinstance(item.get("max_ms"), bool)
+    }
+
+
+def _cascade_latency_incidents(
+    run: StoredRun,
+    turns: list[CascadeTurnAnalysis],
+) -> list[TimelineIncident]:
+    slos = _service_latency_slos(run)
+    if not slos:
+        return []
+    event_by_id = {event.event_id: event for event in run.timeline_events}
+    incidents: list[TimelineIncident] = []
+    for turn in turns:
+        for measurement in turn.measurements:
+            contract = slos.get(measurement.name)
+            if (
+                contract is None
+                or measurement.status != "observed"
+                or measurement.duration_ms is None
+                or measurement.duration_ms <= contract["max_ms"]
+                or measurement.start_event_ref is None
+                or measurement.end_event_ref is None
+            ):
+                continue
+            start_event = event_by_id.get(measurement.start_event_ref)
+            end_event = event_by_id.get(measurement.end_event_ref)
+            if start_event is None or end_event is None:
+                continue
+            incidents.append(
+                TimelineIncident(
+                    incident_id=f"cascade-latency:{contract['id']}:{measurement.measurement_id}",
+                    rule_id="cascade_latency_slo_v1",
+                    category=(
+                        "conversation"
+                        if measurement.name
+                        in {
+                            "stt_finalization_wait",
+                            "turn_coordination_wait",
+                            "end_to_end_local_response_wait",
+                        }
+                        else "provider"
+                    ),
+                    severity="warning",
+                    title=f"Cascade latency SLO exceeded: {measurement.name}",
+                    summary=(
+                        f"{measurement.duration_ms:g} ms exceeded configured "
+                        f"{contract['max_ms']:g} ms"
+                    ),
+                    start_ms=_relative_seconds(start_event.ts, run.started_at) * 1000,
+                    end_ms=_relative_seconds(end_event.ts, run.started_at) * 1000,
+                    confidence="high",
+                    stage=(
+                        measurement.component_ids[-1]
+                        if measurement.component_ids
+                        else None
+                    ),
+                    observed={
+                        "duration_ms": measurement.duration_ms,
+                        "definition": measurement.definition,
+                        "definition_version": measurement.definition_version,
+                        "clock_domain": measurement.clock_domain,
+                        "alignment_uncertainty_ms": (
+                            measurement.alignment_uncertainty_ms
+                        ),
+                        "scope": measurement.scope.model_dump(exclude_none=True),
+                        "remote_playout_observed": False,
+                    },
+                    expected={
+                        "service_latency_slo_id": contract["id"],
+                        "duration_ms_at_or_below": contract["max_ms"],
+                    },
+                    evidence_refs=measurement.evidence_refs,
+                )
+            )
+    return incidents
+
+
+def _typed_timeline_intervals(
+    run: StoredRun,
+    cascade_turns: list[CascadeTurnAnalysis] | None = None,
+) -> list[TimelineTypedInterval]:
     intervals: list[TimelineTypedInterval] = []
     origin_ns = int(run.started_at.timestamp() * 1_000_000_000)
     for index, span in enumerate(run.spans):
@@ -2536,6 +2686,69 @@ def _typed_timeline_intervals(run: StoredRun) -> list[TimelineTypedInterval]:
                 attributes={"duration_ms": end_ms - start_ms},
             )
         )
+    event_by_id = {event.event_id: event for event in run.timeline_events}
+    latency_slos = _service_latency_slos(run)
+    cascade_categories: dict[str, TimelineCategory] = {
+        "stt_finalization_wait": "conversation",
+        "turn_coordination_wait": "conversation",
+        "llm_dispatch_wait": "provider",
+        "llm_first_output_wait": "provider",
+        "llm_first_answer_text_wait": "provider",
+        "text_aggregation_wait": "pipeline",
+        "tts_dispatch_queue_wait": "provider",
+        "tts_first_audio_wait": "provider",
+        "output_playback_start_wait": "buffer",
+        "end_to_end_local_response_wait": "conversation",
+    }
+    for turn in cascade_turns or []:
+        for measurement in turn.measurements:
+            if (
+                measurement.status != "observed"
+                or measurement.start_event_ref is None
+                or measurement.end_event_ref is None
+            ):
+                continue
+            start_event = event_by_id.get(measurement.start_event_ref)
+            end_event = event_by_id.get(measurement.end_event_ref)
+            if start_event is None or end_event is None:
+                continue
+            intervals.append(
+                TimelineTypedInterval(
+                    interval_id=measurement.measurement_id,
+                    category=cascade_categories[measurement.name],
+                    name=f"cascade.{measurement.name}",
+                    start_ms=_relative_seconds(start_event.ts, run.started_at) * 1000,
+                    end_ms=_relative_seconds(end_event.ts, run.started_at) * 1000,
+                    clock_domain=measurement.clock_domain or start_event.clock_domain,
+                    alignment_uncertainty_ms=measurement.alignment_uncertainty_ms,
+                    stage=(measurement.component_ids[-1] if measurement.component_ids else None),
+                    source="cascade_causal_analysis_v1",
+                    correlation_alias=turn.turn_alias,
+                    attributes={
+                        "duration_ms": measurement.duration_ms,
+                        "definition": measurement.definition,
+                        "definition_version": measurement.definition_version,
+                        "evidence_refs": measurement.evidence_refs,
+                        "scope": measurement.scope.model_dump(exclude_none=True),
+                        "remote_playout_observed": False,
+                        "latency_threshold_status": (
+                            "not_configured"
+                            if measurement.name not in latency_slos
+                            else "exceeded"
+                            if measurement.duration_ms is not None
+                            and measurement.duration_ms
+                            > latency_slos[measurement.name]["max_ms"]
+                            else "within"
+                        ),
+                        "latency_slo_id": (
+                            latency_slos.get(measurement.name, {}).get("id")
+                        ),
+                        "latency_slo_max_ms": (
+                            latency_slos.get(measurement.name, {}).get("max_ms")
+                        ),
+                    },
+                )
+            )
     for item in _rtp_packet_discontinuity_evidence(run):
         intervals.append(
             TimelineTypedInterval(
@@ -4094,26 +4307,39 @@ def get_run_api_state(request: Request) -> RunApiState:
 RunApiStateDependency = Annotated[RunApiState, Depends(get_run_api_state)]
 
 
-def _resolve_run_request(request: RunCreateRequest):
+def _resolve_run_request(request: RunCreateRequest, *, allow_v2_observation: bool = False):
     registry = RegistryService()
     try:
         for manifest in request.manifests:
             registry.register_manifest(manifest)
         for config in request.configs:
             registry.register_config(config)
-        return registry.resolve_config(request.config_name)
+        resolved = registry.resolve_config(request.config_name)
+        if not allow_v2_observation:
+            require_v1_workflow(resolved.resolved, operation="run creation/execution")
+        return resolved
     except RegistryError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _create_running_run(request: RunCreateRequest, resolved: Any) -> StoredRun:
     run_id = str(uuid4())
+    mode = ai_mode(resolved.resolved)
+    provider = (
+        "cascade"
+        if mode == "cascade"
+        else (
+            resolved.resolved["spec"]["ai"]["provider"]
+            if resolved.resolved.get("apiVersion", "voxbench/v1") == "voxbench/v1"
+            else resolved.resolved["spec"]["ai"]["realtime"]["plugin"]
+        )
+    )
     return StoredRun(
         run_id=run_id,
         config_hash=resolved.hash,
         call_id=request.call_id,
         conversation_id="",
-        provider=resolved.resolved["spec"]["ai"]["provider"],
+        provider=provider,
         engine=resolved.resolved["spec"]["engine"]["kind"],
         status="running",
         started_at=datetime.now(UTC),
@@ -4371,11 +4597,169 @@ def _provider_readiness(request: LiveDemoRunRequest):
 
 
 def _configured_stage_names(stored: StoredRun) -> set[str]:
+    chains = pipeline_chains(stored.resolved_config)
+    legacy = stored.resolved_config.get("apiVersion", "voxbench/v1") == "voxbench/v1"
+    identity = "type" if legacy else "id"
     return {
-        stage["type"]
-        for stage in stored.resolved_config["spec"]["media"]["pipeline"]
-        if isinstance(stage, dict) and isinstance(stage.get("type"), str)
+        stage[identity]
+        for stages in chains.values()
+        for stage in stages
+        if isinstance(stage, dict) and isinstance(stage.get(identity), str)
     }
+
+
+def _run_ai_mode(config: dict[str, Any]) -> str:
+    ai = config.get("spec", {}).get("ai")
+    return ai_mode(config) if isinstance(ai, dict) else "realtime"
+
+
+def _run_ai_components(config: dict[str, Any]) -> list[dict[str, str]]:
+    ai = config.get("spec", {}).get("ai")
+    return safe_ai_components(config) if isinstance(ai, dict) else []
+
+
+MAX_TIMELINE_EVENTS_PER_RUN = 10_000
+
+
+def _service_component_roles(config: dict[str, Any]) -> dict[str, set[str]]:
+    if config.get("apiVersion", "voxbench/v1") == "voxbench/v1":
+        return {"ai": {"realtime"}, "application": {"coordinator"}}
+    ai = config["spec"]["ai"]
+    roles: dict[str, set[str]] = {"application": {"coordinator"}}
+    if ai["mode"] == "realtime":
+        roles[ai["realtime"]["id"]] = {"realtime"}
+    else:
+        for role in ("stt", "llm", "tts"):
+            roles[ai[role]["id"]] = {role}
+        roles[ai["text_aggregation"]["id"]] = {"aggregation"}
+    roles.setdefault("engine", set()).add("coordinator")
+    for stage in config["spec"]["media"]["output_pipeline"]:
+        roles.setdefault(stage["id"], set()).add("playback")
+    return roles
+
+
+def _validate_service_component(stored: StoredRun, event: ServiceEvent) -> None:
+    roles = _service_component_roles(stored.resolved_config)
+    if event.role not in roles.get(event.component_id, set()):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"component '{event.component_id}' is not configured for service role "
+                f"'{event.role}'"
+            ),
+        )
+    authority_name = (
+        "speech_detector"
+        if event.kind == "turn.speech_ended"
+        else "end_of_turn"
+        if event.kind == "turn.committed"
+        else None
+    )
+    if authority_name is not None:
+        authority = stored.resolved_config["spec"]["turn_taking"].get(authority_name)
+        if authority is not None and event.component_id != authority:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"component '{event.component_id}' is not the configured "
+                    f"{authority_name} authority"
+                ),
+            )
+
+
+def _service_event_artifact(event: ServiceEvent) -> TimelineEventArtifact:
+    relation_attributes = {
+        name: value
+        for name, value in {
+            "session_alias": event.session_alias,
+            "turn_alias": event.turn_alias,
+            "request_alias": event.request_alias,
+            "parent_request_alias": event.parent_request_alias,
+            "response_alias": event.response_alias,
+            "segment_alias": event.segment_alias,
+        }.items()
+        if value is not None
+    }
+    attributes: dict[str, Any] = {
+        "service_role": event.role,
+        "generation_epoch": event.generation_epoch,
+        **relation_attributes,
+        **event.attributes,
+    }
+    if event.unobserved_relations:
+        attributes["unobserved_relations"] = ",".join(event.unobserved_relations)
+    category = (
+        "pipeline"
+        if event.role == "aggregation"
+        else "buffer"
+        if event.role == "playback"
+        else "conversation"
+        if event.role == "coordinator"
+        else "provider"
+    )
+    correlation = (
+        event.request_alias
+        or event.turn_alias
+        or event.response_alias
+        or event.segment_alias
+        or event.session_alias
+    )
+    return TimelineEventArtifact(
+        event_id=event.normalized_event_id,
+        category=category,
+        name=event.kind,
+        ts=event.ts,
+        clock_domain=event.clock_domain,
+        alignment_uncertainty_ms=event.alignment_uncertainty_ms,
+        stage=event.component_id,
+        source="service_observation",
+        correlation_alias=correlation,
+        attributes=attributes,
+    )
+
+
+def _without_derived_service_coverage(event: TimelineEventArtifact) -> TimelineEventArtifact:
+    attributes = dict(event.attributes)
+    attributes.pop("unresolved_relations", None)
+    return TimelineEventArtifact(**{**event.__dict__, "attributes": attributes})
+
+
+def _refresh_service_coverage(events: list[TimelineEventArtifact]) -> None:
+    known_requests = {
+        event.attributes["request_alias"]
+        for event in events
+        if event.source == "service_observation"
+        and isinstance(event.attributes.get("request_alias"), str)
+    }
+    for index, event in enumerate(events):
+        if event.source != "service_observation":
+            continue
+        attributes = dict(event.attributes)
+        parent = attributes.get("parent_request_alias")
+        if isinstance(parent, str) and parent not in known_requests:
+            attributes["unresolved_relations"] = "parent_request"
+        else:
+            attributes.pop("unresolved_relations", None)
+        if len(attributes) > 16:
+            raise HTTPException(status_code=400, detail="normalized service attributes exceed 16")
+        events[index] = TimelineEventArtifact(**{**event.__dict__, "attributes": attributes})
+
+
+def _timeline_event_artifact(event: TimelineEventObservationRequest) -> TimelineEventArtifact:
+    return TimelineEventArtifact(
+        event_id=event.event_id,
+        category=event.category,
+        name=event.name,
+        ts=event.ts,
+        clock_domain=event.clock_domain,
+        alignment_uncertainty_ms=event.alignment_uncertainty_ms,
+        direction=event.direction,
+        stage=event.stage,
+        stream_alias=event.stream_alias,
+        source=event.source,
+        correlation_alias=event.correlation_alias,
+        attributes=event.attributes,
+    )
 
 
 def _decode_audio_chunk(chunk: AudioChunkObservationRequest) -> bytes:
@@ -4600,7 +4984,7 @@ def create_runs_router() -> APIRouter:
         request: RunCreateRequest,
         api_state: RunApiStateDependency,
     ) -> RunResponse:
-        resolved = _resolve_run_request(request)
+        resolved = _resolve_run_request(request, allow_v2_observation=True)
         stored = _create_running_run(request, resolved)
         stored.conversation_id = f"observed-{stored.run_id}"
         api_state.repository.save(stored)
@@ -4734,6 +5118,51 @@ def create_runs_router() -> APIRouter:
                 detail=f"run '{request.run_id}' is not accepting observations",
             )
 
+        if (
+            stored.resolved_config.get("apiVersion", "voxbench/v1") == "voxbench/v2"
+            and request.audio_chunks
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="v2 service observation does not support audio chunks until recording maps",
+            )
+
+        for event in request.service_events:
+            _validate_service_component(stored, event)
+
+        existing_by_id = {event.event_id: event for event in stored.timeline_events}
+        generic_candidates = [_timeline_event_artifact(event) for event in request.timeline_events]
+        service_candidates = [_service_event_artifact(event) for event in request.service_events]
+        new_events: list[TimelineEventArtifact] = []
+        for candidate in generic_candidates:
+            previous = existing_by_id.get(candidate.event_id)
+            if previous is not None and previous != candidate:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"timeline event '{candidate.event_id}' conflicts with stored payload",
+                )
+            if previous is None:
+                new_events.append(candidate)
+                existing_by_id[candidate.event_id] = candidate
+        for candidate in service_candidates:
+            previous = existing_by_id.get(candidate.event_id)
+            if previous is not None and (
+                _without_derived_service_coverage(previous)
+                != _without_derived_service_coverage(candidate)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"service event '{candidate.event_id}' conflicts with stored payload",
+                )
+            if previous is None:
+                new_events.append(candidate)
+                existing_by_id[candidate.event_id] = candidate
+        if len(stored.timeline_events) + len(new_events) > MAX_TIMELINE_EVENTS_PER_RUN:
+            raise HTTPException(
+                status_code=429,
+                detail=f"run observation limit of {MAX_TIMELINE_EVENTS_PER_RUN} events exceeded",
+            )
+
         configured_stages = _configured_stage_names(stored)
         referenced_stages = {
             metric.stage for metric in request.metrics if metric.stage is not None
@@ -4808,25 +5237,8 @@ def create_runs_router() -> APIRouter:
             )
             for stat in request.rtp_stats
         )
-        existing_event_ids = {event.event_id for event in stored.timeline_events}
-        stored.timeline_events.extend(
-            TimelineEventArtifact(
-                event_id=event.event_id,
-                category=event.category,
-                name=event.name,
-                ts=event.ts,
-                clock_domain=event.clock_domain,
-                alignment_uncertainty_ms=event.alignment_uncertainty_ms,
-                direction=event.direction,
-                stage=event.stage,
-                stream_alias=event.stream_alias,
-                source=event.source,
-                correlation_alias=event.correlation_alias,
-                attributes=event.attributes,
-            )
-            for event in request.timeline_events
-            if event.event_id not in existing_event_ids
-        )
+        stored.timeline_events.extend(new_events)
+        _refresh_service_coverage(stored.timeline_events)
         api_state.repository.save(stored)
         return ObservationBatchResponse(
             run_id=stored.run_id,
@@ -4835,6 +5247,7 @@ def create_runs_router() -> APIRouter:
             sip_event_count=len(request.sip_events),
             rtp_stat_count=len(request.rtp_stats),
             timeline_event_count=len(request.timeline_events),
+            service_event_count=len(request.service_events),
             recording_count=len(stored.recordings),
         )
 
@@ -4851,10 +5264,14 @@ def create_runs_router() -> APIRouter:
         if stored.status != "running":
             raise HTTPException(status_code=409, detail=f"run '{run_id}' cannot be completed")
 
-        stored.verifications = verify_recordings(
-            resolved_config=stored.resolved_config,
-            recordings=stored.recordings,
-            metrics=stored.metrics,
+        stored.verifications = (
+            verify_recordings(
+                resolved_config=stored.resolved_config,
+                recordings=stored.recordings,
+                metrics=stored.metrics,
+            )
+            if stored.resolved_config.get("apiVersion", "voxbench/v1") == "voxbench/v1"
+            else []
         )
         stored.status = "completed"
         stored.ended_at = datetime.now(UTC)

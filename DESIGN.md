@@ -8,6 +8,12 @@
 
 このドキュメントは Claude Code / Codex への実装ハンドオフ用。**§1（存在理由）と §2（非目標）を最優先で守ること。** 特定スタック（Gemini / Asterisk / 8kHz μ-law）の値は実装のどこにもハードコードしない。それらは `/examples` 配下のサンプルプラグイン設定として“データ”でのみ存在する。
 
+> 文書の位置付け（2026-09-18）：本書は設計契約で、実装済み機能の一覧ではない。初期v1の対象・構成図・技術候補と、現在動く構成は区別する。現在の実装・local candidate・残件は [implementation status](docs/implementation-status.md)、製品判断は [MEMORY.md](MEMORY.md) を参照する。
+>
+> STT/LLM/TTSを独立モデルで組む拡張は [cascade設計案](docs/cascade-design.md) に定義する。`voxbench/v2`でrealtime/cascade、service role、入力/出力PCM chainを表し、既存v1の解決結果とhashを維持する提案である。cascadeは現在未実装。
+>
+> 2026-09-18追加要件：Pipecat、他framework/middleware、middlewareを使わない直接接続の全てを対象にする。音声方式（realtime/cascade）と実行方式は別軸。図中のPipeCat wrapperは任意のruntime adapter例で、core・observer・診断の必須dependencyではない。
+
 ---
 
 ## 1. 存在理由：劣化モデル（この製品の背骨）
@@ -30,17 +36,17 @@ AI音声エージェントは**ブラウザ（WebRTC）では動くのに、電�
 ## 2. スコープと非目標（ガードレール）
 
 ### 2.1 v1スコープ
-- エンジン：Asterisk（chan_websocket）1種。
-- プロバイダ：Gemini Live 1種。
+- 初期設計対象：エンジンAsterisk（chan_websocket）、プロバイダGemini Live。
+- 現在のコミット済み通話経路はAsterisk AudioSocketで、Gemini LiveとOpenAI Realtimeのadapterがある。chan_websocketを含む初期目標全体の完了を意味しない。
 - ただし**コードのどの経路もGemini/Asteriskを前提にしてはならない**。両者は必ずプラグイン＋manifest越しに扱う。コアは両者を知らない。
 
 ### 2.2 非目標（やらないこと）
-- **PipeCatを作り直さない。** オーケストレーションエンジンとして薄くラップするだけ。プロバイダ抽象（Gemini/OpenAI/Bedrock）はPipeCatに肩代わりさせる。
+- **PipeCatを作り直さない。** 通話アプリが選ぶframework/独自runtimeを維持し、VoxBenchは共通観測契約と薄い任意adapterを提供する。Pipecatや他middlewareの利用を強制せず、直接SDK/HTTP/WebSocket接続にも対応する。テスト通話の起動はframework非依存runtime/launcher契約へ分離する。
 - **Langfuse / ClickHouse / Redis をコアに同梱しない。** Postgresファースト。制御プレーン自身がOTLPシンクになる。ClickHouse/Timescaleは `--profile scale` のopt-inのみ。
 - **特定値をハードコードしない。** `8000`, `target_rms=3000`, `CLEAR_STREAM_AFTER_SECS`, `silence_duration_ms=600` 等は全て `/examples` のサンプルconfig/manifest内のデータ。コアやプラグイン実装本体に定数として書かない。
 - **プロバイダ固有ロジックをコアに入れない。** turn_taking所有権・対応codec・許可override等は全てmanifestで宣言。
 - **ブラウザストレージ（localStorage等）をUIで使わない。**
-- v1で**マルチテナント認証基盤・課金・RBACは作らない**（単一組織セルフホスト前提。後付け可能な構造にはしておく）。
+- v1で**マルチテナント認証基盤・課金は作らない**（単一組織セルフホスト前提）。初期のRBAC非対象方針はproduction診断の [OIDC/operator認可設計](docs/diagnostic-agent-design.md#111-operator-authentication-の推奨) で更新された。独自password管理は作らず、production診断にはrole/authorization hookを設ける。認可は現在未実装。
 
 ### 2.3 設計原則
 - コアスキーマは「封筒」と「拡張点の契約」だけを持つ。具体パラメータは全てプラグインのJSON Schemaに逃がす。

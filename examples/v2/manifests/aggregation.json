@@ -1,0 +1,14 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "processor",
+  "name": "example-sentence-aggregator",
+  "version": "1.0.0",
+  "param_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "text_io": {
+    "input_modality": "text",
+    "output_modality": "text"
+  }
+}

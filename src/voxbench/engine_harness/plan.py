@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from voxbench.engine_harness.models import StagePlan
+from voxbench.registry.config_views import require_v1_workflow
 
 
 def build_stage_plan(resolved_config: dict[str, Any]) -> list[StagePlan]:
+    require_v1_workflow(resolved_config, operation="legacy harness stage planning")
     stages = resolved_config["spec"]["media"]["pipeline"]
     return [
         StagePlan(
@@ -30,4 +32,3 @@ def _stage_format(stage: dict[str, Any]) -> dict[str, Any]:
         for key in ("encoding", "rate", "channels", "output_rate")
         if key in params
     }
-

@@ -18,6 +18,22 @@ The public boundary is `voxbench.observability`. It has no OpenAI, Gemini, Pipec
 or HTTP client package dependency. `HttpObservationTransport` uses the Python
 standard library.
 
+Current availability is recorded in [implementation-status.md](implementation-status.md).
+Native metadata-only observation of separately configured STT/LLM/TTS services
+is implemented as a local candidate in
+[cascade-observation-api.md](cascade-observation-api.md). Deterministic endpoint
+analysis is also a local candidate in [cascade-analysis.md](cascade-analysis.md).
+V2 observation-only runs establish native cascade config, service correlation
+and analysis, while execution and v2 recording mapping remain unsupported.
+
+Pipecat is optional. The observer and HTTP ingest can be instrumented from another
+framework or a custom application with no middleware. The current Pipecat helper
+is a thin construction boundary, not a required execution engine. Dedicated
+adapters and executable direct/Pipecat test projects are future work. Their target
+contract is the same metadata-only observation API and causal analysis, with a
+shared conformance suite and a no-middleware reference example. Non-Python
+applications can use the HTTP contract without a Python SDK.
+
 ## Lifecycle
 
 1. Start an observed run with the same resolved-config inputs used by normal

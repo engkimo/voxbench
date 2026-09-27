@@ -1,0 +1,48 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "provider",
+  "name": "example-realtime",
+  "version": "1.0.0",
+  "param_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "service_caps": {
+    "roles": [
+      "realtime"
+    ],
+    "input_modality": "audio",
+    "output_modality": "audio",
+    "lifecycle": {
+      "partial_output": true,
+      "final_output": true,
+      "response_boundaries": true
+    },
+    "cancellation": {
+      "request": true,
+      "terminal_ack": true
+    },
+    "audio_inputs": [
+      {
+        "encoding": "pcm16",
+        "rate": 16000,
+        "channels": 1
+      }
+    ],
+    "audio_outputs": [
+      {
+        "encoding": "pcm16",
+        "rate": 24000,
+        "channels": 1
+      }
+    ],
+    "authorities": [
+      "speech_detector",
+      "end_of_turn",
+      "interruption"
+    ],
+    "supported_models": [
+      "pinned-realtime-model"
+    ]
+  }
+}

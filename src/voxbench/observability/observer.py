@@ -14,6 +14,8 @@ from typing import Any, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from voxbench.observability.service_events import ServiceEvent
+
 SipDirection = Literal["in", "out"]
 RtpDirection = Literal["received", "sent"]
 PCM16_FULL_SCALE = 32768.0
@@ -351,6 +353,7 @@ class ObservationBatch:
     sip_events: tuple[SipEvent, ...] = ()
     rtp_stats: tuple[RtpStats, ...] = ()
     timeline_events: tuple[TimelineEvent, ...] = ()
+    service_events: tuple[ServiceEvent, ...] = ()
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -360,6 +363,7 @@ class ObservationBatch:
             "sip_events": [event.to_payload() for event in self.sip_events],
             "rtp_stats": [stats.to_payload() for stats in self.rtp_stats],
             "timeline_events": [event.to_payload() for event in self.timeline_events],
+            "service_events": [event.to_payload() for event in self.service_events],
         }
 
     @property
@@ -370,6 +374,7 @@ class ObservationBatch:
             + len(self.sip_events)
             + len(self.rtp_stats)
             + len(self.timeline_events)
+            + len(self.service_events)
         )
 
 
@@ -379,23 +384,37 @@ OBSERVATION_BATCH_LIMITS = {
     "sip_events": 64,
     "rtp_stats": 64,
     "timeline_events": 128,
+    "service_events": 128,
 }
 
 
 def _bounded_observation_batches(batch: ObservationBatch) -> tuple[ObservationBatch, ...]:
+    event_items = tuple(("timeline", item) for item in batch.timeline_events) + tuple(
+        ("service", item) for item in batch.service_events
+    )
     batch_count = max(
         1,
         *(
             (len(getattr(batch, field_name)) + limit - 1) // limit
             for field_name, limit in OBSERVATION_BATCH_LIMITS.items()
+            if field_name not in {"timeline_events", "service_events"}
         ),
+        (len(event_items) + 127) // 128,
     )
     batches: list[ObservationBatch] = []
     for index in range(batch_count):
-        values = {
+        values: dict[str, Any] = {
             field_name: getattr(batch, field_name)[index * limit : (index + 1) * limit]
             for field_name, limit in OBSERVATION_BATCH_LIMITS.items()
+            if field_name not in {"timeline_events", "service_events"}
         }
+        event_chunk = event_items[index * 128 : (index + 1) * 128]
+        values["timeline_events"] = tuple(
+            item for item_type, item in event_chunk if item_type == "timeline"
+        )
+        values["service_events"] = tuple(
+            item for item_type, item in event_chunk if item_type == "service"
+        )
         candidate = ObservationBatch(run_id=batch.run_id, **values)
         if candidate.item_count:
             batches.append(candidate)
@@ -413,6 +432,7 @@ def _merge_observation_batches(
         sip_events=tuple(item for batch in batches for item in batch.sip_events),
         rtp_stats=tuple(item for batch in batches for item in batch.rtp_stats),
         timeline_events=tuple(item for batch in batches for item in batch.timeline_events),
+        service_events=tuple(item for batch in batches for item in batch.service_events),
     )
 
 
@@ -470,14 +490,25 @@ class HttpObservationTransport:
 class VoxBenchObserver:
     """Collect audio and telemetry without coupling to a provider or media framework."""
 
-    def __init__(self, run_id: str, transport: ObservationTransport) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        transport: ObservationTransport,
+        *,
+        max_pending_items: int = 2048,
+    ) -> None:
+        if not 1 <= max_pending_items <= 100_000:
+            raise ValueError("max_pending_items must be between 1 and 100000")
         self.run_id = run_id
         self.transport = transport
+        self.max_pending_items = max_pending_items
+        self._observation_drop_count = 0
         self._metrics: list[MetricPoint] = []
         self._audio_chunks: list[AudioChunk] = []
         self._sip_events: list[SipEvent] = []
         self._rtp_stats: list[RtpStats] = []
         self._timeline_events: list[TimelineEvent] = []
+        self._service_events: list[ServiceEvent] = []
         self._rtp_packet_ordinal = 0
         self._rtp_capture_health_ordinal = 0
         self._discontinuity_ordinal = 0
@@ -559,7 +590,7 @@ class VoxBenchObserver:
                 )
             )
         with self._lock:
-            self._metrics.extend(metrics)
+            self._extend_pending(self._metrics, metrics)
             prior = self._stage_pcm_state.get(stage)
             same_format = (
                 prior is not None and prior[:2] == (sample_rate_hz, channels)
@@ -581,7 +612,8 @@ class VoxBenchObserver:
                 ):
                     event_ordinal = self._discontinuity_ordinal
                     self._discontinuity_ordinal += 1
-                    self._timeline_events.append(
+                    self._append_pending(
+                        self._timeline_events,
                         TimelineEvent(
                             event_id=f"pcm-discontinuity:{event_ordinal}",
                             category="pipeline",
@@ -628,14 +660,15 @@ class VoxBenchObserver:
                 last_incident_ms,
             )
             if record_output and output_pcm_s16le:
-                self._audio_chunks.append(
+                self._append_pending(
+                    self._audio_chunks,
                     AudioChunk(
                         stage=stage,
                         pcm_s16le=output_pcm_s16le,
                         sample_rate_hz=sample_rate_hz,
                         channels=channels,
                         ts=observed_at,
-                    )
+                    ),
                 )
 
     def observe_metric(
@@ -647,17 +680,18 @@ class VoxBenchObserver:
         ts: datetime | None = None,
     ) -> None:
         with self._lock:
-            self._metrics.append(
+            self._append_pending(
+                self._metrics,
                 MetricPoint(stage=stage, name=name, value=float(value), ts=ts or _utc_now())
             )
 
     def observe_sip_event(self, event: SipEvent) -> None:
         with self._lock:
-            self._sip_events.append(event)
+            self._append_pending(self._sip_events, event)
 
     def observe_rtp_stats(self, stats: RtpStats) -> None:
         with self._lock:
-            self._rtp_stats.append(stats)
+            self._append_pending(self._rtp_stats, stats)
 
     def observe_rtp_packet(self, packet: RtpPacket) -> None:
         """Record only safe RTP header/cadence evidence, never packet payload."""
@@ -665,7 +699,8 @@ class VoxBenchObserver:
         with self._lock:
             packet_ordinal = self._rtp_packet_ordinal
             self._rtp_packet_ordinal += 1
-            self._timeline_events.append(
+            self._append_pending(
+                self._timeline_events,
                 TimelineEvent(
                     event_id=f"rtp-packet:{packet_ordinal}",
                     category="transport",
@@ -684,7 +719,7 @@ class VoxBenchObserver:
                         "marker": packet.marker,
                     },
                     ts=packet.ts,
-                )
+                ),
             )
 
     def observe_rtp_capture_health(
@@ -696,7 +731,8 @@ class VoxBenchObserver:
         with self._lock:
             event_ordinal = self._rtp_capture_health_ordinal
             self._rtp_capture_health_ordinal += 1
-            self._timeline_events.append(
+            self._append_pending(
+                self._timeline_events,
                 TimelineEvent(
                     event_id=f"rtp-capture-health:{event_ordinal}",
                     category="transport",
@@ -718,12 +754,21 @@ class VoxBenchObserver:
                         "window_duration_ms": snapshot.window_duration_ms,
                     },
                     ts=snapshot.ts,
-                )
+                ),
             )
 
     def observe_timeline_event(self, event: TimelineEvent) -> None:
         with self._lock:
-            self._timeline_events.append(event)
+            self._append_pending(self._timeline_events, event)
+
+    def observe_service_event(self, event: ServiceEvent) -> None:
+        """Queue a safe typed service boundary without retaining conversation content."""
+
+        validated = ServiceEvent.model_validate(
+            event.model_dump(mode="python", exclude_none=True)
+        )
+        with self._lock:
+            self._append_pending(self._service_events, validated)
 
     def flush(self) -> int:
         """Send pending observations and restore them if the transport fails."""
@@ -736,12 +781,14 @@ class VoxBenchObserver:
                 sip_events=tuple(self._sip_events),
                 rtp_stats=tuple(self._rtp_stats),
                 timeline_events=tuple(self._timeline_events),
+                service_events=tuple(self._service_events),
             )
             self._metrics.clear()
             self._audio_chunks.clear()
             self._sip_events.clear()
             self._rtp_stats.clear()
             self._timeline_events.clear()
+            self._service_events.clear()
         if batch.item_count == 0:
             return 0
         batches = _bounded_observation_batches(batch)
@@ -752,11 +799,15 @@ class VoxBenchObserver:
             except Exception:
                 unsent = _merge_observation_batches(self.run_id, batches[index:])
                 with self._lock:
+                    self._trim_pending_to_size(
+                        max(0, self.max_pending_items - unsent.item_count)
+                    )
                     self._metrics[0:0] = unsent.metrics
                     self._audio_chunks[0:0] = unsent.audio_chunks
                     self._sip_events[0:0] = unsent.sip_events
                     self._rtp_stats[0:0] = unsent.rtp_stats
                     self._timeline_events[0:0] = unsent.timeline_events
+                    self._service_events[0:0] = unsent.service_events
                 raise
             sent_count += bounded_batch.item_count
         return sent_count
@@ -770,7 +821,56 @@ class VoxBenchObserver:
                 + len(self._sip_events)
                 + len(self._rtp_stats)
                 + len(self._timeline_events)
+                + len(self._service_events)
             )
+
+    @property
+    def observation_drop_count(self) -> int:
+        with self._lock:
+            return self._observation_drop_count
+
+    def _pending_count_unlocked(self) -> int:
+        return (
+            len(self._metrics)
+            + len(self._audio_chunks)
+            + len(self._sip_events)
+            + len(self._rtp_stats)
+            + len(self._timeline_events)
+            + len(self._service_events)
+        )
+
+    def _append_pending(self, target: list[Any], item: Any) -> None:
+        if self._pending_count_unlocked() >= self.max_pending_items:
+            self._observation_drop_count += 1
+            return
+        target.append(item)
+
+    def _extend_pending(self, target: list[Any], items: list[Any]) -> None:
+        remaining = max(0, self.max_pending_items - self._pending_count_unlocked())
+        target.extend(items[:remaining])
+        self._observation_drop_count += len(items) - remaining
+
+    def _trim_pending_to_size(self, maximum: int) -> None:
+        overflow = self._pending_count_unlocked() - maximum
+        if overflow <= 0:
+            return
+        # A send failure must restore already-admitted items. Drop newer arrivals
+        # from list tails first so the retry set stays bounded.
+        for target in (
+            self._service_events,
+            self._timeline_events,
+            self._rtp_stats,
+            self._sip_events,
+            self._audio_chunks,
+            self._metrics,
+        ):
+            removed = min(overflow, len(target))
+            if removed:
+                del target[-removed:]
+                self._observation_drop_count += removed
+                overflow -= removed
+            if overflow == 0:
+                break
 
 
 class RtpPacketTapAdapter:
