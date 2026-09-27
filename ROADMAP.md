@@ -3,6 +3,10 @@
 This roadmap describes direction, not delivery dates. Priorities may change as
 real call evidence and contributor feedback reveal better abstractions.
 
+Current status is maintained in [the implementation inventory](docs/implementation-status.md).
+Dated progress/memory entries are historical. Design proposals and local
+candidates are not automatically available in the committed baseline.
+
 ## Product north star
 
 Align every signal in an AI voice call on one timeline, then let an operator move
@@ -24,7 +28,51 @@ system knows.
 - Postgres run persistence and a leased, fenced async job queue.
 - A three-second synthetic demo requiring no provider account or Asterisk.
 
-See [PROGRESS.md](PROGRESS.md) for completed implementation slices.
+See [PROGRESS.md](PROGRESS.md) for historical implementation slices and the
+inventory for current availability and verification scope.
+
+## Now: stabilize the diagnostic UI candidate
+
+- Review and package typed UI-command resolution and local diagnostic SSE as a
+  complete, independent change, including currently untracked modules/tests.
+- Verify an isolated intended checkout and the browser evidence/acknowledgement path.
+- Keep the deterministic local adapter distinct from production model diagnosis.
+- Define session limits, durable events/jobs, cancellation/reconnection,
+  guided investigation and OIDC authorization as separate acceptance work.
+
+## Next: separate STT, LLM and TTS models
+
+C1 configuration/capability contracts, C2 metadata-only service observation and
+C3A deterministic causal latency analysis
+are implemented as local candidates: [current v2 contract](docs/cascade-config-v2.md)
+and [service observation API](docs/cascade-observation-api.md), plus the
+[causal analysis contract](docs/cascade-analysis.md). Recording maps, inspector
+support, adapters and execution remain planned.
+
+The next goal is a matched direct/Pipecat pair of deterministic fake Cascade
+projects. Both will emit the common contract so VoxBench can validate, tune and
+compare runtime behavior before real providers are selected.
+
+- Add versioned realtime/cascade configuration and role/modality capabilities
+  while preserving legacy config hashes.
+- Observe existing cascades with metadata-only service events and explicit
+  turn/request/response/TTS-segment correlation.
+- Separate STT finalization, turn coordination, LLM answer generation, text
+  aggregation, TTS first audio and local playback waits.
+- Preserve clock uncertainty, cancellation epochs and segment recording maps.
+- Add component model badges, service sublanes and comparable run evidence.
+- Follow observation support with optional framework-independent test-call execution.
+- Keep realtime/cascade topology independent of runtime choice. Support Pipecat,
+  other frameworks, and direct SDK/HTTP/WebSocket applications through the same
+  observation contract; add a shared conformance suite and framework-free example.
+- Use optional framework adapters and a runtime/application-launcher contract
+  for test calls, with no mandatory Pipecat package.
+
+Observation-first and framework-independent support are product decisions;
+contract details and the first provider/additional-framework combination remain
+proposed or unselected. See [the cascade investigation and design](docs/cascade-design.md).
+Published work items and dependencies are tracked in [the issue plan](docs/cascade-issue-plan.md)
+and [parent issue #15](https://github.com/engkimo/voxbench/issues/15).
 
 ## Now: make real-call diagnosis obvious
 
@@ -51,8 +99,8 @@ See [PROGRESS.md](PROGRESS.md) for completed implementation slices.
 
 ## Next: transport and packet proof
 
-- Add pcap and live RTP packet-tap adapters with explicit capture-health
-  accounting.
+- Add raw pcap import and wire the existing RTP packet-tap/capture-health adapter
+  to real deployment-specific receive paths and drop counters.
 - Preserve direction, clock-rate, extended sequence, arrival cadence, and
   capture-drop evidence without persisting packet payloads.
 - Add redacted SIP transaction and SDP-derived format metadata behind an

@@ -1,5 +1,54 @@
 # 進捗
 
+> 本書は日付ごとの履歴。各節の未実装リスト・進捗率は当時のsnapshotであり、現在の状態は [implementation status](docs/implementation-status.md) を参照する。
+
+## C3A: deterministic Cascade causal latency (2026-09-27)
+
+- #19をlocal candidateとして実装。保存済みmetadata-only service eventの明示的turn/request/parent/response/segment/epochだけからoperationを再構築する`cascade_analysis.py`を追加した。
+- STT finalization、turn coordination、LLM dispatch/first output/first answer、aggregation、TTS dispatch/first PCM、local playback、end-to-end local writeをendpoint evidence付きで分離した。multi-segment lifecycle durationを加算せず、最初のcausal playbackまでのcritical pathを構成する。
+- 欠測は`unobserved`、未校正clock domain間と負のendpoint順序は`indeterminate`。tool/reasoning outputはfirst spoken answerにせず、continuation/retryを別operationとしてparent chainを辿り、old epoch/response playbackを再利用しない。
+- run detail/recent/timeline/liveへparams・prompt・toolsを除外した`ai_mode`/`ai_components`を投影。明示的v2 latency SLOだけがwarning incidentを生成する。
+- 10件のfocused test、SQLite repository restart、opt-in実Postgres restart testを追加。`ae575b6`基準の公開用worktreeは444 passed / 5 skipped、Ruff成功。`git archive ef7deec`へC1–C3のみを加えUI/SSE candidateを除いたcheckoutも436 passed / 5 skipped、Ruff成功。5件の実Postgres testは接続未設定でskipした。
+- 次ゴールは、同じfake Cascade scenarioをmiddlewareなしdirect実装とPipecat実装の2 test projectで動かし、VoxBenchへ取り込んで検証・調整・比較評価すること。実provider選定とは分離し、Pipecatはoptional dependencyを維持する。
+
+## C2: metadata-only cascade service observation (2026-09-27)
+
+- #18をlocal candidateとして実装。v1/v2観測runへ、特定framework/provider SDKに依存しない閉じた`service_events` DTOとPython observer helperを追加した。
+- STT/turn/LLM/aggregation/TTS/realtime/playback/cancel/failure境界、collector event namespace、session/turn/request/parent/response/segment/generation epochを正規化して既存timeline storeへ永続化する。
+- component/role/turn authority、safe scalar field、timezone/clock uncertainty、同一payload retry、conflict、欠落parent、batch/queue/run上限を検証。generic eventによるreserved kind/source/IDの迂回を拒否する。
+- transcript/prompt/generated text/content hash/raw payload/URL/secret/provider ID/cross-run fieldを契約に持たない。STT finalとturn commit、TTS first PCMとlocal playback write、cancel requestedとacknowledgedを別の証拠として残す。
+- v2は`/runs/observed`とmetadata-only eventのみ。execution/audio recording、causal latency、UIは後続issue。commit/push/公開は未実施。
+- 最終検証：現状433 passed / 4 skipped、Ruff成功。`git archive ef7deec`へC1+C2のみを加え、UI/SSE candidateを除いたcheckoutも426 passed / 4 skipped、Ruff成功。既存dependencyを共有したsource completeness検証である。
+
+## C1: versioned realtime/cascade configuration (2026-09-18)
+
+- #17をlocal candidateとして実装。v1を変更せず、v2のRealtime/Cascade設定、役割・modality・音声形式、双方向PCM chain、一意ID、判断主体を検証する契約を追加した。
+- manifest版/digestとモデル選択を解決結果へ固定。同じmanifest identityの内容変更、cross-version/cross-mode overlay、不正params・IO・host要求・overrideを拒否する。
+- middleware不要のRealtime/Cascade設定例と版別JSON Schema、[契約ガイド](docs/cascade-config-v2.md)、78件の受入テストを追加。v1 base/overlayのcanonical JSON/hash、保存済みv1の読み戻しを検証した。
+- 最終検証：現状は408 passed / 4 skipped、Ruff成功。`git archive ef7deec`へC1だけを加えたcheckoutは401 passed / 4 skipped、Ruff成功。既存dependencyを共有し、独立したUI/SSE candidateや個人ファイルは後者に含めていない。
+- v2は設定解決のみ。run API・legacy音声処理で明示拒否し、観測・解析・録音mapping・UI・adapter・実通話の完了とは扱わない。commit/push/公開は未実施。
+
+## Framework-independent cascade decisions and issues (2026-09-18)
+
+- Pipecat以外のframeworkとmiddlewareを使わない直接実装にも対応する要件を、`MEMORY.md`とSerenaの合意事項memoryに記録した。Realtime/Cascadeとframeworkあり/なしを独立した軸として設計へ反映した。
+- [親issue #15](https://github.com/engkimo/voxbench/issues/15)と9件の作業issue（#16–#24）を`engkimo`で公開した。各issueに実装範囲・受入条件・依存関係を記載し、[issue計画](docs/cascade-issue-plan.md)へ一覧を保存した。
+- 直接実装の観測例と共通conformance、任意framework adapter、framework非依存の実行launcherを別issueへ分けた。追加frameworkと最初のprovider組合せは未選択で、機能実装は未着手。
+
+## Documentation consistency and cascade investigation (2026-09-18)
+
+- コミット基準`ef7deec`とUI command/local diagnostic SSE candidateを区別した実装inventoryを追加。必要な未追跡module/test/Web fileと安定化手順を明記した。
+- local candidateを含む現状を再検証：Python 3.14.3で330 passed / 4 skipped、Ruff、Web production build成功。Postgres実接続4件はskip、browser/実provider/公開CIは今回未検証。
+- `git archive ef7deec`にcandidateの12実装/testファイルだけを加えた一時checkoutでも同じchecksが成功。既存dependencyを共有したsource単位の検証で、個人ファイルや他の未追跡実装は含めていない。
+- 設計・README・memoryの現在状態への参照を揃え、古いtyped speech未実装記述と初期RBAC非対象方針を更新した。履歴の判断は現在判断へ書き換えない。
+- [cascade調査・設計案](docs/cascade-design.md)を追加。v2 config/manifest、独立STT/LLM/TTS、双方向PCM chain、typed service観測、明示相関、clock/録音mapping、キャンセル、UI、slice別受入条件を提案。
+- 今回は調査・計画・設計。cascade機能の実装、candidateのcommit/push/公開はしていない。
+
+## Diagnostic UI/SSE local candidate (2026-08-12–15; audited 2026-09-18)
+
+- 型付きUI command resolver/dispatcher、local deterministic session、finite ordinal SSE replay、idempotent acknowledgementがlocal candidateとして存在する。
+- production model調査、質問に応じた調査計画、session/event永続化、容量/TTL、long-running job/cancel、client自動再接続、guided sequence、OIDC認可は未実装。
+- この節は未コミットcandidateの機能記録で、コミット済み機能の一覧とは分ける。
+
 ## Library UX: RTP packet tap health and clock contract (2026-07-25)
 
 - public `RtpPacketTapAdapter`と`RtpCaptureHealthSnapshot`を追加。既存appのRTP receive境界からtransient

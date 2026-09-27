@@ -1,0 +1,29 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "provider",
+  "name": "example-llm",
+  "version": "1.0.0",
+  "param_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "service_caps": {
+    "roles": [
+      "llm"
+    ],
+    "input_modality": "text",
+    "output_modality": "text",
+    "lifecycle": {
+      "partial_output": true,
+      "final_output": true,
+      "response_boundaries": true
+    },
+    "cancellation": {
+      "request": true,
+      "terminal_ack": true
+    },
+    "supported_models": [
+      "pinned-llm-model"
+    ]
+  }
+}

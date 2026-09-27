@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from copy import deepcopy
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from jsonschema import SchemaError as JsonSchemaError
 from jsonschema import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError as PydanticValidationError
 
@@ -20,7 +22,9 @@ from voxbench.registry.errors import (
 from voxbench.registry.hashing import resolved_hash
 from voxbench.registry.merge import deep_merge
 from voxbench.registry.resolved import ResolvedConfig
+from voxbench.registry.v2 import resolve_v2
 from voxbench.schemas import CapabilityManifest, IoContract, PipelineStage, VoiceConfig
+from voxbench.schemas_v2 import CapabilityManifestV2, PipelineStageV2, VoiceConfigV2
 
 
 class RegistryService:
@@ -28,6 +32,7 @@ class RegistryService:
 
     def __init__(self) -> None:
         self._manifests: dict[tuple[str, str], CapabilityManifest] = {}
+        self._v2_manifests: dict[tuple[str, str, str], CapabilityManifestV2] = {}
         self._configs: dict[str, dict[str, Any]] = {}
 
     @classmethod
@@ -44,32 +49,56 @@ class RegistryService:
             service.register_config(load_json(config_path))
         return service
 
-    def register_manifest(self, raw: dict[str, Any]) -> CapabilityManifest:
+    def register_manifest(self, raw: dict[str, Any]) -> CapabilityManifest | CapabilityManifestV2:
         try:
-            manifest = CapabilityManifest.model_validate(raw)
+            manifest = (
+                CapabilityManifestV2.model_validate(raw)
+                if raw.get("apiVersion") == "voxbench/v2"
+                else CapabilityManifest.model_validate(raw)
+            )
             Draft202012Validator.check_schema(manifest.param_schema)
-        except (PydanticValidationError, JsonSchemaValidationError) as exc:
+        except (PydanticValidationError, JsonSchemaValidationError, JsonSchemaError) as exc:
             raise ConfigValidationError(str(exc)) from exc
 
-        self._manifests[(manifest.kind, manifest.name)] = manifest
+        if isinstance(manifest, CapabilityManifestV2):
+            key = (manifest.kind, manifest.name, manifest.version)
+            previous = self._v2_manifests.get(key)
+            if previous is not None and previous != manifest:
+                raise ConfigValidationError(
+                    "v2 manifest identity is immutable; publish a new version"
+                )
+            self._v2_manifests[key] = manifest.model_copy(deep=True)
+        else:
+            self._manifests[(manifest.kind, manifest.name)] = manifest
         return manifest
 
     def register_config(self, raw: dict[str, Any]) -> None:
-        name = raw.get("meta", {}).get("name")
+        meta = raw.get("meta")
+        name = meta.get("name") if isinstance(meta, dict) else None
         if not isinstance(name, str) or not name:
             raise ConfigValidationError("config meta.name is required")
-        self._configs[name] = raw
+        self._configs[name] = deepcopy(raw) if raw.get("apiVersion") == "voxbench/v2" else raw
 
     def resolve_config(self, name: str) -> ResolvedConfig:
         raw = self._resolve_raw(name, seen=set())
         try:
-            config = VoiceConfig.model_validate(raw)
+            config = (
+                VoiceConfigV2.model_validate(raw)
+                if raw.get("apiVersion") == "voxbench/v2"
+                else VoiceConfig.model_validate(raw)
+            )
         except PydanticValidationError as exc:
             raise ConfigValidationError(str(exc)) from exc
 
-        self._validate_cross_fields(config)
-        resolved = config.model_dump(mode="json", exclude_none=True)
-        self._materialize_manifest_defaults(resolved)
+        if isinstance(config, VoiceConfigV2):
+            resolved = resolve_v2(
+                config, lookup=self._v2_manifest, validate_params=self._validate_params,
+                validate_stage=self._validate_v2_stage,
+            )
+        else:
+            self._validate_cross_fields(config)
+            resolved = config.model_dump(mode="json", exclude_none=True)
+            self._materialize_manifest_defaults(resolved)
         return ResolvedConfig(
             name=config.meta.name,
             resolved=resolved,
@@ -91,6 +120,19 @@ class RegistryService:
             raise ConfigValidationError(f"config '{name}' meta.parent must be a string")
 
         base = self._resolve_raw(parent, seen=seen | {name})
+        if "voxbench/v2" in (base.get("apiVersion"), raw.get("apiVersion")):
+            if raw.get("apiVersion") != base.get("apiVersion"):
+                raise ConfigValidationError("cross-version overlay inheritance is forbidden")
+            base_spec, overlay_spec = base.get("spec"), raw.get("spec", {})
+            if not isinstance(base_spec, dict) or not isinstance(overlay_spec, dict):
+                raise ConfigValidationError("v2 overlay spec must be an object")
+            base_ai, overlay_ai = base_spec.get("ai"), overlay_spec.get("ai", {})
+            if not isinstance(base_ai, dict) or not isinstance(overlay_ai, dict):
+                raise ConfigValidationError("v2 overlay ai must be an object")
+            base_mode = base_ai.get("mode")
+            overlay_mode = overlay_ai.get("mode", base_mode)
+            if overlay_mode != base_mode:
+                raise ConfigValidationError("cross-mode overlay inheritance is forbidden")
         return deep_merge(base, raw)
 
     def _validate_cross_fields(self, config: VoiceConfig) -> None:
@@ -157,8 +199,8 @@ class RegistryService:
 
     def _validate_host_capabilities(
         self,
-        stage: PipelineStage,
-        manifest: CapabilityManifest,
+        stage: PipelineStage | PipelineStageV2,
+        manifest: CapabilityManifest | CapabilityManifestV2,
     ) -> None:
         required = set(stage.requires_host_capability or manifest.requires_host_capability)
         available = set(stage.host_capabilities)
@@ -171,8 +213,8 @@ class RegistryService:
 
     def _validate_overrides(
         self,
-        stage: PipelineStage,
-        manifest: CapabilityManifest,
+        stage: PipelineStage | PipelineStageV2,
+        manifest: CapabilityManifest | CapabilityManifestV2,
     ) -> None:
         allowed = {override.target: override.type for override in manifest.allowed_overrides}
         for override in stage.overrides:
@@ -188,7 +230,7 @@ class RegistryService:
     def _validate_params(
         self,
         label: str,
-        manifest: CapabilityManifest,
+        manifest: CapabilityManifest | CapabilityManifestV2,
         params: dict[str, Any],
     ) -> None:
         try:
@@ -219,6 +261,20 @@ class RegistryService:
             return self._manifests[(kind, name)]
         except KeyError as exc:
             raise ManifestNotFoundError(f"unknown {kind} manifest '{name}'") from exc
+
+    def _v2_manifest(self, kind: str, name: str, version: str) -> CapabilityManifestV2:
+        try:
+            return self._v2_manifests[(kind, name, version)]
+        except KeyError as exc:
+            raise ManifestNotFoundError(
+                f"unknown v2 {kind} manifest '{name}' version '{version}'"
+            ) from exc
+
+    def _validate_v2_stage(
+        self, stage: PipelineStageV2, manifest: CapabilityManifestV2,
+    ) -> None:
+        self._validate_host_capabilities(stage, manifest)
+        self._validate_overrides(stage, manifest)
 
 
 def load_json(path: str | Path) -> dict[str, Any]:

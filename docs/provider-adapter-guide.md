@@ -5,6 +5,14 @@ provider-neutral stream of PCM audio and lifecycle evidence. They do not move
 provider-specific response bodies, URLs, credentials, or identifiers into the
 core timeline.
 
+This guide covers the committed integrated realtime adapter boundary. A common
+metadata-only STT/text-LLM/TTS observation contract is a local candidate in
+[cascade-observation-api.md](cascade-observation-api.md), with deterministic
+endpoint analysis in [cascade-analysis.md](cascade-analysis.md); provider-specific
+service adapters are not implemented yet. Keep `RealtimeProviderSession` compatible; do not
+force text or STT/TTS lifecycle through its PCM-only interface. Current feature
+availability is in [implementation-status.md](implementation-status.md).
+
 ## Adapter boundary
 
 Implement the protocols in

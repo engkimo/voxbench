@@ -1,6 +1,8 @@
 # VoxBench 診断エージェント設計・実装計画 v0.1
 
 > Durable decisions and implementation order are summarized in [`MEMORY.md`](../MEMORY.md).
+>
+> 2026-09-18監査：現在の状態は [implementation status](implementation-status.md) を参照。本書はproduction診断の設計で、§8.1のUI/SSEは未コミットlocal candidate。永続化・LLM・認可が実装済みであることを意味しない。
 
 ## 1. 結論
 
@@ -38,7 +40,7 @@ VoxBench はすでに診断エージェントの土台を持つ。
 ### 2.2 現状の不足
 
 - 診断ルールと API projection の多くが `run_api.py` に集中しており、ツールとして再利用しづらい。
-- Web UI の主要機能が `App.tsx` に集中しており、チャットドロワーをそのまま追加すると保守性が悪化する。
+- Web UI の主要機能が `App.tsx` に集中している。local candidateのagent panelは別componentになったが、Call inspector/dispatcherとAPI projectionの分離は残件。
 - raw PCAP/Wireshark import は未実装。現在は構造化 SIP/RTP ingest と一時的 packet tap が中心。
 - 一般的な Asterisk/Pipecat/application log の取り込み、全文検索、行単位引用がない。
 - source repository の登録、commit snapshot、コード検索、行単位引用がない。
@@ -357,6 +359,30 @@ command type:
 - commandは再送されても二重再生等を起こさないようidempotentに扱う。
 - 自動再生はブラウザのautoplay制約と利用者設定に従う。
 
+#### Local candidate実装状況（2026-08-12）
+
+型付きUI commandの最初の実行sliceを実装した。
+
+- `POST /runs/{run_id}/ui-commands/resolve` が未信頼proposalを受け取り、commandごとの必須・許可fieldを検証する。
+- run、incident、evidence、比較run、recording stage、artifact、filter値、time windowを保存済みtimelineからserver側で解決する。
+- Web dispatcherが検証済みcommandだけを受け取り、run/incident選択、evidence focus、時間窓、panel、録音、比較、view filterへ反映する。
+- command IDはclientでidempotentに扱い、適用、拒否、autoplay blockを実行結果として表示する。
+- Web右railの`Agent UI command bridge`は、diagnostic orchestrator未実装の間に同じ契約を人間とfake agentで確認するための手動adapterである。
+
+#### Local candidateのSSE接続状況（2026-08-15）
+
+型付きcommandを実際のagent event経路へ接続するend-to-end sliceを追加した。
+
+- `POST /runs/{run_id}/diagnostic-sessions`は選択runに限定したlocal deterministic sessionを作る。
+- adapterは最も強いincident、なければ最初のtyped eventを選び、`status`、`evidence_found`、`answer_delta`、`ui_command_proposed`、検証済み`ui_command`、`completed`をordinal付きで生成する。
+- `GET /diagnostic-sessions/{session_id}/events`はSSEとしてeventを配信し、`Last-Event-ID`または`after`から再生できる。
+- Webの`Ask VoxBench` panelがSSEを受信し、検証済みcommandをdispatcherへ渡す。人間がJSONをpasteしなくてもUIが直接移動する。
+- `POST /diagnostic-sessions/{session_id}/ui-command-results`でclient結果をidempotentにacknowledgeし、異なる二重結果は`409`で拒否する。
+
+この段階のsession/event/result storeはprocess内memoryであり、外部LLMを呼ばない。質問は保存されるがincident選択には使われず、session作成時に完了した調査のeventをfinite SSEとして返す。serverのordinal replayはWebの自動再接続や新規eventの継続配信を意味しない。session容量/TTL、永続session/event store、production model adapterとbounded orchestrator、long-running job/cancel、`start_guided_sequence`、OIDC認可は未実装。現在のlocal adapterは安全境界とUI配送を確認する未コミットfake/local candidateで、production診断claimを生成するものではない。
+
+Cascade診断は [cascade設計案](cascade-design.md) のcomponent/turn/request/segment証拠を同じevidence serviceで扱う。STT/LLM/TTSの会話モデルと、この診断エージェントの`ModelAdapter`は別契約。cascade対応だけでtranscript/audioの診断model送信を許可しない。
+
 ### 8.2 Guided investigation
 
 回答には、静的な文章とは別に検証済みのstep列を含められる。
@@ -618,8 +644,8 @@ OSS coreにはprovider非依存の`IdentityProvider`/`Authorizer`契約とOIDC�
 4. deterministic diagnostic bundle endpoint と export。
 5. diagnostic session schema/repository/API。
 6. fake model + bounded orchestrator + claim validator。
-7. SSE と Ask VoxBench drawer。
-8. 型付きUI command、evidence navigation、guided investigation。
+7. 永続event/jobをSSEとlocal Ask VoxBench candidateへ接続し、cancel/reconnectを実装。
+8. 型付きUI command/evidence navigation candidateの安定化とguided investigation。
 9. OIDC operator authとrole/authorization hook。
 10. production model adapter、egress policy、運用メトリクス。
 

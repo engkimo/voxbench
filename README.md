@@ -17,8 +17,30 @@
   
 </div>
 
-VoxBench is an early OSS implementation of the schema and registry foundation
-described in `DESIGN.md`.
+VoxBench is a pre-1.0 OSS implementation of AI voice-call observation,
+verification, and a common-time-axis inspector. Architecture contracts are in
+`DESIGN.md`; current implementation status is in
+[the status inventory](docs/implementation-status.md).
+
+The inventory distinguishes committed features, verified local candidates,
+planned features, and deployment validation. The typed agent UI-command and
+local diagnostic SSE sections below describe an **uncommitted local candidate**,
+not functionality available in the audited `ae575b6` checkout. Dated progress
+and memory entries are historical snapshots.
+
+Independent STT → LLM → TTS configuration is implemented as a local candidate
+for issue #17: [v2 contract and examples](docs/cascade-config-v2.md).
+[Metadata-only service observation](docs/cascade-observation-api.md) is also a
+local candidate. [Deterministic causal latency analysis](docs/cascade-analysis.md)
+is implemented locally for issue #19. Recording maps, inspection, adapters and
+execution remain planned; v2 execution APIs explicitly reject them.
+
+Pipecat is optional: the observation library/HTTP ingest and built-in direct
+realtime bridge do not require it. The cascade target includes Pipecat, other
+frameworks, and applications connecting STT/LLM/TTS services directly. Dedicated
+framework adapters and cascade execution remain planned, not currently tested
+compatibility with every middleware. The next goal is matched fake Cascade test
+projects with and without Pipecat, using the same observation and analysis contract.
 
 Implemented so far:
 
@@ -616,6 +638,42 @@ Open `http://127.0.0.1:5173/`. The Web UI can inspect a run timeline, compare tw
 runs, play stage recordings, watch live run status, and start an async run from an
 example payload.
 
+### Test typed agent UI commands (local candidate)
+
+This section requires the complete local UI/SSE candidate file set listed in
+[the status inventory](docs/implementation-status.md#local-uisse-candidate-audit).
+It does not work from the audited committed baseline alone.
+
+After selecting a run, use **Ask VoxBench** in the right rail:
+
+1. Select **Investigate & guide UI**.
+2. The local deterministic agent creates a diagnostic session, cites the
+   strongest typed incident or event, and delivers a validated `ui_command` over
+   SSE.
+3. Confirm that the incident/evidence and shared cursor move without pasting or
+   executing JSON in the browser.
+4. Confirm that the execution result changes to **Acknowledged by Control
+   Plane**.
+
+This adapter does not call an external model. It provides a deterministic
+end-to-end path for diagnostic session creation, replayable SSE events, direct UI
+guidance, and client acknowledgement. The submitted question does not change
+the deterministic incident selection. SSE replays already-created events;
+durable sessions, continuous investigation, automatic client reconnection,
+session capacity/TTL, model orchestration, guided sequences and operator
+authorization are pending. Open **Manual agent command bridge** to
+exercise individual command types or rejection behavior. Select **Load current
+example**, edit the scoped JSON, and then select **Validate & execute**. An
+unknown or URL-like `evidence_ref` must be rejected without moving the UI.
+
+The browser never executes an untrusted proposal directly. It first posts the
+proposal to `POST /runs/{run_id}/ui-commands/resolve`; the Control Plane resolves
+run, incident, evidence, stage, artifact, and time targets from the persisted
+timeline. Supported operations are `select_run`, `select_incident`,
+`focus_evidence`, `set_time_window`, `open_panel`, `play_recording`,
+`pause_recording`, `show_comparison`, and `apply_view_filter`. Arbitrary URLs,
+selectors, JavaScript, form input, and API calls are not part of this contract.
+
 For the shortest product walkthrough, use **Diagnose a call in 3 seconds** at
 the top of the page:
 
@@ -654,9 +712,10 @@ steps are additionally persisted as safe correlated events: provider speech or
 interrupt notification, interrupt path, truncation position, playback queue clear,
 and completion. Selecting the derived incident shows that evidence chain on the
 shared cursor. Discarded queue duration is not presented as audible tail because
-the remote listener's actual playout is not yet observed. Packet capture,
-sample-accurate cross-clock alignment, and typed caller/assistant speech intervals
-remain future work.
+the remote listener's actual playout is not yet observed. Raw PCAP import
+and sample-accurate cross-clock alignment remain future work. Provider-VAD caller
+speech and local assistant playback intervals are implemented, as described below;
+they do not establish remote audible playout.
 
 Directional RTP observations also produce transport evidence when loss reaches
 1%, jitter reaches 30 ms, or MOS falls to 3.5 or below. Consecutive degraded

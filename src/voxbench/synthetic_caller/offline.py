@@ -13,6 +13,7 @@ from typing import Any
 from voxbench.engine_harness.models import MetricArtifact, RecordingArtifact
 from voxbench.engine_harness.plan import build_stage_plan
 from voxbench.media import mulaw_to_pcm16le, pcm16le_to_mulaw
+from voxbench.registry.config_views import require_v1_workflow
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ def generate_synthetic_artifacts(
 ) -> SyntheticArtifacts:
     """Generate local WAV recordings and cadence metrics for a resolved config."""
 
+    require_v1_workflow(resolved_config, operation="legacy synthetic audio generation")
     _validate_audio_spec(audio_spec)
     degradations = degradations or {}
     output_root.mkdir(parents=True, exist_ok=True)

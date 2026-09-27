@@ -1,0 +1,258 @@
+{
+  "additionalProperties": false,
+  "description": "One observed boundary with local aliases and no conversation content.",
+  "properties": {
+    "alignment_uncertainty_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Alignment Uncertainty Ms"
+    },
+    "attributes": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "propertyNames": {
+        "enum": [
+          "attempt_ordinal",
+          "sequence_ordinal",
+          "duration_ms",
+          "audio_duration_ms",
+          "input_units",
+          "output_units",
+          "cached_input_units",
+          "tool_call_count",
+          "queue_depth",
+          "sample_rate_hz",
+          "channels",
+          "encoding",
+          "retry",
+          "truncated",
+          "terminal_outcome",
+          "failure_alias",
+          "cancel_scope",
+          "observed_boundary",
+          "output_kind"
+        ]
+      },
+      "title": "Attributes",
+      "type": "object"
+    },
+    "clock_domain": {
+      "default": "application_wall",
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Clock Domain",
+      "type": "string"
+    },
+    "collector_alias": {
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Collector Alias",
+      "type": "string"
+    },
+    "component_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Component Id",
+      "type": "string"
+    },
+    "event_alias": {
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Event Alias",
+      "type": "string"
+    },
+    "generation_epoch": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Generation Epoch",
+      "type": "integer"
+    },
+    "kind": {
+      "enum": [
+        "service.session_started",
+        "service.session_ended",
+        "stt.partial_emitted",
+        "stt.final_emitted",
+        "turn.speech_ended",
+        "turn.committed",
+        "llm.request_started",
+        "llm.first_output",
+        "llm.first_answer_text",
+        "llm.response_completed",
+        "aggregation.segment_ready",
+        "tts.request_started",
+        "tts.first_pcm",
+        "tts.response_completed",
+        "realtime.request_started",
+        "realtime.first_audio",
+        "realtime.response_completed",
+        "playback.write_started",
+        "playback.write_completed",
+        "playback.discarded",
+        "cancel.requested",
+        "cancel.acknowledged",
+        "service.failed"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "parent_request_alias": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Request Alias"
+    },
+    "request_alias": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Request Alias"
+    },
+    "response_alias": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Alias"
+    },
+    "role": {
+      "enum": [
+        "stt",
+        "llm",
+        "tts",
+        "realtime",
+        "aggregation",
+        "coordinator",
+        "playback"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "voxbench/service-event/v1",
+      "default": "voxbench/service-event/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "segment_alias": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Segment Alias"
+    },
+    "session_alias": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Alias"
+    },
+    "ts": {
+      "format": "date-time",
+      "title": "Ts",
+      "type": "string"
+    },
+    "turn_alias": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Turn Alias"
+    },
+    "unobserved_relations": {
+      "items": {
+        "enum": [
+          "session",
+          "turn",
+          "request",
+          "parent_request",
+          "response",
+          "segment"
+        ],
+        "type": "string"
+      },
+      "maxItems": 6,
+      "title": "Unobserved Relations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "collector_alias",
+    "event_alias",
+    "kind",
+    "component_id",
+    "role"
+  ],
+  "title": "ServiceEvent",
+  "type": "object"
+}

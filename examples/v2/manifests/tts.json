@@ -1,0 +1,36 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "provider",
+  "name": "example-tts",
+  "version": "1.0.0",
+  "param_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "service_caps": {
+    "roles": [
+      "tts"
+    ],
+    "input_modality": "text",
+    "output_modality": "audio",
+    "lifecycle": {
+      "partial_output": true,
+      "final_output": true,
+      "response_boundaries": true
+    },
+    "cancellation": {
+      "request": true,
+      "terminal_ack": true
+    },
+    "audio_outputs": [
+      {
+        "encoding": "pcm16",
+        "rate": 24000,
+        "channels": 1
+      }
+    ],
+    "supported_models": [
+      "pinned-tts-model"
+    ]
+  }
+}

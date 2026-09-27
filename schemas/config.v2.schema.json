@@ -1,0 +1,769 @@
+{
+  "$defs": {
+    "AudioFormat": {
+      "additionalProperties": false,
+      "properties": {
+        "channels": {
+          "exclusiveMinimum": 0,
+          "title": "Channels",
+          "type": "integer"
+        },
+        "encoding": {
+          "enum": [
+            "pcm16",
+            "pcm24",
+            "pcm32",
+            "float32"
+          ],
+          "title": "Encoding",
+          "type": "string"
+        },
+        "rate": {
+          "exclusiveMinimum": 0,
+          "title": "Rate",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "encoding",
+        "rate",
+        "channels"
+      ],
+      "title": "AudioFormat",
+      "type": "object"
+    },
+    "AudioIoContract": {
+      "additionalProperties": false,
+      "properties": {
+        "accepts": {
+          "$ref": "#/$defs/AudioFormat"
+        },
+        "mode": {
+          "enum": [
+            "passthrough",
+            "rate_changing",
+            "format_changing"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "produces": {
+          "$ref": "#/$defs/AudioFormat"
+        }
+      },
+      "required": [
+        "mode",
+        "accepts",
+        "produces"
+      ],
+      "title": "AudioIoContract",
+      "type": "object"
+    },
+    "CascadeAiConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "llm": {
+          "$ref": "#/$defs/ConversationServiceConfig"
+        },
+        "mode": {
+          "const": "cascade",
+          "title": "Mode",
+          "type": "string"
+        },
+        "stt": {
+          "$ref": "#/$defs/ServiceConfig"
+        },
+        "text_aggregation": {
+          "$ref": "#/$defs/ComponentConfig"
+        },
+        "tts": {
+          "$ref": "#/$defs/ServiceConfig"
+        }
+      },
+      "required": [
+        "mode",
+        "stt",
+        "llm",
+        "text_aggregation",
+        "tts"
+      ],
+      "title": "CascadeAiConfig",
+      "type": "object"
+    },
+    "ComponentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "manifest_version": {
+          "minLength": 1,
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "plugin": {
+          "minLength": 1,
+          "title": "Plugin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "plugin",
+        "manifest_version"
+      ],
+      "title": "ComponentConfig",
+      "type": "object"
+    },
+    "ConfigMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "labels": {
+          "additionalProperties": true,
+          "title": "Labels",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "ConfigMeta",
+      "type": "object"
+    },
+    "ConversationServiceConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "input_audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "manifest_version": {
+          "minLength": 1,
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "output_audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "plugin": {
+          "minLength": 1,
+          "title": "Plugin",
+          "type": "string"
+        },
+        "system_prompt_ref": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt Ref"
+        },
+        "tools": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Tools",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "plugin",
+        "manifest_version",
+        "model"
+      ],
+      "title": "ConversationServiceConfig",
+      "type": "object"
+    },
+    "EngineConfigV2": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "manifest_version": {
+          "minLength": 1,
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "manifest_version"
+      ],
+      "title": "EngineConfigV2",
+      "type": "object"
+    },
+    "JitterBufferConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_ms": {
+          "title": "Max Ms",
+          "type": "integer"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "max_ms"
+      ],
+      "title": "JitterBufferConfig",
+      "type": "object"
+    },
+    "MediaConfigV2": {
+      "additionalProperties": false,
+      "properties": {
+        "input_pipeline": {
+          "items": {
+            "$ref": "#/$defs/PipelineStageV2"
+          },
+          "title": "Input Pipeline",
+          "type": "array"
+        },
+        "output_pipeline": {
+          "items": {
+            "$ref": "#/$defs/PipelineStageV2"
+          },
+          "title": "Output Pipeline",
+          "type": "array"
+        }
+      },
+      "required": [
+        "input_pipeline",
+        "output_pipeline"
+      ],
+      "title": "MediaConfigV2",
+      "type": "object"
+    },
+    "ObservabilityConfigV2": {
+      "additionalProperties": false,
+      "properties": {
+        "cross_session": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cross Session",
+          "type": "array"
+        },
+        "host_metrics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Host Metrics",
+          "type": "array"
+        },
+        "record_audio": {
+          "default": false,
+          "title": "Record Audio",
+          "type": "boolean"
+        },
+        "service_latency_slos": {
+          "items": {
+            "$ref": "#/$defs/ServiceLatencySloV2"
+          },
+          "title": "Service Latency Slos",
+          "type": "array"
+        },
+        "signal_metrics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Signal Metrics",
+          "type": "array"
+        },
+        "stage_taps": {
+          "default": false,
+          "title": "Stage Taps",
+          "type": "boolean"
+        },
+        "trace_sample": {
+          "default": 0.0,
+          "title": "Trace Sample",
+          "type": "number"
+        }
+      },
+      "title": "ObservabilityConfigV2",
+      "type": "object"
+    },
+    "OverrideValue": {
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        }
+      },
+      "required": [
+        "target",
+        "value"
+      ],
+      "title": "OverrideValue",
+      "type": "object"
+    },
+    "PipelineStageV2": {
+      "additionalProperties": false,
+      "properties": {
+        "host_capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Host Capabilities",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "invariants_applicable": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "duration_preserving",
+                  "level_preserving",
+                  "isochronous"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invariants Applicable"
+        },
+        "invariants_enforced": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "duration_preserving",
+                  "level_preserving",
+                  "isochronous"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Invariants Enforced"
+        },
+        "io": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioIoContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lossy_expected": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lossy Expected"
+        },
+        "manifest_version": {
+          "minLength": 1,
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "overrides": {
+          "items": {
+            "$ref": "#/$defs/OverrideValue"
+          },
+          "title": "Overrides",
+          "type": "array"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "plugin": {
+          "minLength": 1,
+          "title": "Plugin",
+          "type": "string"
+        },
+        "requires_host_capability": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requires Host Capability"
+        },
+        "type": {
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "plugin",
+        "manifest_version",
+        "type"
+      ],
+      "title": "PipelineStageV2",
+      "type": "object"
+    },
+    "RealtimeAiConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "realtime",
+          "title": "Mode",
+          "type": "string"
+        },
+        "realtime": {
+          "$ref": "#/$defs/ConversationServiceConfig"
+        }
+      },
+      "required": [
+        "mode",
+        "realtime"
+      ],
+      "title": "RealtimeAiConfig",
+      "type": "object"
+    },
+    "ServiceConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "input_audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "manifest_version": {
+          "minLength": 1,
+          "title": "Manifest Version",
+          "type": "string"
+        },
+        "model": {
+          "minLength": 1,
+          "title": "Model",
+          "type": "string"
+        },
+        "output_audio": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AudioFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "plugin": {
+          "minLength": 1,
+          "title": "Plugin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "plugin",
+        "manifest_version",
+        "model"
+      ],
+      "title": "ServiceConfig",
+      "type": "object"
+    },
+    "ServiceLatencySloV2": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "max_ms": {
+          "exclusiveMinimum": 0,
+          "title": "Max Ms",
+          "type": "number"
+        },
+        "measurement": {
+          "enum": [
+            "stt_finalization_wait",
+            "turn_coordination_wait",
+            "llm_dispatch_wait",
+            "llm_first_output_wait",
+            "llm_first_answer_text_wait",
+            "text_aggregation_wait",
+            "tts_dispatch_queue_wait",
+            "tts_first_audio_wait",
+            "output_playback_start_wait",
+            "end_to_end_local_response_wait"
+          ],
+          "title": "Measurement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "measurement",
+        "max_ms"
+      ],
+      "title": "ServiceLatencySloV2",
+      "type": "object"
+    },
+    "TransportConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "codec": {
+          "title": "Codec",
+          "type": "string"
+        },
+        "jitter_buffer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JitterBufferConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ptime_ms": {
+          "title": "Ptime Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "codec",
+        "ptime_ms"
+      ],
+      "title": "TransportConfig",
+      "type": "object"
+    },
+    "TurnTakingConfigV2": {
+      "additionalProperties": false,
+      "properties": {
+        "end_of_turn": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "End Of Turn",
+          "type": "string"
+        },
+        "interruption": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interruption"
+        },
+        "speech_detector": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "title": "Speech Detector",
+          "type": "string"
+        }
+      },
+      "required": [
+        "speech_detector",
+        "end_of_turn"
+      ],
+      "title": "TurnTakingConfigV2",
+      "type": "object"
+    },
+    "VoiceSpecV2": {
+      "additionalProperties": false,
+      "properties": {
+        "ai": {
+          "discriminator": {
+            "mapping": {
+              "cascade": "#/$defs/CascadeAiConfig",
+              "realtime": "#/$defs/RealtimeAiConfig"
+            },
+            "propertyName": "mode"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RealtimeAiConfig"
+            },
+            {
+              "$ref": "#/$defs/CascadeAiConfig"
+            }
+          ],
+          "title": "Ai"
+        },
+        "engine": {
+          "$ref": "#/$defs/EngineConfigV2"
+        },
+        "media": {
+          "$ref": "#/$defs/MediaConfigV2"
+        },
+        "observability": {
+          "$ref": "#/$defs/ObservabilityConfigV2"
+        },
+        "transport": {
+          "$ref": "#/$defs/TransportConfig"
+        },
+        "turn_taking": {
+          "$ref": "#/$defs/TurnTakingConfigV2"
+        }
+      },
+      "required": [
+        "engine",
+        "transport",
+        "media",
+        "turn_taking",
+        "ai"
+      ],
+      "title": "VoiceSpecV2",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "apiVersion": {
+      "const": "voxbench/v2",
+      "title": "Apiversion",
+      "type": "string"
+    },
+    "kind": {
+      "const": "VoiceConfig",
+      "title": "Kind",
+      "type": "string"
+    },
+    "meta": {
+      "$ref": "#/$defs/ConfigMeta"
+    },
+    "spec": {
+      "$ref": "#/$defs/VoiceSpecV2"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "meta",
+    "spec"
+  ],
+  "title": "VoiceConfigV2",
+  "type": "object"
+}

@@ -1,0 +1,39 @@
+{
+  "apiVersion": "voxbench/v2",
+  "kind": "processor",
+  "name": "example-input-resampler",
+  "version": "1.0.0",
+  "param_schema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "io": {
+    "mode": "rate_changing",
+    "accepts": {
+      "encoding": "pcm16",
+      "rate": 8000,
+      "channels": 1
+    },
+    "produces": {
+      "encoding": "pcm16",
+      "rate": 16000,
+      "channels": 1
+    }
+  },
+  "requires_host_capability": [
+    "cadence_pacing"
+  ],
+  "invariants_enforced": [
+    "duration_preserving"
+  ],
+  "invariants_applicable": [
+    "duration_preserving",
+    "isochronous"
+  ],
+  "allowed_overrides": [
+    {
+      "target": "quality",
+      "type": "string"
+    }
+  ]
+}
