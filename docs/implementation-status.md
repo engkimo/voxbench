@@ -1,20 +1,23 @@
 # VoxBench implementation status
 
 Last audited: 2026-09-27. This inventory replaces dated pending lists as the entry
-point for current implementation status. It does not turn a local candidate into
-a published feature.
+point for current implementation status. A review branch candidate is not available
+on `main` until its pull request is merged.
 
 ## Baseline and status vocabulary
 
-The publication worktree baseline is `ae575b6` (`Detect click/pop discontinuities
-with bounded PCM evidence`).
-Use `git rev-parse HEAD` and `git status --short` to check whether that baseline
-has changed; this document is an audit record, not a live Git query.
+The audited `main` baseline is `ae575b6` (`Detect click/pop discontinuities with
+bounded PCM evidence`). Cascade C1–C3A are committed as `eefae1a` on
+`agent/cascade-c1-c3` and published in
+[Draft PR #25](https://github.com/engkimo/voxbench/pull/25). Use
+`git rev-parse HEAD` and `git status --short` to identify the checkout; this
+document is an audit record, not a live Git query.
 
 | Status | Meaning |
 | --- | --- |
 | Committed | Implementation exists in the audited Git baseline |
-| Local candidate | Implementation exists locally, with verification recorded below, but is absent from the baseline |
+| Review branch candidate | Implementation is committed and published for review, but is absent from `main` until merge |
+| Local candidate | Implementation exists only in a local working tree, with verification recorded below |
 | Planned | Design exists; runnable implementation is absent |
 | Deployment validation pending | A code boundary exists, but the named deployment behavior has not been established by this audit |
 
@@ -25,18 +28,18 @@ current readiness assessment.
 
 The framework-independent realtime/cascade plan is tracked by
 [parent issue #15](https://github.com/engkimo/voxbench/issues/15) and the
-[issue dependency plan](cascade-issue-plan.md). C1, C2 and C3A are local candidates;
-other tasks remain planned. The
-UI/SSE stabilization issue #16 is separate from cascade contract issue #17.
+[issue dependency plan](cascade-issue-plan.md). C1, C2 and C3A are review
+branch candidates in Draft PR #25; other tasks remain planned. The UI/SSE
+stabilization issue #16 is separate from cascade contract issue #17.
 
 ## Current inventory
 
 | Area | Status | Evidence and remaining boundary |
 | --- | --- | --- |
 | Config/manifest schemas, overlays, resolved hashes, static validation | Committed | `schemas.py`, `registry/`; currently one `ai.provider/model`, v1 only |
-| V2 realtime/cascade config and versioned capabilities | Local candidate | `schemas_v2.py`, `registry/v2.py`, `registry/config_views.py`, `test_registry_v2.py`; role/format/ID/authority checks, manifest pins, same-mode overlays; [contract guide](cascade-config-v2.md) |
-| Framework-independent service event observation | Local candidate | `observability/service_events.py`, observer/HTTP batch extension and `test_service_observations.py`; v1/v2, persistence, causal aliases, privacy, idempotency/conflicts, bounded queues/run events; [HTTP contract](cascade-observation-api.md) |
-| Cascade causal grouping and latency analysis | Local candidate | `observability/cascade_analysis.py`, safe run component projections and `test_cascade_analysis.py`; explicit parent chains, endpoint evidence, critical path, clock/missing states and opt-in SLOs; [analysis contract](cascade-analysis.md) |
+| V2 realtime/cascade config and versioned capabilities | Review branch candidate | `schemas_v2.py`, `registry/v2.py`, `registry/config_views.py`, `test_registry_v2.py`; role/format/ID/authority checks, manifest pins, same-mode overlays; [contract guide](cascade-config-v2.md) |
+| Framework-independent service event observation | Review branch candidate | `observability/service_events.py`, observer/HTTP batch extension and `test_service_observations.py`; v1/v2, persistence, causal aliases, privacy, idempotency/conflicts, bounded queues/run events; [HTTP contract](cascade-observation-api.md) |
+| Cascade causal grouping and latency analysis | Review branch candidate | `observability/cascade_analysis.py`, safe run component projections and `test_cascade_analysis.py`; explicit parent chains, endpoint evidence, critical path, clock/missing states and opt-in SLOs; [analysis contract](cascade-analysis.md) |
 | Harness WAV taps and OTel spans | Committed | `engine_harness/`; the default `run_once` generates nominal artifacts, not a real provider conversation |
 | Signal invariants and synthetic full-reference scoring | Committed | `verification/`, `synthetic_caller/`; optional ViSQOL CLI, explicit blocked/unavailable states, aggregation/regression/calibration |
 | Common timeline and deterministic incidents | Committed | `run_api.py`, `tests/test_timeline_stage_diagnostics.py`; five primitives, clock uncertainty, explicit observation boundaries |
@@ -54,7 +57,7 @@ UI/SSE stabilization issue #16 is separate from cascade contract issue #17.
 | Deterministic diagnostic sessions, finite SSE replay and result acknowledgement | Local candidate | Exact files below; process-local store, one selected incident/event, no external model |
 | Session/event/result persistence, model orchestration, diagnostic jobs/cancel, guided sequence | Planned | `diagnostic-agent-design.md`; not completed by the local SSE slice |
 | Product-wide OIDC authentication, authorization, audit/retention | Planned | `diagnostic-agent-design.md`; required before production diagnostic integration |
-| Cascade recording maps, inspector, test projects, adapters and runtime | Planned | `cascade-design.md`; causal analysis is local, while v2 audio chunks and execution remain explicitly unsupported. Next goal: matched direct/Pipecat fake Cascade projects for tuning and evaluation |
+| Cascade recording maps, inspector, test projects, adapters and runtime | Planned | `cascade-design.md`; causal analysis is in Draft PR #25, while v2 audio chunks and execution remain explicitly unsupported. Next goal: matched direct/Pipecat fake Cascade projects for tuning and evaluation |
 | Raw PCAP import, log/source snapshot connectors, second engine, scale profile | Planned | Designs/roadmap; not established by the RTP tap or second realtime provider |
 
 ## Local UI/SSE candidate audit
@@ -145,16 +148,17 @@ Historical real-call evidence is not a substitute for those checks.
    own acceptance criteria before production use.
 5. Commit the reviewed change as its own unit when implementation stabilization
    is requested, then update this inventory with its commit and verification.
-   C1 implementation has not committed or published the UI/SSE candidate.
+   Draft PR #25 does not include or publish the UI/SSE candidate.
 
 Cascade contracts are implemented against the committed v1 contracts independently
 of that step. The local UI dispatcher is an optional integration candidate with a
 separate stabilization dependency, rather than an implicit released dependency.
 
-## C1 config/capability local candidate (2026-09-18)
+## C1 config/capability review branch candidate (2026-09-18)
 
-Scope: [#17](https://github.com/engkimo/voxbench/issues/17), implemented locally,
-not committed or published. The issue remains open for review/publication.
+Scope: [#17](https://github.com/engkimo/voxbench/issues/17), committed in `eefae1a`
+on [Draft PR #25](https://github.com/engkimo/voxbench/pull/25), pending merge.
+The issue remains open.
 [cascade-config-v2.md](cascade-config-v2.md) records the implemented contract.
 
 Required new files:
@@ -198,10 +202,11 @@ output. C3A now derives causal timing; recording mapping, UI, framework/provider
 test projects/adapters and execution remain separate future slices. Validation does not establish live
 provider/model readiness or complete observation coverage.
 
-## C2 service-observation local candidate (2026-09-27)
+## C2 service-observation review branch candidate (2026-09-27)
 
-Scope: [#18](https://github.com/engkimo/voxbench/issues/18), implemented locally,
-not committed or published. The issue remains open for review/publication.
+Scope: [#18](https://github.com/engkimo/voxbench/issues/18), committed in `eefae1a`
+on [Draft PR #25](https://github.com/engkimo/voxbench/pull/25), pending merge.
+The issue remains open.
 [cascade-observation-api.md](cascade-observation-api.md) is the normative HTTP,
 privacy, identity and retry guide.
 
@@ -235,10 +240,11 @@ actual Pipecat/other-framework integration was performed. C2 normalizes observed
 metadata; C3A now derives service latency, while audio segment mapping, remote
 playout and provider readiness remain unestablished.
 
-## C3A causal-analysis local candidate (2026-09-27)
+## C3A causal-analysis review branch candidate (2026-09-27)
 
-Scope: [#19](https://github.com/engkimo/voxbench/issues/19), implemented locally,
-not committed or published. The issue remains open for review/publication.
+Scope: [#19](https://github.com/engkimo/voxbench/issues/19), committed in `eefae1a`
+on [Draft PR #25](https://github.com/engkimo/voxbench/pull/25), pending merge.
+The issue remains open.
 [cascade-analysis.md](cascade-analysis.md) records the measurement, clock,
 critical-path, coverage and SLO contract.
 

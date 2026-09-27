@@ -1,8 +1,9 @@
 # Versioned realtime and cascade configuration
 
-Implemented locally for [issue #17](https://github.com/engkimo/voxbench/issues/17).
+Implemented on [Draft PR #25](https://github.com/engkimo/voxbench/pull/25),
+pending review and merge, for [issue #17](https://github.com/engkimo/voxbench/issues/17).
 This slice validates and resolves configuration. Metadata-only service observation
-is now a separate local candidate described in
+is part of the same review branch and described in
 [cascade-observation-api.md](cascade-observation-api.md). V2 recording ingestion,
 inspector support and test-call execution remain future slices. `/runs` and
 `/runs/async` reject v2 before creating a run; `/runs/observed` accepts it for

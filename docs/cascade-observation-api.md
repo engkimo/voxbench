@@ -1,6 +1,7 @@
 # Metadata-only service observation API
 
-Implemented locally for [issue #18](https://github.com/engkimo/voxbench/issues/18).
+Implemented on [Draft PR #25](https://github.com/engkimo/voxbench/pull/25),
+pending review and merge, for [issue #18](https://github.com/engkimo/voxbench/issues/18).
 This contract lets direct applications, Pipecat applications and other runtimes
 report the same observed STT/LLM/TTS/realtime boundaries. It does not require a
 framework SDK and does not execute providers or retain conversation content.

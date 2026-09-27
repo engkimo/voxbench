@@ -1,8 +1,9 @@
 # Cascade and framework-independent issue plan
 
 Recorded 2026-09-18. GitHub issues were created using the verified `engkimo`
-connector account. Issue publication is complete; feature implementation and
-local source/document commit publication are not.
+connector account. Issue publication is complete. C1–C3A are committed on
+[Draft PR #25](https://github.com/engkimo/voxbench/pull/25), pending review and
+merge; this does not make them available on `main`.
 
 Parent: [#15: Support framework-independent realtime and STT → LLM → TTS diagnostics](https://github.com/engkimo/voxbench/issues/15)
 
@@ -37,13 +38,13 @@ observation can proceed independently.
 
 ## First work and remaining choices
 
-C1/#17, C2/#18 and C3A/#19 are implemented as local candidates. See
+C1/#17, C2/#18 and C3A/#19 are review branch candidates in Draft PR #25. See
 [the v2 config contract](cascade-config-v2.md) and
 [the service observation contract](cascade-observation-api.md),
 [the causal analysis contract](cascade-analysis.md), and
 [the implementation inventory](implementation-status.md) for checks and precise
 scope. V2 execution and audio recording ingestion remain planned; the GitHub
-issues remain open until review/publication. S0 and all other slices retain their
+issues remain open until review and merge. S0 and all other slices retain their
 previous status.
 
 Start with #17 for versioned schemas/registry compatibility; develop

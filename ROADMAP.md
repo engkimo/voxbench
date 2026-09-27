@@ -43,9 +43,10 @@ inventory for current availability and verification scope.
 ## Next: separate STT, LLM and TTS models
 
 C1 configuration/capability contracts, C2 metadata-only service observation and
-C3A deterministic causal latency analysis
-are implemented as local candidates: [current v2 contract](docs/cascade-config-v2.md)
-and [service observation API](docs/cascade-observation-api.md), plus the
+C3A deterministic causal latency analysis are committed on
+[review branch PR #25](https://github.com/engkimo/voxbench/pull/25), pending merge:
+[current v2 contract](docs/cascade-config-v2.md),
+[service observation API](docs/cascade-observation-api.md), and
 [causal analysis contract](docs/cascade-analysis.md). Recording maps, inspector
 support, adapters and execution remain planned.
 

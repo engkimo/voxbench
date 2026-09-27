@@ -1,6 +1,7 @@
 # Cascade causal latency analysis
 
-Implemented locally for [issue #19](https://github.com/engkimo/voxbench/issues/19).
+Implemented on [Draft PR #25](https://github.com/engkimo/voxbench/pull/25),
+pending review and merge, for [issue #19](https://github.com/engkimo/voxbench/issues/19).
 The analyzer derives service waits only from explicitly related metadata-only
 events. It does not inspect conversation text and does not require Pipecat or a
 provider SDK.

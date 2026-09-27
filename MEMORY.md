@@ -7,7 +7,7 @@
 - 実装状況の入口は [implementation status](docs/implementation-status.md)。コミット済み、検証済みlocal candidate、計画、deployment検証残件を分ける。
 - 設計は `DESIGN.md`、[診断エージェント設計](docs/diagnostic-agent-design.md)、[cascade設計案](docs/cascade-design.md)を参照する。設計の存在だけで実装済みとは判定しない。
 - `PROGRESS.md`と日付付きSerena実装memoryは当時のsnapshot。古い「未実装」や進捗率を現在の状態として再利用しない。
-- 公開用worktreeのコミット基準は`ae575b6`。UI commandとlocal diagnostic SSEは未コミットのlocal candidateで、必要な新規module/test/Web fileも未追跡である。詳細と独立した安定化手順はstatus文書に記録した。
+- `main`の監査基準は`ae575b6`。Cascade C1–C3Aは`agent/cascade-c1-c3`の[Draft PR #25](https://github.com/engkimo/voxbench/pull/25)にコミット済みで、未merge。UI commandとlocal diagnostic SSEはこのPRに含めておらず、引き続き未コミットのlocal candidateである。詳細と独立した安定化手順はstatus文書に記録した。
 - 2026-09-18にlocal candidateを含むPython 3.14.3のsuiteで330 passed / 4 skipped、Ruff、Web build成功を確認。Postgres実接続、browser、production認証、公開CIの検証とは区別する。
 - 同日C1実装後の最終検証：現在のPython suiteは408 passed / 4 skipped、Ruff成功。コミット済み基準へC1だけを加えたcheckoutは401 passed / 4 skipped、Ruff成功。78件のC1テストに加え既存テストも成功。後者はUI/SSE candidate不要で、dependencyは既存環境を共有した。
 - ユーザーは調査・計画・設計に続いて実装を指示した。candidateを暗黙の公開baselineにせず、cascade契約はコミット済みv1との互換性を基準に実装する。
@@ -22,14 +22,14 @@
 - 共通service観測契約とconformance fixtureを中心に置く。framework adapterは任意dependency、直接接続の例はframework不要で動かす。専用adapterのないアプリにもapplication-owned hook/HTTP経路を提供する。
 - テスト通話はframework非依存の`RuntimeAdapter`/application launcher契約越しに起動する設計。通話runtimeの管理主体、model service adapter、観測transportを分離する。
 - 現在もobserver/HTTP ingestとbuilt-in直接接続Realtime経路はPipecat非依存。Pipecat helperは薄い構築境界で、他framework専用adapter、cascade観測・実行、横断conformanceは未実装。
-- #17/C1の設定契約をlocal candidateとして実装した。`voxbench/v2`のrealtime/cascade union、service role/modality、input/output PCM chain、一意なcomponent ID、判断主体、manifest版/digest固定とoverlay検証に対応する。v1のresolved object/hashは維持する。現在の契約と使い方は[cascade config v2](docs/cascade-config-v2.md)。
+- #17/C1の設定契約をDraft PR #25のreview branch candidateとして実装した。`voxbench/v2`のrealtime/cascade union、service role/modality、input/output PCM chain、一意なcomponent ID、判断主体、manifest版/digest固定とoverlay検証に対応する。v1のresolved object/hashは維持する。現在の契約と使い方は[cascade config v2](docs/cascade-config-v2.md)。
 - turn/request/response/TTS segment/epochを明示相関する。並行処理のdurationを足してend-to-end latencyにしない。clockや相関の不足はindeterminateとする。
 - 文字列はアプリruntime内で必要だが、VoxBenchのservice観測はmetadata-only。transcript/prompt/LLM文/本文hashを標準保存・診断model送信しない。
 - 音声のmedia timeとrun timeをsegment単位で対応付ける。STTとTTS間にaudio duration/level preservationを適用しない。
 - C1設定契約だけでは実通話成功を意味しない。C2が観測専用runとservice event ingestを追加した後も、executionとv2音声録音は明示拒否する。受入条件とslice順序はcascade設計文書に置く。
-- #18/C2のmetadata-only service観測をlocal candidateとして実装した。v1/v2の観測専用runで、framework非依存の同一DTO/HTTP batchを使用する。collector/event、session/turn/request/parent/response/segment/epochを保持し、本文・URL・raw provider ID・secretのfieldを閉じる。契約は[cascade observation API](docs/cascade-observation-api.md)。
+- #18/C2のmetadata-only service観測をDraft PR #25のreview branch candidateとして実装した。v1/v2の観測専用runで、framework非依存の同一DTO/HTTP batchを使用する。collector/event、session/turn/request/parent/response/segment/epochを保持し、本文・URL・raw provider ID・secretのfieldを閉じる。契約は[cascade observation API](docs/cascade-observation-api.md)。
 - 同一event IDの同一payload再送だけを冪等とし、変更は409。未知parentをcoverage不足として残し、out-of-order到着後は再構築する。cancel request/ackとrun completeを別証拠とする。observer queueとrun event数をboundしdrop countを公開する。
-- #19/C3Aの決定論的因果解析をlocal candidateとして実装した。明示的なparent request chainだけを辿り、STT finalization、turn coordination、LLM dispatch/first output/first answer、aggregation、TTS dispatch/first PCM、local playback、end-to-end local writeを分離する。各値はevidence refs、scope、definition version、clock/uncertaintyを持つ。欠測は`unobserved`、未校正clock間と負の順序は`indeterminate`であり、近接timestampによる推測やservice durationの単純加算はしない。契約は[cascade analysis](docs/cascade-analysis.md)。
+- #19/C3Aの決定論的因果解析をDraft PR #25のreview branch candidateとして実装した。明示的なparent request chainだけを辿り、STT finalization、turn coordination、LLM dispatch/first output/first answer、aggregation、TTS dispatch/first PCM、local playback、end-to-end local writeを分離する。各値はevidence refs、scope、definition version、clock/uncertaintyを持つ。欠測は`unobserved`、未校正clock間と負の順序は`indeterminate`であり、近接timestampによる推測やservice durationの単純加算はしない。契約は[cascade analysis](docs/cascade-analysis.md)。
 - `llm.first_output`はanswer/reasoning/tool_call/otherの種別だけを保持し、本文を保持しない。tool-call continuationとretryは別operation。generation epoch/responseが異なる古いplaybackをend-to-endに再利用しない。
 - latency incidentはv2 configの明示的`service_latency_slos`があるobserved measurementだけに生成する。通常metadataからlatency SLO、STT精度、意味品質、発音品質、remote audible timeを推論しない。
 - C3A後もaudio segment mapping、inspector、provider/framework test project・adapter、test-call実行は未実装。v2 `/runs/observed`のみ対応し、`/runs`・`/runs/async`とv2 audio chunkは明示拒否する。

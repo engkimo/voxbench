@@ -2,6 +2,13 @@
 
 > 本書は日付ごとの履歴。各節の未実装リスト・進捗率は当時のsnapshotであり、現在の状態は [implementation status](docs/implementation-status.md) を参照する。
 
+## Cascade C1–C3A review publication (2026-09-27)
+
+- `ae575b6`を基点に、UI/SSE candidateと個人ファイルを除いたC1–C3Aを`agent/cascade-c1-c3`へコミットした。実装commitは`eefae1a`。
+- [Draft PR #25](https://github.com/engkimo/voxbench/pull/25)を`main`向けに作成した。#17、#18、#19を参照し、merge前なのでissueはcloseしていない。
+- PR用checkoutでRuff成功、444 passed / 5 skipped。v1 model/config/manifest schemaは基点とbyte-identical。実Postgres、Pipecat、provider、browserは未検証としてPRに明記した。
+- 次ゴールは同一scenarioと観測契約を使うdirect/no-middleware版とPipecat版の決定論的fake Cascade test project（#22、#23）。
+
 ## C3A: deterministic Cascade causal latency (2026-09-27)
 
 - #19をlocal candidateとして実装。保存済みmetadata-only service eventの明示的turn/request/parent/response/segment/epochだけからoperationを再構築する`cascade_analysis.py`を追加した。

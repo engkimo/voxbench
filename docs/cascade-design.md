@@ -1,10 +1,12 @@
 # STT → LLM → TTS cascade support: investigation and design
 
-Status: design with C1, C2 and C3A implemented as local candidates, 2026-09-27.
+Status: design with C1, C2 and C3A implemented on
+[Draft PR #25](https://github.com/engkimo/voxbench/pull/25), pending merge,
+2026-09-27.
 The current C1 shape and examples are in [cascade-config-v2.md](cascade-config-v2.md).
 The C2 service-event contract is in
 [cascade-observation-api.md](cascade-observation-api.md). The
-[causal analysis contract](cascade-analysis.md) is now implemented locally. Recording
+[causal analysis contract](cascade-analysis.md) is implemented on the review branch. Recording
 maps, adapters and runtime remain planned. Current status is in
 [implementation-status.md](implementation-status.md).
 
@@ -483,8 +485,9 @@ Each slice must leave v1 realtime/observer workflows working. These cascade slic
 are distinct from the diagnostic-agent Phase 0–5 roadmap.
 
 Published tasks: [issue plan and dependencies](cascade-issue-plan.md), under
-[parent issue #15](https://github.com/engkimo/voxbench/issues/15). Publication tracks
-planned work; it does not change the implementation status of these proposals.
+[parent issue #15](https://github.com/engkimo/voxbench/issues/15). Issue publication
+tracks planned work; code status is recorded separately in the implementation
+inventory and Draft PR #25.
 
 | Slice | Work | Acceptance gate |
 | --- | --- | --- |
@@ -502,10 +505,10 @@ C1–C3 can target the committed observation contracts without depending on the
 local Ask VoxBench implementation. S0 is required before making that candidate
 a shipped dependency. Record each implemented slice/commit in the status inventory.
 
-The proposed first cascade implementation PR is C1 only: closed schemas,
-registry validation, v1 regression fixtures, examples and updated generated
-schemas. C2 then proves metadata-only cascade observation before a live provider
-or Web feature is added.
+The implementation review branch combines C1–C3A in Draft PR #25: closed
+schemas and registry validation, metadata-only observation, and deterministic
+causal analysis. It retains the slice boundaries in tests and documentation and
+adds no live provider, framework runtime, or Web feature.
 
 After C3A, the user-designated next goal is a matched pair of deterministic fake
 Cascade test applications: one direct application-owned STT/LLM/TTS loop and one

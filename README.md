@@ -28,12 +28,13 @@ local diagnostic SSE sections below describe an **uncommitted local candidate**,
 not functionality available in the audited `ae575b6` checkout. Dated progress
 and memory entries are historical snapshots.
 
-Independent STT → LLM → TTS configuration is implemented as a local candidate
-for issue #17: [v2 contract and examples](docs/cascade-config-v2.md).
-[Metadata-only service observation](docs/cascade-observation-api.md) is also a
-local candidate. [Deterministic causal latency analysis](docs/cascade-analysis.md)
-is implemented locally for issue #19. Recording maps, inspection, adapters and
-execution remain planned; v2 execution APIs explicitly reject them.
+Independent STT → LLM → TTS configuration, metadata-only service observation,
+and deterministic causal latency analysis are committed on
+[review branch PR #25](https://github.com/engkimo/voxbench/pull/25) for issues
+#17–#19. They are not yet merged into `main`; the contracts are documented in the
+[v2 guide](docs/cascade-config-v2.md), [observation API](docs/cascade-observation-api.md),
+and [analysis guide](docs/cascade-analysis.md). Recording maps, inspection,
+adapters and execution remain planned; v2 execution APIs explicitly reject them.
 
 Pipecat is optional: the observation library/HTTP ingest and built-in direct
 realtime bridge do not require it. The cascade target includes Pipecat, other
