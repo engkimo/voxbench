@@ -27,6 +27,7 @@ import {
 } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 
+import { MediaTimingPanel, mediaTimingRuns } from './MediaTimingPanel'
 import type {
   CrossSessionTrend,
   EnvironmentProfile,
@@ -931,6 +932,7 @@ export function App() {
             <LinkedCallInspector
               apiBase={apiBase}
               audioSessionRevision={audioSessionRevision}
+              compareTimeline={compareTimeline}
               runId={timeline.run_id}
               timeline={timeline}
             />
@@ -1098,11 +1100,13 @@ function BargeInPacketProof({ incident }: { incident: TimelineIncident }) {
 function LinkedCallInspector({
   apiBase,
   audioSessionRevision,
+  compareTimeline,
   runId,
   timeline,
 }: {
   apiBase: string
   audioSessionRevision: number
+  compareTimeline?: TimelineResponse
   runId: string
   timeline: TimelineResponse
 }) {
@@ -1119,6 +1123,16 @@ function LinkedCallInspector({
   )
 
   const durationMs = inspectorDurationMs(timeline)
+  const primaryTiming = useMemo(
+    () => mediaTimingRuns(timeline, compareTimeline ? 'Primary run' : 'Selected run'),
+    [timeline, compareTimeline],
+  )
+  const comparisonTiming = useMemo(
+    () => compareTimeline && compareTimeline.run_id !== timeline.run_id
+      ? mediaTimingRuns(compareTimeline, 'Comparison run')
+      : [],
+    [timeline, compareTimeline],
+  )
   const selectedIncident =
     timeline.lanes.incidents.find(
       (incident) => incident.incident_id === selectedIncidentId,
@@ -1178,6 +1192,12 @@ function LinkedCallInspector({
       <p className="panelLead">
         One cursor links call events, transport, pipeline evidence, provider lifecycle, and host state.
       </p>
+      <MediaTimingPanel
+        cursorMs={cursorMs}
+        cursorRunId={primaryTiming[0]?.id}
+        onSeek={moveCursor}
+        runs={[...primaryTiming, ...comparisonTiming]}
+      />
 
       <div className="incidentStrip" aria-label="Detected incidents">
         {timeline.lanes.incidents.length > 0 ? (
