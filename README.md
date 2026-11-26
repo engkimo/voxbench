@@ -642,6 +642,13 @@ shared cursor and opens its observed/expected evidence; selecting a stage audio
 artifact lets playback and the ruler follow the same cursor. Missing conversation
 telemetry is shown as `not observed`, never as healthy.
 
+With a run selected, use **Ask VoxBench** to open the strongest incident or
+the earliest available event in Call inspector. Each answer comes from a local
+deterministic planner. The Control Plane validates the proposed view against the
+selected run, sends the command over server-sent events, and records the
+browser's acknowledgement. Sessions and acknowledgements live in process memory
+and last until the Control Plane restarts.
+
 Run selections are deep-linkable without browser storage:
 
 ```text

@@ -722,6 +722,7 @@ a {
 }
 
 .laneStatus,
+.agentDiagnosticPanel,
 .asyncRunPanel,
 .environmentPanel,
 .hostMetricsPanel,
@@ -743,6 +744,147 @@ a {
   min-width: 0;
   border-color: #9bbfc6;
   background: linear-gradient(180deg, #fbfefe 0%, #f7fafc 100%);
+}
+
+.agentDiagnosticPanel {
+  display: grid;
+  gap: 9px;
+  border-color: #8eb9b1;
+  background: linear-gradient(180deg, #fbfffd 0%, #f2faf7 100%);
+}
+
+.agentDiagnosticPanel > p {
+  margin: 0;
+  color: #596775;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agentDiagnosticPanel form,
+.agentDiagnosticPanel label {
+  display: grid;
+  gap: 6px;
+}
+
+.agentDiagnosticPanel label {
+  color: #4c5968;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.agentDiagnosticPanel textarea {
+  min-height: 68px;
+  resize: vertical;
+  border: 1px solid #abc8c1;
+  border-radius: 6px;
+  padding: 8px;
+  color: #283444;
+  background: #ffffff;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.agentDiagnosticPanel form button {
+  min-height: 34px;
+  font-size: 11px;
+}
+
+.agentStreamState {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #5d6a74;
+  background: #edf1f4;
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.agentStreamState.streaming,
+.agentStreamState.completed {
+  color: #286646;
+  background: #dff3e8;
+}
+
+.agentStreamState.connecting {
+  color: #735617;
+  background: #fff2c7;
+}
+
+.agentStreamState.error {
+  color: #7f2d33;
+  background: #ffe3e3;
+}
+
+.agentAnswer,
+.agentEvidence,
+.agentCommandDelivery {
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.agentAnswer {
+  color: #263f3a;
+  background: #e8f5f0;
+}
+
+.agentEvidence,
+.agentCommandDelivery {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #c7d8d3;
+  color: #526270;
+  background: #ffffff;
+}
+
+.agentEvidence strong {
+  color: #276956;
+  text-transform: uppercase;
+}
+
+.agentCommandDelivery small,
+.agentSessionMeta {
+  overflow: hidden;
+  color: #74818c;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentCommandResult {
+  display: grid;
+  gap: 3px;
+  border: 1px solid #acd0bd;
+  border-radius: 6px;
+  padding: 7px 8px;
+  color: #286646;
+  background: #eff9f3;
+  font-size: 10px;
+}
+
+.agentCommandResult.blocked {
+  border-color: #d8be76;
+  color: #735617;
+  background: #fff8df;
+}
+
+.agentCommandResult.rejected {
+  border-color: #d6a2a5;
+  color: #7f2d33;
+  background: #fff4f4;
+}
+
+.agentCommandResult strong {
+  text-transform: uppercase;
+}
+
+.agentCommandResult small {
+  overflow: hidden;
+  opacity: 0.75;
+  text-overflow: ellipsis;
 }
 
 .inspectorCursorReadout {
@@ -830,6 +972,11 @@ a {
 
 .inspectorLane + .inspectorLane {
   border-top: 1px solid #edf1f4;
+}
+
+.inspectorLane.commandFocused {
+  background: #f5f1ff;
+  box-shadow: inset 3px 0 #735ea8;
 }
 
 .inspectorLaneLabel {
@@ -952,6 +1099,11 @@ a {
 
 .inspectorIncidentMarker.info {
   background: #567f9d;
+}
+
+.inspectorEventMarker.commandFocused {
+  z-index: 5;
+  box-shadow: 0 0 0 4px rgba(115, 94, 168, 0.24);
 }
 
 .inspectorCursor {

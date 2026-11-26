@@ -21,12 +21,15 @@ import {
   MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
+  useImperativeHandle,
+  type Ref,
   useMemo,
   useRef,
   useState,
 } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 
+import { AgentDiagnosticPanel } from './AgentDiagnosticPanel'
 import { MediaTimingPanel, mediaTimingRuns } from './MediaTimingPanel'
 import type {
   CrossSessionTrend,
@@ -46,6 +49,8 @@ import type {
   TimelineSipEvent,
   TimelineStageLane,
   TimelineViolation,
+  ResolvedUiCommand,
+  UiCommandExecutionResult,
   AudioSessionStatus,
   StorageReadiness,
 } from './types'
@@ -472,6 +477,9 @@ export function App() {
     kind: 'success' | 'error'
     message: string
   } | null>(null)
+  const inspectorCommandRef = useRef<InspectorCommandHandle>(null)
+  const recordingsRef = useRef<HTMLElement>(null)
+  const stagesRef = useRef<HTMLDivElement>(null)
   const stageDetailRef = useRef<HTMLDivElement>(null)
 
   const timelineQuery = useQuery({
@@ -622,6 +630,19 @@ export function App() {
     } finally {
       setQuickDemoPending(false)
     }
+  }
+
+  function executeResolvedUiCommand(command: ResolvedUiCommand): UiCommandExecutionResult {
+    if (command.target.run_id === runId) {
+      const panel = command.type === 'open_panel' ? command.target.panel : null
+      const section = panel === 'recordings' ? recordingsRef.current : panel === 'stages' ? stagesRef.current : null
+      if (section) {
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        return { command_id: command.command_id, outcome: 'applied', detail: `Focused ${panel}.` }
+      }
+      if (inspectorCommandRef.current) return inspectorCommandRef.current.apply(command)
+    }
+    return { command_id: command.command_id, outcome: 'rejected', detail: 'The target run is unavailable.' }
   }
 
   function selectStage(stageName: string) {
@@ -930,6 +951,8 @@ export function App() {
               <ComparisonTable primary={timeline} compare={compareTimeline} />
             ) : null}
             <LinkedCallInspector
+              key={`${apiBase}:${timeline.run_id}`}
+              commandRef={inspectorCommandRef}
               apiBase={apiBase}
               audioSessionRevision={audioSessionRevision}
               compareTimeline={compareTimeline}
@@ -937,12 +960,13 @@ export function App() {
               timeline={timeline}
             />
             <Recordings
+              sectionRef={recordingsRef}
               apiBase={apiBase}
               audioSessionRevision={audioSessionRevision}
               recordings={timeline.lanes.recordings}
               runId={timeline.run_id}
             />
-            <div className="sectionHeader">
+            <div className="sectionHeader" ref={stagesRef}>
               <Activity size={18} />
               <h2>Stages</h2>
             </div>
@@ -975,6 +999,12 @@ export function App() {
           </div>
 
           <aside className="sideRail">
+            <AgentDiagnosticPanel
+              key={`${apiBase}:${timeline.run_id}`}
+              apiBase={apiBase}
+              onResolved={executeResolvedUiCommand}
+              runId={timeline.run_id}
+            />
             <RecentRuns
               compareRunId={compareRunId}
               isError={runsQuery.isError}
@@ -1097,19 +1127,28 @@ function BargeInPacketProof({ incident }: { incident: TimelineIncident }) {
   )
 }
 
+type InspectorCommandHandle = {
+  apply: (command: ResolvedUiCommand) => UiCommandExecutionResult
+}
+
 function LinkedCallInspector({
+  commandRef,
   apiBase,
   audioSessionRevision,
   compareTimeline,
   runId,
   timeline,
 }: {
+  commandRef: Ref<InspectorCommandHandle>
   apiBase: string
   audioSessionRevision: number
   compareTimeline?: TimelineResponse
   runId: string
   timeline: TimelineResponse
 }) {
+  const inspectorRef = useRef<HTMLElement>(null)
+  const [focusedCategory, setFocusedCategory] = useState<TimelineCategory | null>(null)
+  const [focusedRef, setFocusedRef] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const audioArtifacts = timeline.lanes.artifacts.filter(
     (artifact) => artifact.kind === 'audio' && artifact.stage,
@@ -1146,18 +1185,34 @@ function LinkedCallInspector({
     audioArtifacts.find((artifact) => artifact.artifact_id === selectedArtifactId) ??
     audioArtifacts[0]
   const visibleCategories = INSPECTOR_CATEGORIES.filter(
-    (category) => category === 'conversation' || inspectorCategoryCount(timeline, category) > 0,
+    (category) => category === 'conversation' || category === focusedCategory || inspectorCategoryCount(timeline, category) > 0,
   )
   const base = apiBase.replace(/\/$/, '')
   const audioSrc = selectedArtifact?.stage
     ? `${base}/runs/${encodeURIComponent(runId)}/recordings/${encodeURIComponent(selectedArtifact.stage)}/audio`
     : null
 
-  useEffect(() => {
-    setCursorMs(0)
-    setSelectedIncidentId(timeline.lanes.incidents[0]?.incident_id ?? null)
-    setSelectedArtifactId(audioArtifacts[0]?.artifact_id ?? null)
-  }, [runId])
+  useImperativeHandle(commandRef, () => ({
+    apply(command) {
+      const target = command.target
+      const incident = timeline.lanes.incidents.find((item) => item.incident_id === target.incident_id)
+      if (command.type === 'select_incident' && incident) {
+        selectIncident(incident)
+      } else if (command.type === 'focus_evidence' && target.start_ms !== null) {
+        moveCursor(target.start_ms)
+      } else if (command.type !== 'open_panel' || !target.category) {
+        return { command_id: command.command_id, outcome: 'rejected', detail: 'The target evidence is unavailable.' }
+      }
+      setFocusedCategory(target.category)
+      setFocusedRef(target.evidence_ref)
+      inspectorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return {
+        command_id: command.command_id,
+        outcome: 'applied',
+        detail: `Focused ${target.evidence_ref ?? target.panel}.`,
+      }
+    },
+  }))
 
   function moveCursor(nextMs: number, seekAudio = true) {
     const bounded = Math.max(0, Math.min(durationMs, nextMs))
@@ -1182,7 +1237,7 @@ function LinkedCallInspector({
   }
 
   return (
-    <section className="linkedInspector">
+    <section className="linkedInspector" ref={inspectorRef}>
       <div className="sectionHeader compact">
         <Activity size={17} />
         <h2>Call inspector</h2>
@@ -1251,7 +1306,7 @@ function LinkedCallInspector({
             ...artifacts.map((artifact) => artifact.duration_ms ?? 0),
           )
           return (
-            <div className="inspectorLane" key={category}>
+            <div className={`inspectorLane ${focusedCategory === category ? 'commandFocused' : ''}`} key={category}>
               <div className="inspectorLaneLabel">
                 <strong>{timelineCategoryLabel(category)}</strong>
                 <span>
@@ -1297,7 +1352,7 @@ function LinkedCallInspector({
                 {events.map((event) => (
                   <button
                     aria-label={`${event.name} at ${formatTimelineTime(event.t_rel_ms)}`}
-                    className="inspectorEventMarker"
+                    className={`inspectorEventMarker ${focusedRef === event.event_id ? 'commandFocused' : ''}`}
                     key={event.event_id}
                     onClick={(clickEvent) => {
                       clickEvent.stopPropagation()
@@ -2948,16 +3003,18 @@ function Recordings({
   apiBase,
   audioSessionRevision,
   recordings,
+  sectionRef,
   runId,
 }: {
   apiBase: string
   audioSessionRevision: number
+  sectionRef: Ref<HTMLElement>
   recordings: TimelineRecording[]
   runId: string
 }) {
   const base = apiBase.replace(/\/$/, '')
   return (
-    <section className="recordings">
+    <section className="recordings" ref={sectionRef}>
       <div className="sectionHeader compact">
         <Headphones size={17} />
         <h2>Listen to every stage</h2>

@@ -6,7 +6,7 @@ import binascii
 import hmac
 import json
 import wave
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import (
     BaseModel,
@@ -35,6 +35,17 @@ from voxbench.control_plane.audio_session import (
     REMOTE_AUDIO_SESSION_COOKIE,
     AudioSessionLoginError,
     RemoteAudioSessionAuth,
+)
+from voxbench.control_plane.diagnostic_sessions import (
+    DiagnosticCommandNotFoundError,
+    DiagnosticCommandResultConflictError,
+    DiagnosticSessionCreateRequest,
+    DiagnosticSessionEvent,
+    DiagnosticSessionNotFoundError,
+    DiagnosticSessionResponse,
+    DiagnosticSessionStore,
+    UiCommandResultRequest,
+    UiCommandResultResponse,
 )
 from voxbench.control_plane.job_queue import RunJobLease, RunJobQueue
 from voxbench.control_plane.models import (
@@ -72,6 +83,12 @@ from voxbench.control_plane.storage_config import (
     StorageReadiness,
     injected_storage_readiness,
     local_storage_readiness,
+)
+from voxbench.control_plane.ui_commands import (
+    ResolvedUiCommand,
+    UiCommandRequest,
+    UiCommandResolutionError,
+    resolve_ui_command,
 )
 from voxbench.engine_harness.harness import EngineHarness
 from voxbench.engine_harness.models import (
@@ -4108,6 +4125,9 @@ class RunApiState:
         repr=False,
     )
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
+    diagnostic_sessions: DiagnosticSessionStore = field(
+        default_factory=DiagnosticSessionStore
+    )
 
     def __post_init__(self) -> None:
         if (self.remote_recording_reader is None) != (
@@ -4998,6 +5018,139 @@ def create_runs_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
         return stored.to_timeline()
 
+    @router.post(
+        "/runs/{run_id}/diagnostic-sessions",
+        response_model=DiagnosticSessionResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_diagnostic_session(
+        run_id: str,
+        session_request: DiagnosticSessionCreateRequest,
+        api_state: RunApiStateDependency,
+    ) -> DiagnosticSessionResponse:
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        return api_state.diagnostic_sessions.create(
+            timeline=stored.to_timeline(),
+            message=session_request.message,
+        )
+
+    @router.get(
+        "/diagnostic-sessions/{session_id}",
+        response_model=DiagnosticSessionResponse,
+    )
+    async def get_diagnostic_session(
+        session_id: UUID,
+        api_state: RunApiStateDependency,
+    ) -> DiagnosticSessionResponse:
+        try:
+            return api_state.diagnostic_sessions.get(session_id)
+        except DiagnosticSessionNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown diagnostic session",
+            ) from None
+
+    @router.get("/diagnostic-sessions/{session_id}/events")
+    async def stream_diagnostic_session_events(
+        session_id: UUID,
+        request: Request,
+        api_state: RunApiStateDependency,
+        after: Annotated[int, Query(ge=0)] = 0,
+    ) -> StreamingResponse:
+        resume_after = after
+        last_event_id = request.headers.get("last-event-id")
+        if last_event_id is not None:
+            try:
+                ordinal = int(last_event_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative event ordinal",
+                ) from None
+            if ordinal < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative event ordinal",
+                )
+            resume_after = max(after, ordinal)
+        try:
+            events = api_state.diagnostic_sessions.events_after(
+                session_id,
+                resume_after,
+            )
+        except DiagnosticSessionNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown diagnostic session",
+            ) from None
+
+        async def event_stream() -> AsyncIterator[str]:
+            for event in events:
+                if await request.is_disconnected():
+                    return
+                yield _diagnostic_sse_event(event)
+                await asyncio.sleep(0)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.post(
+        "/diagnostic-sessions/{session_id}/ui-command-results",
+        response_model=UiCommandResultResponse,
+    )
+    async def acknowledge_diagnostic_ui_command(
+        session_id: UUID,
+        result: UiCommandResultRequest,
+        api_state: RunApiStateDependency,
+    ) -> UiCommandResultResponse:
+        try:
+            return api_state.diagnostic_sessions.acknowledge(session_id, result)
+        except DiagnosticSessionNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown diagnostic session",
+            ) from None
+        except DiagnosticCommandNotFoundError:
+            raise HTTPException(
+                status_code=422,
+                detail="UI command does not belong to the diagnostic session",
+            ) from None
+        except DiagnosticCommandResultConflictError:
+            raise HTTPException(
+                status_code=409,
+                detail="UI command already has a different result",
+            ) from None
+
+    @router.post(
+        "/runs/{run_id}/ui-commands/resolve",
+        response_model=ResolvedUiCommand,
+    )
+    async def resolve_run_ui_command(
+        run_id: str,
+        command: UiCommandRequest,
+        api_state: RunApiStateDependency,
+    ) -> ResolvedUiCommand:
+        if command.run_id != run_id:
+            raise HTTPException(
+                status_code=422,
+                detail="UI command run_id must match the route run_id",
+            )
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        try:
+            return resolve_ui_command(command, stored.to_timeline())
+        except UiCommandResolutionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
     @router.get("/runs/{run_id}/recordings/{stage}/audio")
     async def get_run_recording_audio(
         run_id: str,
@@ -5103,6 +5256,11 @@ def create_runs_router() -> APIRouter:
         return [MetricResponse(**metric.__dict__) for metric in stored.metrics]
 
     return router
+
+
+def _diagnostic_sse_event(event: DiagnosticSessionEvent) -> str:
+    data = json.dumps(event.model_dump(mode="json"), separators=(",", ":"))
+    return f"id: {event.ordinal}\nevent: {event.type}\ndata: {data}\n\n"
 
 
 def _relative_seconds(ts: datetime, t0: datetime) -> float:
