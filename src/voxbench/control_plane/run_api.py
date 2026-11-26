@@ -2862,6 +2862,53 @@ def _typed_timeline_series(run: StoredRun) -> list[TimelineTypedSeries]:
                 points=sorted(points, key=lambda point: point.t_rel_ms),
             )
         )
+    return series + _rtp_send_interval_series(run)
+
+
+def _rtp_send_interval_series(run: StoredRun) -> list[TimelineTypedSeries]:
+    streams: dict[tuple[str, str], list[_RtpPacketObservationEvidence]] = {}
+    for packet in _rtp_packet_observations(run):
+        if packet.direction == "sent":
+            streams.setdefault(
+                (packet.stream_alias, packet.event.clock_domain), []
+            ).append(packet)
+
+    series: list[TimelineTypedSeries] = []
+    for index, ((stream_alias, clock_domain), packets) in enumerate(
+        sorted(streams.items())
+    ):
+        if len(packets) < 2:
+            continue
+        uncertainties = [
+            packet.event.alignment_uncertainty_ms for packet in packets
+        ]
+        known_uncertainties = [
+            value for value in uncertainties if value is not None
+        ]
+        series.append(
+            TimelineTypedSeries(
+                series_id=f"rtp-send-interval:{index}",
+                category="transport",
+                name="rtp_send_interval_ms",
+                unit="ms",
+                clock_domain=clock_domain,
+                alignment_uncertainty_ms=(
+                    max(known_uncertainties)
+                    if len(known_uncertainties) == len(uncertainties)
+                    else None
+                ),
+                direction="sent",
+                stream_alias=stream_alias,
+                source="rtp_packet_tap",
+                points=[
+                    TimelineSeriesPoint(
+                        t_rel_ms=current.t_rel_ms,
+                        value=current.t_rel_ms - previous.t_rel_ms,
+                    )
+                    for previous, current in pairwise(packets)
+                ],
+            )
+        )
     return series
 
 

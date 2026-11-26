@@ -610,6 +610,52 @@ def test_rtp_packet_headers_project_sequence_gap_and_arrival_stall(
     )
 
 
+def test_timeline_keeps_outbound_wall_time_gap_when_rtp_time_also_advances(
+    tmp_path: Path,
+) -> None:
+    client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
+    run_id = client.post("/runs/observed", json=_observed_run_payload()).json()["run_id"]
+    t0 = datetime.fromisoformat(client.get(f"/runs/{run_id}/timeline").json()["t0"])
+    observer = VoxBenchObserver(run_id, ApiTestTransport(client))
+    for stream, direction, clock, sequence, offset in (
+        ("handset", "sent", "control_plane_wall", 3, 520),
+        ("alternate", "sent", "control_plane_wall", 1, 300),
+        ("handset", "received", "control_plane_wall", 1, 200),
+        ("handset", "sent", "separate_clock", 2, 400),
+        ("handset", "sent", "control_plane_wall", 1, 100),
+        ("handset", "sent", "control_plane_wall", 2, 120),
+    ):
+        observer.observe_rtp_packet(
+            RtpPacket(
+                stream_alias=stream,
+                direction=direction,
+                sequence_number=sequence,
+                rtp_timestamp=offset * 8,
+                payload_type=0,
+                clock_rate_hz=8_000,
+                clock_domain=clock,
+                alignment_uncertainty_ms=2,
+                ts=t0 + timedelta(milliseconds=offset),
+            )
+        )
+    observer.observe_metric("loop_lag", 385, ts=t0 + timedelta(milliseconds=550))
+    assert observer.flush() == 7
+
+    lanes = client.get(f"/runs/{run_id}/timeline").json()["lanes"]
+    sends = [series for series in lanes["series"] if series["name"] == "rtp_send_interval_ms"]
+    assert len(sends) == 1
+    send = sends[0]
+    assert send["stream_alias"] == "handset"
+    assert send["clock_domain"] == "control_plane_wall"
+    assert send["direction"] == "sent"
+    assert send["alignment_uncertainty_ms"] == 2
+    assert [point["value"] for point in send["points"]] == pytest.approx([20, 400])
+    assert [point["t_rel_ms"] for point in send["points"]] == pytest.approx([120, 520])
+    loop = next(series for series in lanes["series"] if series["name"] == "loop_lag")
+    assert loop["points"][0]["t_rel_ms"] == pytest.approx(550)
+    assert not any(item["rule_id"] == "rtp_arrival_stall_v1" for item in lanes["incidents"])
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

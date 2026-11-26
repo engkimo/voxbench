@@ -672,6 +672,15 @@ persists a safe stream alias, direction, sequence number, RTP timestamp, payload
 type, marker, clock rate, and arrival time. Media payload and SSRC are not retained.
 Normal packet markers stay out of the inspector to avoid timeline noise.
 
+For outgoing RTP streams, the timeline also projects the observed wall-clock
+interval between consecutive packets as `rtp_send_interval_ms`. Call inspector
+plots that series with `loop_lag` on the same millisecond axis, supports the
+existing two-run comparison and shared cursor, and can expand the longest
+candidate where a long send interval overlaps an event-loop delay. Overlap is
+calculated only when both series use the same clock domain. The send interval is
+not reduced by RTP media-time advance; the existing receive-side arrival-stall
+rule continues to compare arrival time with RTP media time independently.
+
 Sequence deltas account for 16-bit wrap. A forward delta greater than one and
 less than 32768 produces a high-confidence `RTP sequence gap observed` incident
 at the observation point. It is not labeled confirmed network loss until capture

@@ -1,0 +1,70 @@
+.mediaTiming {
+  --timing-send: #175fc0;
+  --timing-loop: #c25713;
+  --timing-overlap: #e3edf7;
+  border: 1px solid #dce5ef;
+  border-radius: 14px;
+  background: #fff;
+  color: #182b41;
+  padding: 18px;
+}
+
+.timingHeader, .timingRowHeader, .timingLegend {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.timingHeader > div, .timingRowHeader h3 { margin-right: auto; }
+.mediaTiming h2 { font-size: 19px; margin: 0; }
+.mediaTiming h3 { font-size: 15px; margin-bottom: 0; margin-top: 0; }
+.mediaTiming p { color: #526479; font-size: 13px; margin: 5px 0; }
+.timingLegend { font-size: 12px; margin: 13px 0; }
+.timingLegend span { align-items: center; display: inline-flex; gap: 7px; }
+.timingLegend i { border-radius: 2px; display: inline-block; height: 9px; width: 16px; }
+.timingSendKey { background: var(--timing-send); }
+.timingLoopKey { background: var(--timing-loop); }
+.timingOverlapKey { background: var(--timing-overlap); border: 1px solid #b4c8de; }
+.timingRow { border-top: 1px solid #e8edf3; padding-top: 10px; }
+.timingRow + .timingRow { margin-top: 3px; }
+.timingRowHeader > span { color: #425970; font-size: 12px; }
+
+.timingButton {
+  background: #edf4fc;
+  border: 1px solid #bfd1e6;
+  border-radius: 6px;
+  color: #174477;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+}
+
+.timingButton:hover { background: #dceafa; }
+.timingChart { display: block; max-height: 250px; width: 100%; }
+.timingChart text { fill: #526479; font-size: 10px; }
+.timingGridline { stroke: #e0e8f0; }
+.timingSendLine, .timingLoopLine { fill: none; stroke-width: .75; }
+.timingSendLine { stroke: var(--timing-send); }
+.timingLoopLine { stroke: var(--timing-loop); }
+.timingSendSpan, .timingLoopSpan { stroke-width: 3; }
+.timingSendSpan { stroke: var(--timing-send); }
+.timingLoopSpan { stroke: var(--timing-loop); }
+.timingSendDot { fill: var(--timing-send); }
+.timingLoopDot { fill: var(--timing-loop); }
+.timingOverlap { fill: var(--timing-overlap); }
+.timingCursor { stroke: #415972; stroke-dasharray: 4 3; }
+
+.timingDetail {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin: 5px 0 12px;
+}
+
+.timingDetail > div { background: #f2f6fb; border-radius: 8px; padding: 10px 12px; }
+.timingDetail dt, .timingDetail span { color: #526479; font-size: 12px; }
+.timingDetail dd { font-size: 22px; font-weight: 700; margin: 3px 0; }
+.mediaTiming p.timingFootnote { font-size: 12px; margin: 10px 0 0; }
