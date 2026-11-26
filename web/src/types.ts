@@ -206,6 +206,57 @@ export type TimelineResponse = {
   }
 }
 
+export type ResolvedUiCommand = {
+  command_id: string
+  type: 'select_incident' | 'focus_evidence' | 'open_panel' | 'set_time_window'
+  status: 'resolved'
+  target: {
+    run_id: string
+    panel: TimelineCategory | 'recordings' | 'stages' | null
+    incident_id: string | null
+    evidence_ref: string | null
+    category: TimelineCategory | null
+    focus_ms: number | null
+    start_ms: number | null
+    end_ms: number | null
+  }
+}
+
+export type UiCommandExecutionResult = {
+  command_id: string
+  outcome: 'applied' | 'rejected' | 'blocked'
+  detail: string
+}
+
+export type DiagnosticSession = {
+  session_id: string
+  run_id: string
+  status: 'completed'
+  adapter: 'deterministic-local'
+  message: string
+  created_at: string
+  latest_ordinal: number
+  command_count: number
+  acknowledged_command_count: number
+}
+
+export type DiagnosticSessionEventType =
+  | 'status'
+  | 'evidence_found'
+  | 'answer_delta'
+  | 'ui_command_proposed'
+  | 'ui_command'
+  | 'ui_command_result'
+  | 'completed'
+
+export type DiagnosticSessionEvent = {
+  session_id: string
+  ordinal: number
+  type: DiagnosticSessionEventType
+  created_at: string
+  payload: Record<string, unknown>
+}
+
 export type RunSummary = {
   run_id: string
   config_hash: string

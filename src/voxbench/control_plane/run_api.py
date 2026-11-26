@@ -6,9 +6,10 @@ import binascii
 import hmac
 import json
 import wave
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from itertools import pairwise
 from pathlib import Path
 from threading import Thread
@@ -17,7 +18,7 @@ from urllib.parse import quote, unquote, urlparse
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.websockets import WebSocketDisconnect
 from pydantic import (
     BaseModel,
@@ -35,6 +36,17 @@ from voxbench.control_plane.audio_session import (
     REMOTE_AUDIO_SESSION_COOKIE,
     AudioSessionLoginError,
     RemoteAudioSessionAuth,
+)
+from voxbench.control_plane.diagnostic_sessions import (
+    DiagnosticCommandNotFoundError,
+    DiagnosticCommandResultConflictError,
+    DiagnosticSessionCreateRequest,
+    DiagnosticSessionEvent,
+    DiagnosticSessionNotFoundError,
+    DiagnosticSessionResponse,
+    DiagnosticSessionStore,
+    UiCommandResultRequest,
+    UiCommandResultResponse,
 )
 from voxbench.control_plane.job_queue import RunJobLease, RunJobQueue
 from voxbench.control_plane.models import (
@@ -72,6 +84,12 @@ from voxbench.control_plane.storage_config import (
     StorageReadiness,
     injected_storage_readiness,
     local_storage_readiness,
+)
+from voxbench.control_plane.ui_commands import (
+    ResolvedUiCommand,
+    UiCommandRequest,
+    UiCommandResolutionError,
+    resolve_ui_command,
 )
 from voxbench.engine_harness.harness import EngineHarness
 from voxbench.engine_harness.models import (
@@ -967,6 +985,7 @@ class StoredRun:
         typed_series = _typed_timeline_series(self)
         typed_artifacts = _typed_timeline_artifacts(self)
         typed_incidents = _typed_timeline_incidents(self, typed_artifacts)
+        typed_incidents.extend(_rtp_send_loop_overlap_incidents(typed_series))
         return TimelineResponse(
             run_id=self.run_id,
             t0=self.started_at,
@@ -1152,6 +1171,9 @@ RTP_JITTER_WARNING_MS = 30.0
 RTP_MOS_WARNING_SCORE = 3.5
 RTP_DEGRADATION_WINDOW_GAP_MS = 5_000.0
 RTP_ARRIVAL_STALL_EXCESS_MS = 100.0
+RTP_SEND_GAP_CANDIDATE_MS = 100.0
+EVENT_LOOP_DELAY_CANDIDATE_MS = 50.0
+RTP_SEND_LOOP_MIN_OVERLAP_MS = 20.0
 STAGE_LEVEL_EVENT_THRESHOLD_DB = 1.0
 STAGE_SILENCE_THRESHOLD_DBFS = -60.0
 STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
@@ -2912,6 +2934,136 @@ def _rtp_send_interval_series(run: StoredRun) -> list[TimelineTypedSeries]:
     return series
 
 
+def _rtp_send_loop_overlap_incidents(
+    series: list[TimelineTypedSeries],
+) -> list[TimelineIncident]:
+    sends = [
+        item
+        for item in series
+        if item.name == "rtp_send_interval_ms" and item.direction == "sent"
+    ]
+    loops = [
+        item
+        for item in series
+        if item.category == "runtime"
+        and item.name == "loop_lag"
+        and item.unit == "ms"
+    ]
+    incidents: list[TimelineIncident] = []
+    for send in sends:
+        matching_loops = [
+            loop for loop in loops if loop.clock_domain == send.clock_domain
+        ]
+        if len(matching_loops) != 1:
+            continue
+        loop = matching_loops[0]
+        long_gaps = [
+            point
+            for point in send.points
+            if point.value >= RTP_SEND_GAP_CANDIDATE_MS
+        ]
+        loop_delays = [
+            point
+            for point in loop.points
+            if point.value >= EVENT_LOOP_DELAY_CANDIDATE_MS
+        ]
+        max_delay_ms = max((delay.value for delay in loop_delays), default=0.0)
+        loop_index = 0
+        overlapping_gap_count = 0
+        strongest: dict[str, float] | None = None
+        for gap in long_gaps:
+            send_start_ms = gap.t_rel_ms - gap.value
+            while (
+                loop_index < len(loop_delays)
+                and loop_delays[loop_index].t_rel_ms <= send_start_ms
+            ):
+                loop_index += 1
+            best: dict[str, float] | None = None
+            for index in range(loop_index, len(loop_delays)):
+                delay = loop_delays[index]
+                # Ends are ordered, but longer delays can start before earlier ones.
+                if delay.t_rel_ms - max_delay_ms >= gap.t_rel_ms:
+                    break
+                loop_start_ms = delay.t_rel_ms - delay.value
+                overlap_start_ms = max(send_start_ms, loop_start_ms)
+                overlap_end_ms = min(gap.t_rel_ms, delay.t_rel_ms)
+                overlap_ms = overlap_end_ms - overlap_start_ms
+                if overlap_ms < RTP_SEND_LOOP_MIN_OVERLAP_MS:
+                    continue
+                if best is None or overlap_ms > best["overlap_ms"]:
+                    best = {
+                        "send_start_ms": send_start_ms,
+                        "send_end_ms": gap.t_rel_ms,
+                        "send_interval_ms": gap.value,
+                        "loop_start_ms": loop_start_ms,
+                        "loop_end_ms": delay.t_rel_ms,
+                        "loop_delay_ms": delay.value,
+                        "overlap_start_ms": overlap_start_ms,
+                        "overlap_end_ms": overlap_end_ms,
+                        "overlap_ms": overlap_ms,
+                    }
+            if best is None:
+                continue
+            overlapping_gap_count += 1
+            if (
+                strongest is None
+                or best["send_interval_ms"] > strongest["send_interval_ms"]
+            ):
+                strongest = best
+        if strongest is None:
+            continue
+        # Appending observations can renumber series or replace a stream's candidate.
+        # An issued reference must continue to identify the same two measured windows.
+        identity = json.dumps([
+            send.stream_alias,
+            send.clock_domain,
+            strongest["send_start_ms"],
+            strongest["send_end_ms"],
+            strongest["loop_start_ms"],
+            strongest["loop_end_ms"],
+        ]).encode("utf-8")
+        incidents.append(
+            TimelineIncident(
+                incident_id=f"rtp-send-loop-overlap:{sha256(identity).hexdigest()}",
+                rule_id="rtp_send_loop_overlap_v1",
+                category="transport",
+                severity="warning",
+                title="Outbound RTP send gap overlaps event-loop delay",
+                summary=(
+                    f"{strongest['send_interval_ms']:.2f} ms outbound RTP "
+                    f"interval overlaps a {strongest['loop_delay_ms']:.2f} ms "
+                    f"event-loop delay by {strongest['overlap_ms']:.2f} ms"
+                ),
+                start_ms=max(0.0, min(strongest["send_start_ms"], strongest["loop_start_ms"])),
+                end_ms=max(
+                    strongest["send_end_ms"], strongest["loop_end_ms"]
+                ),
+                confidence="medium",
+                direction="sent",
+                observed={
+                    "clock_domain": send.clock_domain,
+                    "stream_alias": send.stream_alias or "unknown",
+                    "send_series_id": send.series_id,
+                    "loop_series_id": loop.series_id,
+                    **strongest,
+                    "long_gap_count": len(long_gaps),
+                    "overlapping_gap_count": overlapping_gap_count,
+                    "remote_playout_observed": False,
+                },
+                expected={
+                    "send_interval_below_ms": RTP_SEND_GAP_CANDIDATE_MS,
+                    "loop_delay_below_ms": EVENT_LOOP_DELAY_CANDIDATE_MS,
+                    "overlap_below_ms": RTP_SEND_LOOP_MIN_OVERLAP_MS,
+                    "matching_clock_domain": True,
+                    "interpretation": "server-side timing candidate",
+                    "remote_audibility": "not observed",
+                },
+                evidence_refs=[send.series_id, loop.series_id],
+            )
+        )
+    return incidents
+
+
 def _typed_timeline_artifacts(run: StoredRun) -> list[TimelineTypedArtifact]:
     return [
         TimelineTypedArtifact(
@@ -4108,6 +4260,9 @@ class RunApiState:
         repr=False,
     )
     audio_buffers: dict[tuple[str, str], RunAudioBuffer] = field(default_factory=dict)
+    diagnostic_sessions: DiagnosticSessionStore = field(
+        default_factory=DiagnosticSessionStore
+    )
 
     def __post_init__(self) -> None:
         if (self.remote_recording_reader is None) != (
@@ -4998,6 +5153,139 @@ def create_runs_router() -> APIRouter:
             raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
         return stored.to_timeline()
 
+    @router.post(
+        "/runs/{run_id}/diagnostic-sessions",
+        response_model=DiagnosticSessionResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_diagnostic_session(
+        run_id: str,
+        session_request: DiagnosticSessionCreateRequest,
+        api_state: RunApiStateDependency,
+    ) -> DiagnosticSessionResponse:
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        return api_state.diagnostic_sessions.create(
+            timeline=stored.to_timeline(),
+            message=session_request.message,
+        )
+
+    @router.get(
+        "/diagnostic-sessions/{session_id}",
+        response_model=DiagnosticSessionResponse,
+    )
+    async def get_diagnostic_session(
+        session_id: UUID,
+        api_state: RunApiStateDependency,
+    ) -> DiagnosticSessionResponse:
+        try:
+            return api_state.diagnostic_sessions.get(session_id)
+        except DiagnosticSessionNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown diagnostic session",
+            ) from None
+
+    @router.get("/diagnostic-sessions/{session_id}/events")
+    async def stream_diagnostic_session_events(
+        session_id: UUID,
+        request: Request,
+        api_state: RunApiStateDependency,
+        after: Annotated[int, Query(ge=0)] = 0,
+    ) -> StreamingResponse:
+        resume_after = after
+        last_event_id = request.headers.get("last-event-id")
+        if last_event_id is not None:
+            try:
+                ordinal = int(last_event_id)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative event ordinal",
+                ) from None
+            if ordinal < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Last-Event-ID must be a non-negative event ordinal",
+                )
+            resume_after = max(after, ordinal)
+        try:
+            events = api_state.diagnostic_sessions.events_after(
+                session_id,
+                resume_after,
+            )
+        except DiagnosticSessionNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown diagnostic session",
+            ) from None
+
+        async def event_stream() -> AsyncIterator[str]:
+            for event in events:
+                if await request.is_disconnected():
+                    return
+                yield _diagnostic_sse_event(event)
+                await asyncio.sleep(0)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.post(
+        "/diagnostic-sessions/{session_id}/ui-command-results",
+        response_model=UiCommandResultResponse,
+    )
+    async def acknowledge_diagnostic_ui_command(
+        session_id: UUID,
+        result: UiCommandResultRequest,
+        api_state: RunApiStateDependency,
+    ) -> UiCommandResultResponse:
+        try:
+            return api_state.diagnostic_sessions.acknowledge(session_id, result)
+        except DiagnosticSessionNotFoundError:
+            raise HTTPException(
+                status_code=404,
+                detail="unknown diagnostic session",
+            ) from None
+        except DiagnosticCommandNotFoundError:
+            raise HTTPException(
+                status_code=422,
+                detail="UI command does not belong to the diagnostic session",
+            ) from None
+        except DiagnosticCommandResultConflictError:
+            raise HTTPException(
+                status_code=409,
+                detail="UI command already has a different result",
+            ) from None
+
+    @router.post(
+        "/runs/{run_id}/ui-commands/resolve",
+        response_model=ResolvedUiCommand,
+    )
+    async def resolve_run_ui_command(
+        run_id: str,
+        command: UiCommandRequest,
+        api_state: RunApiStateDependency,
+    ) -> ResolvedUiCommand:
+        if command.run_id != run_id:
+            raise HTTPException(
+                status_code=422,
+                detail="UI command run_id must match the route run_id",
+            )
+        stored = api_state.repository.get(run_id)
+        if stored is None:
+            raise HTTPException(status_code=404, detail=f"unknown run '{run_id}'")
+        try:
+            return resolve_ui_command(command, stored.to_timeline())
+        except UiCommandResolutionError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+
     @router.get("/runs/{run_id}/recordings/{stage}/audio")
     async def get_run_recording_audio(
         run_id: str,
@@ -5103,6 +5391,11 @@ def create_runs_router() -> APIRouter:
         return [MetricResponse(**metric.__dict__) for metric in stored.metrics]
 
     return router
+
+
+def _diagnostic_sse_event(event: DiagnosticSessionEvent) -> str:
+    data = json.dumps(event.model_dump(mode="json"), separators=(",", ":"))
+    return f"id: {event.ordinal}\nevent: {event.type}\ndata: {data}\n\n"
 
 
 def _relative_seconds(ts: datetime, t0: datetime) -> float:

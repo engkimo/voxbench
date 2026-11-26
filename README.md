@@ -642,6 +642,13 @@ shared cursor and opens its observed/expected evidence; selecting a stage audio
 artifact lets playback and the ruler follow the same cursor. Missing conversation
 telemetry is shown as `not observed`, never as healthy.
 
+With a run selected, use **Ask VoxBench** to open the strongest incident or
+the earliest available event in Call inspector. Each answer comes from a local
+deterministic planner. The Control Plane validates the proposed view against the
+selected run, sends the command over server-sent events, and records the
+browser's acknowledgement. Sessions and acknowledgements live in process memory
+and last until the Control Plane restarts.
+
 Run selections are deep-linkable without browser storage:
 
 ```text
@@ -680,6 +687,14 @@ candidate where a long send interval overlaps an event-loop delay. Overlap is
 calculated only when both series use the same clock domain. The send interval is
 not reduced by RTP media-time advance; the existing receive-side arrival-stall
 rule continues to compare arrival time with RTP media time independently.
+
+Ask VoxBench a question such as “Where did outbound RTP sending stall?” to
+inspect this evidence. When a send gap and an event-loop delay overlap on the
+same clock, the answer cites both series, the two intervals and their overlap.
+Call inspector opens a padded window around the candidate and places the shared
+cursor at its start. When the observations do not establish a qualifying
+overlap, the answer says so. The evidence describes server-side timing. Remote
+audibility requires a separate observation at the receiver.
 
 Sequence deltas account for 16-bit wrap. A forward delta greater than one and
 less than 32768 produces a high-confidence `RTP sequence gap observed` incident
