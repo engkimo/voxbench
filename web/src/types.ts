@@ -208,7 +208,7 @@ export type TimelineResponse = {
 
 export type ResolvedUiCommand = {
   command_id: string
-  type: 'select_incident' | 'focus_evidence' | 'open_panel'
+  type: 'select_incident' | 'focus_evidence' | 'open_panel' | 'set_time_window'
   status: 'resolved'
   target: {
     run_id: string
@@ -216,6 +216,7 @@ export type ResolvedUiCommand = {
     incident_id: string | null
     evidence_ref: string | null
     category: TimelineCategory | null
+    focus_ms: number | null
     start_ms: number | null
     end_ms: number | null
   }

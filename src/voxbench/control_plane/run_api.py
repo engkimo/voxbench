@@ -9,6 +9,7 @@ import wave
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from hashlib import sha256
 from itertools import pairwise
 from pathlib import Path
 from threading import Thread
@@ -984,6 +985,7 @@ class StoredRun:
         typed_series = _typed_timeline_series(self)
         typed_artifacts = _typed_timeline_artifacts(self)
         typed_incidents = _typed_timeline_incidents(self, typed_artifacts)
+        typed_incidents.extend(_rtp_send_loop_overlap_incidents(typed_series))
         return TimelineResponse(
             run_id=self.run_id,
             t0=self.started_at,
@@ -1169,6 +1171,9 @@ RTP_JITTER_WARNING_MS = 30.0
 RTP_MOS_WARNING_SCORE = 3.5
 RTP_DEGRADATION_WINDOW_GAP_MS = 5_000.0
 RTP_ARRIVAL_STALL_EXCESS_MS = 100.0
+RTP_SEND_GAP_CANDIDATE_MS = 100.0
+EVENT_LOOP_DELAY_CANDIDATE_MS = 50.0
+RTP_SEND_LOOP_MIN_OVERLAP_MS = 20.0
 STAGE_LEVEL_EVENT_THRESHOLD_DB = 1.0
 STAGE_SILENCE_THRESHOLD_DBFS = -60.0
 STAGE_SILENCE_SAMPLE_THRESHOLD_PCT = 98.0
@@ -2927,6 +2932,136 @@ def _rtp_send_interval_series(run: StoredRun) -> list[TimelineTypedSeries]:
             )
         )
     return series
+
+
+def _rtp_send_loop_overlap_incidents(
+    series: list[TimelineTypedSeries],
+) -> list[TimelineIncident]:
+    sends = [
+        item
+        for item in series
+        if item.name == "rtp_send_interval_ms" and item.direction == "sent"
+    ]
+    loops = [
+        item
+        for item in series
+        if item.category == "runtime"
+        and item.name == "loop_lag"
+        and item.unit == "ms"
+    ]
+    incidents: list[TimelineIncident] = []
+    for send in sends:
+        matching_loops = [
+            loop for loop in loops if loop.clock_domain == send.clock_domain
+        ]
+        if len(matching_loops) != 1:
+            continue
+        loop = matching_loops[0]
+        long_gaps = [
+            point
+            for point in send.points
+            if point.value >= RTP_SEND_GAP_CANDIDATE_MS
+        ]
+        loop_delays = [
+            point
+            for point in loop.points
+            if point.value >= EVENT_LOOP_DELAY_CANDIDATE_MS
+        ]
+        max_delay_ms = max((delay.value for delay in loop_delays), default=0.0)
+        loop_index = 0
+        overlapping_gap_count = 0
+        strongest: dict[str, float] | None = None
+        for gap in long_gaps:
+            send_start_ms = gap.t_rel_ms - gap.value
+            while (
+                loop_index < len(loop_delays)
+                and loop_delays[loop_index].t_rel_ms <= send_start_ms
+            ):
+                loop_index += 1
+            best: dict[str, float] | None = None
+            for index in range(loop_index, len(loop_delays)):
+                delay = loop_delays[index]
+                # Ends are ordered, but longer delays can start before earlier ones.
+                if delay.t_rel_ms - max_delay_ms >= gap.t_rel_ms:
+                    break
+                loop_start_ms = delay.t_rel_ms - delay.value
+                overlap_start_ms = max(send_start_ms, loop_start_ms)
+                overlap_end_ms = min(gap.t_rel_ms, delay.t_rel_ms)
+                overlap_ms = overlap_end_ms - overlap_start_ms
+                if overlap_ms < RTP_SEND_LOOP_MIN_OVERLAP_MS:
+                    continue
+                if best is None or overlap_ms > best["overlap_ms"]:
+                    best = {
+                        "send_start_ms": send_start_ms,
+                        "send_end_ms": gap.t_rel_ms,
+                        "send_interval_ms": gap.value,
+                        "loop_start_ms": loop_start_ms,
+                        "loop_end_ms": delay.t_rel_ms,
+                        "loop_delay_ms": delay.value,
+                        "overlap_start_ms": overlap_start_ms,
+                        "overlap_end_ms": overlap_end_ms,
+                        "overlap_ms": overlap_ms,
+                    }
+            if best is None:
+                continue
+            overlapping_gap_count += 1
+            if (
+                strongest is None
+                or best["send_interval_ms"] > strongest["send_interval_ms"]
+            ):
+                strongest = best
+        if strongest is None:
+            continue
+        # Appending observations can renumber series or replace a stream's candidate.
+        # An issued reference must continue to identify the same two measured windows.
+        identity = json.dumps([
+            send.stream_alias,
+            send.clock_domain,
+            strongest["send_start_ms"],
+            strongest["send_end_ms"],
+            strongest["loop_start_ms"],
+            strongest["loop_end_ms"],
+        ]).encode("utf-8")
+        incidents.append(
+            TimelineIncident(
+                incident_id=f"rtp-send-loop-overlap:{sha256(identity).hexdigest()}",
+                rule_id="rtp_send_loop_overlap_v1",
+                category="transport",
+                severity="warning",
+                title="Outbound RTP send gap overlaps event-loop delay",
+                summary=(
+                    f"{strongest['send_interval_ms']:.2f} ms outbound RTP "
+                    f"interval overlaps a {strongest['loop_delay_ms']:.2f} ms "
+                    f"event-loop delay by {strongest['overlap_ms']:.2f} ms"
+                ),
+                start_ms=max(0.0, min(strongest["send_start_ms"], strongest["loop_start_ms"])),
+                end_ms=max(
+                    strongest["send_end_ms"], strongest["loop_end_ms"]
+                ),
+                confidence="medium",
+                direction="sent",
+                observed={
+                    "clock_domain": send.clock_domain,
+                    "stream_alias": send.stream_alias or "unknown",
+                    "send_series_id": send.series_id,
+                    "loop_series_id": loop.series_id,
+                    **strongest,
+                    "long_gap_count": len(long_gaps),
+                    "overlapping_gap_count": overlapping_gap_count,
+                    "remote_playout_observed": False,
+                },
+                expected={
+                    "send_interval_below_ms": RTP_SEND_GAP_CANDIDATE_MS,
+                    "loop_delay_below_ms": EVENT_LOOP_DELAY_CANDIDATE_MS,
+                    "overlap_below_ms": RTP_SEND_LOOP_MIN_OVERLAP_MS,
+                    "matching_clock_domain": True,
+                    "interpretation": "server-side timing candidate",
+                    "remote_audibility": "not observed",
+                },
+                evidence_refs=[send.series_id, loop.series_id],
+            )
+        )
+    return incidents
 
 
 def _typed_timeline_artifacts(run: StoredRun) -> list[TimelineTypedArtifact]:

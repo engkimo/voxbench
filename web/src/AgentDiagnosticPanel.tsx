@@ -141,6 +141,7 @@ export function AgentDiagnosticPanel({
     .filter((value): value is string => typeof value === 'string')
     .join('')
   const evidence = events.find((event) => event.type === 'evidence_found')
+  const evidenceRefs = evidence?.payload.evidence_refs
   const command = events.find((event) => event.type === 'ui_command')
     ?.payload.command as ResolvedUiCommand | undefined
 
@@ -173,6 +174,13 @@ export function AgentDiagnosticPanel({
         <div className="agentEvidence">
           <strong>{String(evidence.payload.classification ?? 'evidence')}</strong>
           <span>{String(evidence.payload.summary ?? '')}</span>
+          {Array.isArray(evidenceRefs) && evidenceRefs.length > 0 && (
+            <ul aria-label="Evidence references">
+              {evidenceRefs.filter((ref): ref is string => typeof ref === 'string').map((ref) => (
+                <li key={ref}><code>{ref}</code></li>
+              ))}
+            </ul>
+          )}
         </div>
       ) : null}
       {command ? (

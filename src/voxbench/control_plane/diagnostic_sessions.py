@@ -17,7 +17,7 @@ from voxbench.control_plane.ui_commands import (
 )
 
 if TYPE_CHECKING:
-    from voxbench.control_plane.run_api import TimelineResponse
+    from voxbench.control_plane.run_api import TimelineIncident, TimelineResponse
 
 
 DiagnosticEventType = Literal[
@@ -166,7 +166,10 @@ class DiagnosticSessionStore:
             message=message,
             created_at=datetime.now(UTC),
         )
-        command_request, evidence_payload, answer = _plan_deterministic_command(timeline)
+        command_request, evidence_payload, answer = _plan_deterministic_command(
+            timeline,
+            message,
+        )
         command = resolve_ui_command(command_request, timeline)
         session.commands[command.command_id] = command
         session.append_event(
@@ -252,10 +255,93 @@ class DiagnosticSessionStore:
 
 def _plan_deterministic_command(
     timeline: TimelineResponse,
+    message: str,
 ) -> tuple[UiCommandRequest, dict[str, Any], str]:
     command_id = uuid4()
+    timing_incidents = [
+        incident
+        for incident in timeline.lanes.incidents
+        if incident.rule_id == "rtp_send_loop_overlap_v1"
+    ]
+    if _asks_for_rtp_send_timing(message):
+        if timing_incidents:
+            incident = max(
+                timing_incidents,
+                key=lambda item: (
+                    float(item.observed.get("overlap_ms", 0.0)),
+                    float(item.observed.get("send_interval_ms", 0.0)),
+                    # For equal timings, preserve the send-series projection order.
+                    item.observed["stream_alias"],
+                    item.observed["clock_domain"],
+                ),
+            )
+            observed = incident.observed
+            return (
+                UiCommandRequest(
+                    command_id=command_id,
+                    type="set_time_window",
+                    run_id=timeline.run_id,
+                    evidence_ref=incident.incident_id,
+                    padding_ms=500.0,
+                ),
+                {
+                    "classification": "derived",
+                    "incident_id": incident.incident_id,
+                    "candidate_evidence_ref": incident.incident_id,
+                    "evidence_refs": incident.evidence_refs,
+                    "summary": incident.summary,
+                    "clock_domain": observed.get("clock_domain"),
+                    "send": {
+                        "series_id": observed.get("send_series_id"),
+                        "start_ms": observed.get("send_start_ms"),
+                        "end_ms": observed.get("send_end_ms"),
+                        "duration_ms": observed.get("send_interval_ms"),
+                    },
+                    "loop_delay": {
+                        "series_id": observed.get("loop_series_id"),
+                        "start_ms": observed.get("loop_start_ms"),
+                        "end_ms": observed.get("loop_end_ms"),
+                        "duration_ms": observed.get("loop_delay_ms"),
+                    },
+                    "overlap": {
+                        "start_ms": observed.get("overlap_start_ms"),
+                        "end_ms": observed.get("overlap_end_ms"),
+                        "duration_ms": observed.get("overlap_ms"),
+                    },
+                    "long_gap_count": observed.get("long_gap_count"),
+                    "overlapping_gap_count": observed.get("overlapping_gap_count"),
+                    "scope": "server-side timing candidate",
+                    "remote_audibility": "not observed",
+                },
+                _timing_candidate_answer(incident),
+            )
+        return (
+            UiCommandRequest(
+                command_id=command_id,
+                type="open_panel",
+                run_id=timeline.run_id,
+                panel="transport",
+            ),
+            {
+                "classification": "unknown",
+                "evidence_refs": [],
+                "summary": (
+                    "No same-clock outbound RTP send-gap and event-loop-delay "
+                    "candidate met the rule thresholds."
+                ),
+            },
+            (
+                "I did not find a same-clock outbound RTP send-gap and "
+                "event-loop-delay candidate in this run. I will open the "
+                "transport evidence. Remote audibility is unknown."
+            ),
+        )
     incidents = sorted(
-        timeline.lanes.incidents,
+        (
+            incident
+            for incident in timeline.lanes.incidents
+            if incident.rule_id != "rtp_send_loop_overlap_v1"
+        ),
         key=lambda item: (
             {"error": 0, "warning": 1, "info": 2}.get(item.severity, 3),
             item.start_ms,
@@ -299,7 +385,7 @@ def _plan_deterministic_command(
                 "evidence_refs": [event.event_id],
                 "summary": f"First typed event: {event.name}.",
             },
-            f"No incident rule fired. I will show the first observed event, {event.name}.",
+            f"I will show the first observed event, {event.name}.",
         )
     panel = "recordings" if timeline.lanes.recordings else "stages"
     return (
@@ -316,3 +402,53 @@ def _plan_deterministic_command(
         },
         "No typed incident or event evidence is available. I will open the nearest observed panel.",
     )
+
+
+def _asks_for_rtp_send_timing(message: str) -> bool:
+    normalized = " ".join(message.casefold().replace("_", " ").replace("-", " ").split())
+    if any(word in normalized for word in ("inbound", "incoming", "receiv", "受信", "到着")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "音切れ",
+            "音が途切",
+            "音声が途切",
+            "途切れ",
+            "プツプツ",
+            "送出",
+            "送信",
+            "outbound",
+            "downstream",
+            "下流向け",
+            "egress",
+            "send timing",
+            "send gap",
+            "send interval",
+            "rtp send",
+            "event loop",
+            "イベントループ",
+            "loop lag",
+            "audio dropout",
+            "choppy audio",
+            "stutter",
+        )
+    )
+
+
+def _timing_candidate_answer(incident: TimelineIncident) -> str:
+    observed = incident.observed
+    return (
+        "The strongest server-side timing candidate has an outbound RTP "
+        f"interval of {float(observed['send_interval_ms']):.2f} ms "
+        f"({_seconds_window(observed['send_start_ms'], observed['send_end_ms'])}) "
+        f"and an event-loop delay of {float(observed['loop_delay_ms']):.2f} ms "
+        f"({_seconds_window(observed['loop_start_ms'], observed['loop_end_ms'])}). "
+        f"They overlap for {float(observed['overlap_ms']):.2f} ms. "
+        "I will zoom the Call inspector to this evidence and move its shared "
+        "cursor. Remote audibility is unknown."
+    )
+
+
+def _seconds_window(start_ms: float, end_ms: float) -> str:
+    return f"{float(start_ms) / 1000:.3f}-{float(end_ms) / 1000:.3f} s"

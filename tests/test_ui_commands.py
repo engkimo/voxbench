@@ -66,6 +66,7 @@ def test_ui_command_resolves_incident_and_evidence_scope(tmp_path: Path) -> None
         "stage": None,
         "direction": "received",
         "artifact_id": None,
+        "focus_ms": incident["start_ms"],
         "start_ms": incident["start_ms"],
         "end_ms": incident["end_ms"],
         "highlight_ms": 3000,
@@ -75,7 +76,7 @@ def test_ui_command_resolves_incident_and_evidence_scope(tmp_path: Path) -> None
     assert evidence_response.json()["target"]["category"] == "transport"
 
 
-def test_ui_command_resolves_padded_window(
+def test_ui_command_keeps_verified_focus_inside_padded_window(
     tmp_path: Path,
 ) -> None:
     client = TestClient(create_app(artifact_root=tmp_path / "recordings"))
@@ -94,6 +95,7 @@ def test_ui_command_resolves_padded_window(
         ),
     )
     assert window.status_code == 200
+    assert window.json()["target"]["focus_ms"] == incident["start_ms"]
     assert window.json()["target"]["start_ms"] == max(0, incident["start_ms"] - 250)
     assert window.json()["target"]["end_ms"] == min(3000, incident["end_ms"] + 250)
 
@@ -120,12 +122,12 @@ def test_ui_command_rejects_unknown_or_cross_run_targets(tmp_path: Path) -> None
         ),
     )
 
-    arbitrary_start = client.post(
+    arbitrary_cursor = client.post(
         f"/runs/{run_id}/ui-commands/resolve",
-        json=_command(run_id, "set_time_window", evidence_ref="incident", start_ms=9),
+        json=_command(run_id, "set_time_window", evidence_ref="incident", focus_ms=9),
     )
 
-    assert arbitrary_start.status_code == 422
+    assert arbitrary_cursor.status_code == 422
     assert unknown_evidence.status_code == 422
     assert unknown_evidence.json()["detail"] == ("evidence reference is outside the command run")
     assert route_mismatch.status_code == 422

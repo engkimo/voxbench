@@ -79,6 +79,7 @@ class UiCommandTarget(BaseModel):
     stage: str | None = None
     direction: str | None = None
     artifact_id: str | None = None
+    focus_ms: float | None = None
     start_ms: float | None = None
     end_ms: float | None = None
     highlight_ms: int = 0
@@ -112,6 +113,7 @@ def resolve_ui_command(
         target = _resolve_evidence(timeline, command.incident_id or command.evidence_ref or "")
         if command.type == "select_incident" and target.incident_id is None:
             raise UiCommandResolutionError("incident is outside the command run")
+        target.focus_ms = target.start_ms
         if command.type == "set_time_window":
             target.start_ms = max(0.0, target.start_ms - command.padding_ms)
             target.end_ms = min(_timeline_duration_ms(timeline), target.end_ms + command.padding_ms)

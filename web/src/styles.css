@@ -840,6 +840,12 @@ a {
   background: #ffffff;
 }
 
+.agentEvidence ul {
+  margin: 0;
+  padding-inline-start: 1.5em;
+  overflow-wrap: anywhere;
+}
+
 .agentEvidence strong {
   color: #276956;
   text-transform: uppercase;
@@ -944,6 +950,27 @@ a {
   color: #286646;
   background: #f0faf4;
   font-size: 12px;
+}
+
+.inspectorCommandState {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  border: 1px solid #b8c3e4;
+  border-radius: 7px;
+  padding: 7px 8px;
+  color: #48598c;
+  background: #f1f3fc;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.inspectorCommandState button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  font-size: 10px;
 }
 
 .inspectorTimeline {

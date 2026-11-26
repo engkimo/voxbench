@@ -1162,6 +1162,21 @@ function LinkedCallInspector({
   )
 
   const durationMs = inspectorDurationMs(timeline)
+  const [agentWindow, setAgentWindow] = useState<{
+    startMs: number
+    endMs: number
+    commandId: string
+    incidentId: string
+  } | null>(null)
+  const startMs = agentWindow?.startMs ?? 0
+  const endMs = agentWindow?.endMs ?? durationMs
+  const spanMs = Math.max(1, endMs - startMs)
+  const inView = (start: number, end = start) => end >= startMs && start <= endMs
+  const position = (ms: number) => timePositionPercent(ms - startMs, spanMs)
+  const visibleIncidents = timeline.lanes.incidents.filter((item) => inView(item.start_ms, item.end_ms))
+  const candidateIncident = agentWindow && timeline.lanes.incidents.find(
+    (item) => item.incident_id === agentWindow.incidentId,
+  )
   const primaryTiming = useMemo(
     () => mediaTimingRuns(timeline, compareTimeline ? 'Primary run' : 'Selected run'),
     [timeline, compareTimeline],
@@ -1196,13 +1211,29 @@ function LinkedCallInspector({
     apply(command) {
       const target = command.target
       const incident = timeline.lanes.incidents.find((item) => item.incident_id === target.incident_id)
-      if (command.type === 'select_incident' && incident) {
+      if (command.type === 'set_time_window') {
+        const { start_ms, end_ms, focus_ms } = target
+        if (!incident || start_ms === null || end_ms === null || focus_ms === null ||
+            start_ms > focus_ms || focus_ms > end_ms || end_ms > durationMs ||
+            typeof incident.observed.send_series_id !== 'string') {
+          return { command_id: command.command_id, outcome: 'rejected', detail: 'The timing candidate is unavailable.' }
+        }
+        setAgentWindow({
+          startMs: start_ms,
+          endMs: end_ms,
+          commandId: command.command_id,
+          incidentId: incident.incident_id,
+        })
+        setSelectedIncidentId(incident.incident_id)
+        moveCursor(focus_ms)
+      } else if (command.type === 'select_incident' && incident) {
         selectIncident(incident)
       } else if (command.type === 'focus_evidence' && target.start_ms !== null) {
         moveCursor(target.start_ms)
       } else if (command.type !== 'open_panel' || !target.category) {
         return { command_id: command.command_id, outcome: 'rejected', detail: 'The target evidence is unavailable.' }
       }
+      if (command.type !== 'set_time_window') setAgentWindow(null)
       setFocusedCategory(target.category)
       setFocusedRef(target.evidence_ref)
       inspectorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1221,14 +1252,18 @@ function LinkedCallInspector({
       const audioDurationMs = Number.isFinite(audioRef.current.duration)
         ? audioRef.current.duration * 1000
         : durationMs
-      audioRef.current.currentTime = Math.min(bounded, audioDurationMs) / 1000
+      if (bounded > audioDurationMs) {
+        audioRef.current.pause()
+        return
+      }
+      audioRef.current.currentTime = bounded / 1000
     }
   }
 
   function moveCursorFromTrack(event: ReactMouseEvent<HTMLDivElement>) {
     const bounds = event.currentTarget.getBoundingClientRect()
     const ratio = bounds.width > 0 ? (event.clientX - bounds.left) / bounds.width : 0
-    moveCursor(ratio * durationMs)
+    moveCursor(startMs + ratio * spanMs)
   }
 
   function selectIncident(incident: TimelineIncident) {
@@ -1242,21 +1277,36 @@ function LinkedCallInspector({
         <Activity size={17} />
         <h2>Call inspector</h2>
         <ProvenanceBadge environment={timeline.environment} />
-        <span className="inspectorCursorReadout">Cursor {formatTimelineTime(cursorMs)}</span>
+        <span className="inspectorCursorReadout">
+          Cursor {agentWindow ? `${(cursorMs / 1000).toFixed(3)}s` : formatTimelineTime(cursorMs)}
+        </span>
       </div>
       <p className="panelLead">
         One cursor links call events, transport, pipeline evidence, provider lifecycle, and host state.
       </p>
       <MediaTimingPanel
+        key={agentWindow?.commandId ?? 'overview'}
+        window={agentWindow ?? undefined}
         cursorMs={cursorMs}
-        cursorRunId={primaryTiming[0]?.id}
+        cursorRunId={agentWindow
+          ? candidateIncident && typeof candidateIncident.observed.send_series_id === 'string'
+            ? `${runId}:${candidateIncident.observed.send_series_id}` : undefined
+          : primaryTiming[0]?.id}
         onSeek={moveCursor}
         runs={[...primaryTiming, ...comparisonTiming]}
       />
 
+      {agentWindow && (
+        <div className="inspectorCommandState">
+          <span>Agent view · {formatTimelineTime(startMs)}–{formatTimelineTime(endMs)}</span>
+          <button className="secondaryButton" onClick={() => setAgentWindow(null)} type="button">
+            Reset agent view
+          </button>
+        </div>
+      )}
       <div className="incidentStrip" aria-label="Detected incidents">
-        {timeline.lanes.incidents.length > 0 ? (
-          timeline.lanes.incidents.map((incident) => (
+        {visibleIncidents.length > 0 ? (
+          visibleIncidents.map((incident) => (
             <button
               className={`incidentChip ${incident.severity} ${incident.incident_id === selectedIncidentId ? 'selected' : ''}`}
               key={incident.incident_id}
@@ -1270,7 +1320,7 @@ function LinkedCallInspector({
           ))
         ) : (
           <div className="inspectorHealthy">
-            No detected incidents. Missing lanes remain explicitly marked as not observed.
+            No detected incidents in this view. Missing lanes remain explicitly marked as not observed.
           </div>
         )}
       </div>
@@ -1281,56 +1331,62 @@ function LinkedCallInspector({
           <div className="inspectorRuler">
             {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
               <span key={ratio} style={{ left: `${ratio * 100}%` }}>
-                {formatTimelineTime(durationMs * ratio)}
+                {formatTimelineTime(startMs + spanMs * ratio)}
               </span>
             ))}
           </div>
         </div>
 
         {visibleCategories.map((category) => {
-          const events = timeline.lanes.events.filter((event) => event.category === category)
+          const events = timeline.lanes.events.filter(
+            (event) => event.category === category && inView(event.t_rel_ms),
+          )
           const intervals = timeline.lanes.intervals.filter(
-            (interval) => interval.category === category,
+            (interval) => interval.category === category && inView(interval.start_ms, interval.end_ms),
           )
-          const series = timeline.lanes.series.filter((item) => item.category === category)
+          const series = timeline.lanes.series
+            .filter((item) => item.category === category)
+            .map((item) => ({ ...item, points: item.points.filter((point) => inView(point.t_rel_ms)) }))
+            .filter((item) => item.points.length > 0)
           const artifacts = timeline.lanes.artifacts.filter(
-            (artifact) => artifact.category === category,
+            (artifact) => artifact.category === category &&
+              inView(artifact.start_ms, artifact.start_ms + (artifact.duration_ms ?? 0)),
           )
-          const incidents = timeline.lanes.incidents.filter(
+          const incidents = visibleIncidents.filter(
             (incident) => incident.category === category,
           )
           const observed = events.length + intervals.length + series.length + artifacts.length > 0
           const seriesPoints = sampleInspectorPoints(series, 100)
-          const artifactDuration = Math.max(
-            0,
-            ...artifacts.map((artifact) => artifact.duration_ms ?? 0),
-          )
           return (
             <div className={`inspectorLane ${focusedCategory === category ? 'commandFocused' : ''}`} key={category}>
               <div className="inspectorLaneLabel">
                 <strong>{timelineCategoryLabel(category)}</strong>
                 <span>
-                  {observed ? `${inspectorCategoryCount(timeline, category)} evidence` : 'not observed'}
+                  {observed ? `${events.length + intervals.length + series.length + artifacts.length} evidence` : 'not observed in view'}
                 </span>
               </div>
               <div
                 className={`inspectorTrack ${observed ? '' : 'unobserved'}`}
                 onClick={moveCursorFromTrack}
               >
-                {artifactDuration > 0 ? (
+                {artifacts.map((artifact) => (
                   <span
                     className="inspectorArtifactBar"
-                    style={{ width: `${timePositionPercent(artifactDuration, durationMs)}%` }}
-                    title={`${artifacts.length} artifacts · ${formatTimelineTime(artifactDuration)}`}
+                    key={artifact.artifact_id}
+                    style={{
+                      left: `${position(artifact.start_ms)}%`,
+                      width: `${position(artifact.start_ms + (artifact.duration_ms ?? 0)) - position(artifact.start_ms)}%`,
+                    }}
+                    title={`${artifact.name} · ${formatTimelineTime(artifact.duration_ms ?? 0)}`}
                   />
-                ) : null}
+                ))}
                 {intervals.map((interval) => (
                   <span
                     className="inspectorIntervalBar"
                     key={interval.interval_id}
                     style={{
-                      left: `${timePositionPercent(interval.start_ms, durationMs)}%`,
-                      width: `${Math.max(0.4, timePositionPercent(interval.end_ms - interval.start_ms, durationMs))}%`,
+                      left: `${position(interval.start_ms)}%`,
+                      width: `${Math.max(0.4, position(interval.end_ms) - position(interval.start_ms))}%`,
                     }}
                     title={`${interval.name} · ${formatTimelineTime(interval.start_ms)}–${formatTimelineTime(interval.end_ms)}`}
                   />
@@ -1344,7 +1400,7 @@ function LinkedCallInspector({
                       event.stopPropagation()
                       moveCursor(point.t_rel_ms)
                     }}
-                    style={{ left: `${timePositionPercent(point.t_rel_ms, durationMs)}%` }}
+                    style={{ left: `${position(point.t_rel_ms)}%` }}
                     title={`${pointSeries.name}: ${displayValue(point.value)} ${pointSeries.unit ?? ''}`}
                     type="button"
                   />
@@ -1358,7 +1414,7 @@ function LinkedCallInspector({
                       clickEvent.stopPropagation()
                       moveCursor(event.t_rel_ms)
                     }}
-                    style={{ left: `${timePositionPercent(event.t_rel_ms, durationMs)}%` }}
+                    style={{ left: `${position(event.t_rel_ms)}%` }}
                     title={`${event.name} · ${event.direction ?? event.stage ?? event.source}`}
                     type="button"
                   />
@@ -1372,14 +1428,14 @@ function LinkedCallInspector({
                       clickEvent.stopPropagation()
                       selectIncident(incident)
                     }}
-                    style={{ left: `${timePositionPercent(incident.start_ms, durationMs)}%` }}
+                    style={{ left: `${position(incident.start_ms)}%` }}
                     title={incident.summary}
                     type="button"
                   />
                 ))}
                 <span
                   className="inspectorCursor"
-                  style={{ left: `${timePositionPercent(cursorMs, durationMs)}%` }}
+                  style={{ left: `${position(cursorMs)}%` }}
                 />
               </div>
             </div>
@@ -1392,10 +1448,10 @@ function LinkedCallInspector({
           Shared cursor
           <input
             aria-label="Shared timeline cursor"
-            max={durationMs}
-            min={0}
+            max={endMs}
+            min={startMs}
             onChange={(event) => moveCursor(Number(event.target.value))}
-            step={10}
+            step={agentWindow ? "any" : 10}
             type="range"
             value={cursorMs}
           />

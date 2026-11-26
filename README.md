@@ -688,6 +688,14 @@ calculated only when both series use the same clock domain. The send interval is
 not reduced by RTP media-time advance; the existing receive-side arrival-stall
 rule continues to compare arrival time with RTP media time independently.
 
+Ask VoxBench a question such as “Where did outbound RTP sending stall?” to
+inspect this evidence. When a send gap and an event-loop delay overlap on the
+same clock, the answer cites both series, the two intervals and their overlap.
+Call inspector opens a padded window around the candidate and places the shared
+cursor at its start. When the observations do not establish a qualifying
+overlap, the answer says so. The evidence describes server-side timing. Remote
+audibility requires a separate observation at the receiver.
+
 Sequence deltas account for 16-bit wrap. A forward delta greater than one and
 less than 32768 produces a high-confidence `RTP sequence gap observed` incident
 at the observation point. It is not labeled confirmed network loss until capture

@@ -56,6 +56,7 @@ function span(point: TimelineSeriesPoint): Window {
 function summarize(run: MediaTimingRun) {
   const gaps = run.send.filter((point) => point.value >= RTP_GAP_MS)
   const stalls = run.loop.filter((point) => point.value >= LOOP_DELAY_MS).map(span)
+  const longestStallMs = stalls.reduce((max, stall) => Math.max(max, stall.endMs - stall.startMs), 0)
   let stallIndex = 0
   let overlappingGaps = 0
   let candidate: Candidate | null = null
@@ -66,7 +67,8 @@ function summarize(run: MediaTimingRun) {
       let best: Candidate | null = null
       for (let index = stallIndex; index < stalls.length; index += 1) {
         const loop = stalls[index]
-        if (loop.startMs >= send.endMs) break
+        // Samples are ordered by end. A later, longer stall can start before this one.
+        if (loop.endMs - longestStallMs >= send.endMs) break
         const overlap = {
           startMs: Math.max(send.startMs, loop.startMs),
           endMs: Math.min(send.endMs, loop.endMs),
